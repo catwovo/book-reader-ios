@@ -315,18 +315,20 @@ struct ReaderView: View {
                                     }
                                 }
 
-                                // Tap Blank Area to Advance
-                                VStack(spacing: 4) {
-                                    Text("轻点此处推进下一\(settings.stepMode == .sentence ? "句" : "行")")
-                                        .font(.footnote.weight(.medium))
-                                    Text("向上轻扫退回上一\(settings.stepMode == .sentence ? "句" : "行")")
-                                        .font(.caption2)
+                                // Tap Blank Area Left=Prev / Right=Next
+                                HStack {
+                                    Label("上一\(settings.stepMode == .sentence ? "句" : "行")", systemImage: "chevron.left")
+                                    Spacer()
+                                    Text("轻点左半屏退回 · 右半屏推进")
+                                    Spacer()
+                                    Label("下一\(settings.stepMode == .sentence ? "句" : "行")", systemImage: "chevron.right")
                                 }
-                                .foregroundStyle(.secondary.opacity(0.75))
+                                .font(.caption2)
+                                .foregroundStyle(.secondary.opacity(0.65))
+                                .padding(.horizontal, 12)
                                 .frame(maxWidth: .infinity)
                                 .frame(height: 150)
                                 .contentShape(Rectangle())
-                                .onTapGesture { stepNext() }
                             }
                             .padding(.horizontal, 16)
                             .padding(.top, 12)
@@ -335,15 +337,13 @@ struct ReaderView: View {
                         .frame(height: bottomHeight)
                         .background(Color(hexInt64: settings.readerBottomBgColorHex) ?? Color.clear)
                         .contentShape(Rectangle())
-                        .onTapGesture { stepNext() }
-                        .gesture(
-                            DragGesture(minimumDistance: 36)
-                                .onEnded { value in
-                                    if value.translation.height < -50 {
-                                        stepPrev()
-                                    }
-                                }
-                        )
+                        .onTapGesture(coordinateSpace: .local) { location in
+                            if location.x < totalGeo.size.width / 2.0 {
+                                stepPrev()
+                            } else {
+                                stepNext()
+                            }
+                        }
                     }
                 }
             }
