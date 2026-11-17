@@ -14,9 +14,11 @@ final class SettingsStore {
 
     var settings: ReaderSettings {
         didSet {
-            saveSettings()
+            scheduleSaveSettings()
         }
     }
+
+    private var saveWorkItem: DispatchWorkItem?
 
     var opdsSources: [OpdsSource] = []
     var selectedOpdsSourceId: String?
@@ -38,10 +40,28 @@ final class SettingsStore {
         loadOpdsSources()
     }
 
-    private func saveSettings() {
-        if let data = try? JSONEncoder().encode(settings) {
-            UserDefaults.standard.set(data, forKey: key)
+    func applyThemeMode(_ mode: AppThemeMode) {
+        var next = settings
+        next.themeMode = mode
+        next.readerBgColorHex = -1
+        next.readerFocusColorHex = -1
+        next.readerBottomBgColorHex = -1
+        next.readerSentenceCardColorHex = -1
+        next.readerWordCardColorHex = -1
+        settings = next
+    }
+
+    private func scheduleSaveSettings() {
+        saveWorkItem?.cancel()
+        let snapshot = settings
+        let storageKey = key
+        let item = DispatchWorkItem {
+            if let data = try? JSONEncoder().encode(snapshot) {
+                UserDefaults.standard.set(data, forKey: storageKey)
+            }
         }
+        saveWorkItem = item
+        DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + 0.12, execute: item)
     }
 
     // MARK: - OPDS Sources Store

@@ -217,6 +217,14 @@ final class TranslationService {
         text.hasPrefix("（当前系统暂不支持")
     }
 
+    nonisolated static func isDictionaryPlaceholder(_ text: String) -> Bool {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ||
+            trimmed.hasPrefix("（内置词库暂未收录") ||
+            trimmed.hasPrefix("（本地中文词典暂未收录") ||
+            isErrorPlaceholder(trimmed)
+    }
+
     nonisolated static func hasAiConfigured(_ settings: ReaderSettings) -> Bool {
         !settings.aiApiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ||
         settings.aiBaseUrl.contains("localhost") ||
@@ -302,7 +310,7 @@ final class TranslationService {
         return nil
     }
 
-    // MARK: - Word CN -> EN
+    // MARK: - Word Lookup via Apple Translation (EN <-> CN)
 
     nonisolated static func getCachedZhToEnWord(word: String, db: DatabaseManager) -> String? {
         let clean = word.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -332,6 +340,20 @@ final class TranslationService {
         }
 
         let store = TranslationCacheStore.shared
+        // Prioritize Apple native on-device translation first
+        if let appleTranslator, let appleHit = try? await appleTranslator(clean, true) {
+            let trimmed = appleHit.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !trimmed.isEmpty {
+                let key = "zh2en_w2:\(clean)"
+                store.withLock {
+                    if store.wordEnMemoryCache.count > 400 { store.wordEnMemoryCache.removeAll() }
+                    store.wordEnMemoryCache[key] = trimmed
+                }
+                db.saveCachedTranslation(source: key, translated: trimmed)
+                return trimmed
+            }
+        }
+
         if let onlineHit = await translateWithOnlineEngines(cleanText: clean, toEnglish: true)?.1, !onlineHit.isEmpty {
             let key = "zh2en_w2:\(clean)"
             store.withLock {
@@ -341,16 +363,74 @@ final class TranslationService {
             db.saveCachedTranslation(source: key, translated: onlineHit)
             return onlineHit
         }
+        return nil
+    }
 
-        if let appleTranslator, let appleHit = try? await appleTranslator(clean, true), !appleHit.isEmpty {
-            let key = "zh2en_w2:\(clean)"
+    static func translateWordToChinese(
+        word: String,
+        lemma: String,
+        phonetic: String,
+        db: DatabaseManager,
+        appleTranslator: (@MainActor (String, Bool) async throws -> String)? = nil
+    ) async -> (text: String, source: String)? {
+        let clean = word.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard !clean.isEmpty else { return nil }
+
+        let key = "en2zh_w2:\(clean)"
+        let store = TranslationCacheStore.shared
+        if let mem = store.withLock({ store.wordEnMemoryCache[key] }), !mem.isEmpty {
+            return (mem, "Apple 翻译")
+        }
+        if let cached = db.getCachedTranslation(key), !cached.isEmpty {
             store.withLock {
                 if store.wordEnMemoryCache.count > 400 { store.wordEnMemoryCache.removeAll() }
-                store.wordEnMemoryCache[key] = appleHit
+                store.wordEnMemoryCache[key] = cached
             }
-            db.saveCachedTranslation(source: key, translated: appleHit)
-            return appleHit
+            return (cached, "Apple 翻译")
         }
+
+        // 1. Apple System Native Translation (primary)
+        if let appleTranslator, let appleHit = try? await appleTranslator(clean, false) {
+            let wordZh = appleHit.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !wordZh.isEmpty && wordZh.lowercased() != clean {
+                var finalZh = wordZh
+                let cleanLemma = lemma.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+                if !cleanLemma.isEmpty && cleanLemma != clean {
+                    if let lemmaHit = try? await appleTranslator(cleanLemma, false) {
+                        let lemmaZh = lemmaHit.trimmingCharacters(in: .whitespacesAndNewlines)
+                        if !lemmaZh.isEmpty && lemmaZh != wordZh && lemmaZh.lowercased() != cleanLemma {
+                            finalZh = "\(wordZh)\n原型 \(cleanLemma)：\(lemmaZh)"
+                        }
+                    }
+                }
+                store.withLock {
+                    if store.wordEnMemoryCache.count > 400 { store.wordEnMemoryCache.removeAll() }
+                    store.wordEnMemoryCache[key] = finalZh
+                }
+                db.saveCachedTranslation(source: key, translated: finalZh)
+                db.bulkInsertDictionary([
+                    DictionaryEntry(word: clean, phonetic: phonetic, translation: finalZh)
+                ], refreshCounts: false)
+                return (finalZh, "Apple 翻译")
+            }
+        }
+
+        // 2. Online Engine fallback if Apple language pack not yet installed
+        if let onlineHit = await translateWithOnlineEngines(cleanText: clean, toEnglish: false)?.1 {
+            let trimmed = onlineHit.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !trimmed.isEmpty && trimmed.lowercased() != clean {
+                store.withLock {
+                    if store.wordEnMemoryCache.count > 400 { store.wordEnMemoryCache.removeAll() }
+                    store.wordEnMemoryCache[key] = trimmed
+                }
+                db.saveCachedTranslation(source: key, translated: trimmed)
+                db.bulkInsertDictionary([
+                    DictionaryEntry(word: clean, phonetic: phonetic, translation: trimmed)
+                ], refreshCounts: false)
+                return (trimmed, "在线翻译")
+            }
+        }
+
         return nil
     }
 

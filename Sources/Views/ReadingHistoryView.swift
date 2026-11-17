@@ -525,18 +525,6 @@ struct ReadingHistoryView: View {
             bookHistoryScrollList
 
             bookHistoryFloatingHeader
-                .background {
-                    LinearGradient(
-                        colors: [
-                            palette.backgroundBase.opacity(0.95),
-                            palette.backgroundBase.opacity(0.88),
-                            palette.backgroundBase.opacity(0.0)
-                        ],
-                        startPoint: .top,
-                        endPoint: .bottom
-                    )
-                    .allowsHitTesting(false)
-                }
                 .simultaneousGesture(
                     DragGesture(minimumDistance: 24)
                         .onEnded { value in
@@ -804,18 +792,6 @@ struct ReadingHistoryView: View {
             vocabHistoryScrollList
 
             vocabHistoryFloatingHeader
-                .background {
-                    LinearGradient(
-                        colors: [
-                            palette.backgroundBase.opacity(0.95),
-                            palette.backgroundBase.opacity(0.88),
-                            palette.backgroundBase.opacity(0.0)
-                        ],
-                        startPoint: .top,
-                        endPoint: .bottom
-                    )
-                    .allowsHitTesting(false)
-                }
                 .simultaneousGesture(
                     DragGesture(minimumDistance: 24)
                         .onEnded { value in

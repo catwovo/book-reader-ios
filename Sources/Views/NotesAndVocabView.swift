@@ -1,4 +1,7 @@
 import SwiftUI
+#if canImport(Translation)
+import Translation
+#endif
 
 struct NotesAndVocabView: View {
     @Environment(DatabaseManager.self) private var db
@@ -8,6 +11,7 @@ struct NotesAndVocabView: View {
 
     var onJumpToBook: (BookItem, Int, Int) -> Void
 
+    @State private var appleBridge = AppleTranslationBridge()
     @State private var segment = 0 // 0 = 句子, 1 = 词汇, 2 = 闪卡
     @State private var showSearch = false
     @State private var searchQuery = ""
@@ -207,6 +211,11 @@ struct NotesAndVocabView: View {
             }
             .presentationDetents([.medium])
         }
+        #if canImport(Translation)
+        .translationTask(appleBridge.configuration) { session in
+            await appleBridge.handleSession(session)
+        }
+        #endif
     }
 
     // MARK: - Page 0: Notes
@@ -309,6 +318,9 @@ struct NotesAndVocabView: View {
                                 onSpeak: { speech.speak($0) },
                                 onDelete: { db.deleteVocab(id: item.id) }
                             )
+                            .task(id: item.id) {
+                                await resolveMissingVocabTranslation(item)
+                            }
                         }
                     }
                     .padding(.horizontal, 16)
@@ -359,7 +371,7 @@ struct NotesAndVocabView: View {
                 let isZhCard = isChineseVocab(card)
 
                 GeometryReader { geo in
-                    let maxCardH = max(140, geo.size.height - 134)
+                    let maxCardH = max(160, geo.size.height - 126)
 
                     VStack(spacing: 12) {
                         VStack(spacing: 6) {
@@ -378,16 +390,16 @@ struct NotesAndVocabView: View {
                             )
                         }
 
-                        Spacer(minLength: 4)
-
                         FlashcardDeckCard(
                             card: card,
                             flipped: $flipped,
                             maxHeight: maxCardH,
-                            onSpeak: { speech.speak($0) }
+                            onSpeak: { speech.speak($0) },
+                            onResolveMissingTranslation: { item in
+                                await resolveMissingVocabTranslation(item)
+                            }
                         )
-
-                        Spacer(minLength: 4)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
 
                         flashcardActionButtonsRow(safeIdx: safeIdx, deck: deck, card: card)
                     }
@@ -400,9 +412,38 @@ struct NotesAndVocabView: View {
         }
     }
 
+    private func resolveMissingVocabTranslation(_ item: VocabItem) async {
+        guard TranslationService.isDictionaryPlaceholder(item.translation) else { return }
+        let isZh = isChineseVocab(item)
+        if isZh {
+            if let en = await TranslationService.translateWordToEnglishOffline(
+                word: item.word,
+                db: db,
+                appleTranslator: { text, toEn in
+                    try await appleBridge.translate(text, toEnglish: toEn)
+                }
+            ), !en.isEmpty {
+                db.updateVocabEnglishTranslation(word: item.word, englishTranslation: en)
+                db.updateVocabTranslation(word: item.word, translation: en)
+            }
+        } else {
+            if let res = await TranslationService.translateWordToChinese(
+                word: item.word,
+                lemma: item.lemma,
+                phonetic: item.phonetic,
+                db: db,
+                appleTranslator: { text, toEn in
+                    try await appleBridge.translate(text, toEnglish: toEn)
+                }
+            ), !res.text.isEmpty {
+                db.updateVocabTranslation(word: item.word, translation: res.text)
+            }
+        }
+    }
+
     @ViewBuilder
     private func flashcardActionButtonsRow(safeIdx: Int, deck: [VocabItem], card: VocabItem) -> some View {
-        let row = HStack(spacing: 10) {
+        HStack(spacing: 10) {
             flashActionButton(title: "不认识", tint: .red, prominent: false) {
                 db.updateVocabFamiliarity(id: card.id, familiarity: 0)
                 withAnimation(AppMotion.cardSpring) {
@@ -427,18 +468,6 @@ struct NotesAndVocabView: View {
                 }
             }
         }
-
-        #if compiler(>=6.2)
-        if #available(iOS 26.0, *) {
-            GlassEffectContainer(spacing: 10) {
-                row
-            }
-        } else {
-            row
-        }
-        #else
-        row
-        #endif
     }
 
     // MARK: - Shared Vocab Filter Bar & Empty State
@@ -746,15 +775,22 @@ private struct VocabCardView: View {
     var body: some View {
         GlassCard(cornerRadius: 22) {
             VStack(alignment: .leading, spacing: 10) {
-                HStack(alignment: .center, spacing: 8) {
-                    Text(item.word)
-                        .font(.system(.title3, design: .serif).bold())
-                    if !item.phonetic.isEmpty {
-                        Text(item.phonetic)
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
+                HStack(alignment: .center, spacing: 6) {
+                    HStack(alignment: .firstTextBaseline, spacing: 6) {
+                        Text(item.word)
+                            .font(.system(.title3, design: .serif).bold())
                             .lineLimit(1)
+                            .minimumScaleFactor(0.75)
+                            .layoutPriority(1)
+                        if !item.phonetic.isEmpty {
+                            Text(item.phonetic)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                                .lineLimit(1)
+                                .truncationMode(.tail)
+                        }
                     }
+
                     Button { onSpeak(item.word) } label: {
                         Image(systemName: "speaker.wave.2.fill")
                             .font(.caption.weight(.semibold))
@@ -763,8 +799,9 @@ private struct VocabCardView: View {
                             .background(palette.accent.opacity(0.12), in: Circle())
                     }
                     .buttonStyle(GlassPressButtonStyle())
+                    .fixedSize()
 
-                    Spacer()
+                    Spacer(minLength: 4)
 
                     HStack(spacing: 5) {
                         if item.familiarity == 2 {
@@ -786,6 +823,7 @@ private struct VocabCardView: View {
                         }
                         .buttonStyle(GlassPressButtonStyle())
                     }
+                    .fixedSize(horizontal: true, vertical: false)
                 }
 
                 if !item.englishTranslation.isEmpty {
@@ -818,18 +856,27 @@ private struct VocabCardView: View {
                 }
 
                 VStack(alignment: .leading, spacing: 4) {
-                    Text(formattedTrans)
-                        .font(.subheadline)
-                        .lineSpacing(3)
-                        .lineLimit((transExpanded || !canExpandTrans) ? nil : 4)
-                    if canExpandTrans {
-                        Button(transExpanded ? "收起" : "展开全部") {
-                            withAnimation(AppMotion.panelSpring) {
-                                transExpanded.toggle()
-                            }
+                    if TranslationService.isDictionaryPlaceholder(formattedTrans) {
+                        HStack(spacing: 6) {
+                            ProgressView().controlSize(.small)
+                            Text("正在通过 Apple 翻译获取释义...")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
                         }
-                        .font(.caption2.weight(.semibold))
-                        .foregroundStyle(palette.accent)
+                    } else {
+                        Text(formattedTrans)
+                            .font(.subheadline)
+                            .lineSpacing(3)
+                            .lineLimit((transExpanded || !canExpandTrans) ? nil : 4)
+                        if canExpandTrans {
+                            Button(transExpanded ? "收起" : "展开全部") {
+                                withAnimation(AppMotion.panelSpring) {
+                                    transExpanded.toggle()
+                                }
+                            }
+                            .font(.caption2.weight(.semibold))
+                            .foregroundStyle(palette.accent)
+                        }
                     }
                 }
 
@@ -913,8 +960,10 @@ private struct VocabCardView: View {
                 .frame(width: 6, height: 6)
             Text(text)
                 .font(.caption2.weight(.semibold))
+                .lineLimit(1)
                 .foregroundStyle(color)
         }
+        .fixedSize(horizontal: true, vertical: false)
         .padding(.horizontal, 7)
         .padding(.vertical, 3)
         .background(color.opacity(0.12), in: Capsule())
@@ -926,9 +975,16 @@ private struct FlashcardDeckCard: View {
     @Binding var flipped: Bool
     var maxHeight: CGFloat = 340
     var onSpeak: (String) -> Void
+    var onResolveMissingTranslation: (VocabItem) async -> Void = { _ in }
 
     @Environment(\.appPalette) private var palette
     @State private var sentenceExpanded = false
+
+    private func toggleFlip() {
+        withAnimation(AppMotion.panelSpring) {
+            flipped.toggle()
+        }
+    }
 
     @ViewBuilder
     private var cardInnerContent: some View {
@@ -981,6 +1037,7 @@ private struct FlashcardDeckCard: View {
                         }
                         .font(.caption2.weight(.semibold))
                         .foregroundStyle(palette.accent)
+                        .buttonStyle(.plain)
                     }
                 }
                 .padding(12)
@@ -1011,10 +1068,19 @@ private struct FlashcardDeckCard: View {
                             .buttonStyle(GlassPressButtonStyle())
                         }
                     }
-                    Text(card.translation.replacingOccurrences(of: #"\n{2,}"#, with: "\n", options: .regularExpression))
-                        .font(.headline)
-                        .lineSpacing(3)
-                        .multilineTextAlignment(.center)
+                    if TranslationService.isDictionaryPlaceholder(card.translation) {
+                        HStack(spacing: 6) {
+                            ProgressView().controlSize(.small)
+                            Text("正在通过 Apple 翻译获取释义...")
+                                .font(.subheadline)
+                                .foregroundStyle(.secondary)
+                        }
+                    } else {
+                        Text(card.translation.replacingOccurrences(of: #"\n{2,}"#, with: "\n", options: .regularExpression))
+                            .font(.headline)
+                            .lineSpacing(3)
+                            .multilineTextAlignment(.center)
+                    }
                     if !card.contextTranslation.isEmpty {
                         Text(card.contextTranslation)
                             .font(.caption)
@@ -1030,26 +1096,36 @@ private struct FlashcardDeckCard: View {
         .padding(.vertical, 20)
         .frame(maxWidth: .infinity)
         .contentShape(Rectangle())
+        .onTapGesture {
+            toggleFlip()
+        }
     }
 
     var body: some View {
         GlassCard(cornerRadius: 26, tintColor: flipped ? palette.accent.opacity(0.05) : nil) {
-            ViewThatFits(in: .vertical) {
-                cardInnerContent
-
-                ScrollView {
+            Group {
+                if flipped || sentenceExpanded {
+                    ViewThatFits(in: .vertical) {
+                        cardInnerContent
+                        ScrollView(showsIndicators: false) {
+                            cardInnerContent
+                        }
+                    }
+                } else {
                     cardInnerContent
                 }
             }
             .frame(maxHeight: maxHeight)
             .clipped()
         }
+        .contentShape(RoundedRectangle(cornerRadius: 26, style: .continuous))
         .onTapGesture {
-            withAnimation(AppMotion.panelSpring) {
-                flipped.toggle()
-            }
+            toggleFlip()
         }
         .animation(AppMotion.panelSpring, value: flipped)
+        .task(id: card.id) {
+            await onResolveMissingTranslation(card)
+        }
         .onChange(of: card.id) { _, _ in
             sentenceExpanded = false
         }

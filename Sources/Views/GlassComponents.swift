@@ -524,6 +524,7 @@ struct AmbientGlassBackdrop: View {
             )
         }
         .ignoresSafeArea()
+        .animation(.easeInOut(duration: 0.24), value: themeMode)
     }
 }
 
@@ -626,6 +627,8 @@ struct MinimalTagPill: View {
     var body: some View {
         Text(text)
             .font(.caption2.weight(.semibold))
+            .lineLimit(1)
+            .fixedSize(horizontal: true, vertical: false)
             .foregroundStyle(textColor)
             .padding(.horizontal, 8)
             .padding(.vertical, 3)

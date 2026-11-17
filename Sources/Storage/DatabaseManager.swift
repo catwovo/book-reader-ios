@@ -870,6 +870,22 @@ final class DatabaseManager: @unchecked Sendable {
         )
     }
 
+    func updateVocabTranslation(word: String, translation: String) {
+        let isCjk = TextTokenizer.isPredominantlyChinese(word)
+        let clean = isCjk ? word.trimmingCharacters(in: .whitespacesAndNewlines) : word.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard !clean.isEmpty, !translation.isEmpty else { return }
+        dbLock.lock()
+        var stmt: OpaquePointer?
+        if sqlite3_prepare_v2(db, "UPDATE vocab SET translation = ?1 WHERE word = ?2", -1, &stmt, nil) == SQLITE_OK {
+            sqlite3_bind_text(stmt, 1, translation, -1, SQLITE_TRANSIENT)
+            sqlite3_bind_text(stmt, 2, clean, -1, SQLITE_TRANSIENT)
+            sqlite3_step(stmt)
+        }
+        sqlite3_finalize(stmt)
+        dbLock.unlock()
+        vocabList = fetchVocab()
+    }
+
     func updateVocabEnglishTranslation(word: String, englishTranslation: String) {
         let clean = word.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !clean.isEmpty, !englishTranslation.isEmpty else { return }

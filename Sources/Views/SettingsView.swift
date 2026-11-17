@@ -158,13 +158,8 @@ struct SettingsView: View {
                                         let previewPalette = AppThemePalette.resolve(mode: mode, systemScheme: systemScheme)
                                         let selected = store.settings.themeMode == mode
                                         Button {
-                                            withAnimation(AppMotion.panelSpring) {
-                                                store.settings.themeMode = mode
-                                                store.settings.readerBgColorHex = -1
-                                                store.settings.readerFocusColorHex = -1
-                                                store.settings.readerBottomBgColorHex = -1
-                                                store.settings.readerSentenceCardColorHex = -1
-                                                store.settings.readerWordCardColorHex = -1
+                                            withAnimation(.easeInOut(duration: 0.24)) {
+                                                store.applyThemeMode(mode)
                                             }
                                         } label: {
                                             HStack(spacing: 6) {
@@ -499,7 +494,7 @@ struct SettingsView: View {
                         GlassGroupedCard(index: 3, count: 6, outerRadius: 22, innerRadius: 6) {
                             settingsGroupSection(
                                 title: "词库与翻译引擎",
-                                subtitle: "整句：\(engineLabel) · 词库 · Apple 离线翻译",
+                                subtitle: "Apple 原生查词/翻译 · 整句：\(engineLabel)",
                                 systemImage: "character.book.closed",
                                 expanded: $dictSectionExpanded
                             ) {
@@ -509,189 +504,26 @@ struct SettingsView: View {
                                 let ecdictState = translationService.ecdictState
                                 let chineseState = translationService.chineseDictState
 
-                                // 3.1 ECDICT 英文词库
+                                // 3.1 Apple 系统原生翻译（单词查词 + 整句双向翻译）
                                 VStack(alignment: .leading, spacing: 8) {
                                     HStack {
-                                        Text("开源英汉词库 (ECDICT)")
+                                        Text("Apple 原生翻译（单词查词 + 整句翻译）")
                                             .font(.subheadline.weight(.semibold))
                                         Spacer()
                                         MinimalTagPill(
-                                            text: isEnglishDownloaded ? "已下载" : "未下载",
-                                            tintColor: isEnglishDownloaded ? palette.accent.opacity(0.16) : nil,
-                                            textColor: isEnglishDownloaded ? palette.accent : .secondary
-                                        )
-                                    }
-                                    Text(
-                                        ecdictState.message ?? (
-                                            isEnglishDownloaded
-                                                ? "已下载 · 本地英文词库 \(englishCount) 词（总词库 \(db.dictionaryCount) 词）"
-                                                : "未下载完整词库（当前仅含内置基础 \(englishCount) 词）"
-                                        )
-                                    )
-                                    .font(.caption)
-                                    .foregroundStyle(ecdictState.isError ? .red : .secondary)
-
-                                    if ecdictState.isDownloading {
-                                        ProgressView()
-                                            .progressViewStyle(.linear)
-                                    }
-
-                                    if isEnglishDownloaded {
-                                        HStack(spacing: 8) {
-                                            Button {
-                                                translationService.startEcdictDownload(db: db)
-                                            } label: {
-                                                Label(
-                                                    ecdictState.isDownloading ? "正在更新..." : "已下载 · 重下",
-                                                    systemImage: "checkmark.circle.fill"
-                                                )
-                                                .frame(maxWidth: .infinity)
-                                            }
-                                            .buttonStyle(.bordered)
-                                            .disabled(ecdictState.isDownloading || isDeletingDict)
-
-                                            Button(role: .destructive) {
-                                                pendingDelete = .english
-                                            } label: {
-                                                Label("删除", systemImage: "trash")
-                                            }
-                                            .buttonStyle(.bordered)
-                                            .disabled(ecdictState.isDownloading || isDeletingDict)
-                                        }
-                                    } else {
-                                        Button {
-                                            translationService.startEcdictDownload(db: db)
-                                        } label: {
-                                            Text(ecdictState.isDownloading ? "正在后台下载英文词库..." : "一键下载完整开源英汉词库 (ECDICT)")
-                                                .frame(maxWidth: .infinity)
-                                        }
-                                        .buttonStyle(.borderedProminent)
-                                        .tint(palette.accent)
-                                        .disabled(ecdictState.isDownloading || isDeletingDict)
-                                    }
-                                }
-
-                                Divider()
-
-                                // 3.2 汉语词典
-                                VStack(alignment: .leading, spacing: 8) {
-                                    HStack {
-                                        Text("汉语词典（新华字典+成语+词语）")
-                                            .font(.subheadline.weight(.semibold))
-                                        Spacer()
-                                        MinimalTagPill(
-                                            text: isChineseDownloaded ? "已下载" : "未下载",
-                                            tintColor: isChineseDownloaded ? palette.accent.opacity(0.16) : nil,
-                                            textColor: isChineseDownloaded ? palette.accent : .secondary
-                                        )
-                                    }
-                                    Text(
-                                        chineseState.message ?? (
-                                            isChineseDownloaded
-                                                ? "已下载 · 本地中文词典 \(db.chineseDictionaryCount) 词"
-                                                : "未下载完整词典（当前仅含内置基础 \(db.chineseDictionaryCount) 词）"
-                                        )
-                                    )
-                                    .font(.caption)
-                                    .foregroundStyle(chineseState.isError ? .red : .secondary)
-
-                                    if chineseState.isDownloading {
-                                        ProgressView()
-                                            .progressViewStyle(.linear)
-                                    }
-
-                                    if isChineseDownloaded {
-                                        HStack(spacing: 8) {
-                                            Button {
-                                                translationService.startChineseDictDownload(db: db)
-                                            } label: {
-                                                Label(
-                                                    chineseState.isDownloading ? "正在更新..." : "已下载 · 重下",
-                                                    systemImage: "checkmark.circle.fill"
-                                                )
-                                                .frame(maxWidth: .infinity)
-                                            }
-                                            .buttonStyle(.bordered)
-                                            .disabled(chineseState.isDownloading || isDeletingDict)
-
-                                            Button(role: .destructive) {
-                                                pendingDelete = .chinese
-                                            } label: {
-                                                Label("删除", systemImage: "trash")
-                                            }
-                                            .buttonStyle(.bordered)
-                                            .disabled(chineseState.isDownloading || isDeletingDict)
-                                        }
-                                    } else {
-                                        Button {
-                                            translationService.startChineseDictDownload(db: db)
-                                        } label: {
-                                            Text(chineseState.isDownloading ? "正在后台下载中文词典..." : "一键下载完整汉语词典（新华字典+成语+词语）")
-                                                .frame(maxWidth: .infinity)
-                                        }
-                                        .buttonStyle(.borderedProminent)
-                                        .tint(palette.accent)
-                                        .disabled(chineseState.isDownloading || isDeletingDict)
-                                    }
-                                }
-
-                                Divider()
-
-                                // 3.3 整句翻译引擎 & 阅读交互开关
-                                VStack(alignment: .leading, spacing: 10) {
-                                    Text("整句翻译引擎")
-                                        .font(.subheadline.weight(.semibold))
-
-                                    GlassSegmentedControl(
-                                        options: [
-                                            ("auto", "智能"),
-                                            ("ai", "AI"),
-                                            ("online", "在线"),
-                                            ("apple", "离线")
-                                        ],
-                                        selection: Binding(
-                                            get: {
-                                                store.settings.sentenceTranslateEngine == "offline"
-                                                    ? "apple"
-                                                    : store.settings.sentenceTranslateEngine
-                                            },
-                                            set: { store.settings.sentenceTranslateEngine = $0 }
-                                        ),
-                                        compact: true
-                                    )
-
-                                    Text(engineDescription(store.settings.sentenceTranslateEngine))
-                                        .font(.caption)
-                                        .foregroundStyle(.secondary)
-
-                                    Toggle("自动翻译当前焦点句", isOn: $store.settings.autoTranslateSentence)
-                                        .font(.subheadline)
-                                    Toggle("正文中对已查单词显示底部虚线", isOn: $store.settings.underlineLookedUpWords)
-                                        .font(.subheadline)
-                                }
-
-                                Divider()
-
-                                // 3.4 Apple 系统离线翻译（英汉双向）
-                                VStack(alignment: .leading, spacing: 8) {
-                                    HStack {
-                                        Text("Apple 系统离线翻译（英汉双向）")
-                                            .font(.subheadline.weight(.semibold))
-                                        Spacer()
-                                        MinimalTagPill(
-                                            text: "iOS 18 原生",
+                                            text: "已直接接入",
                                             tintColor: palette.accent.opacity(0.16),
                                             textColor: palette.accent
                                         )
                                     }
 
-                                    Text("直接使用 Apple 系统内置离线翻译引擎，无需下载第三方大模型；可提前预下载系统语言包以支持完全断网翻译。")
+                                    Text("阅读时点按任意英文或中文单词，已直接调用 Apple 系统内置翻译引擎实时获取释义并自动缓存（无需必须下载第三方词库）。预下载系统语言包后支持完全断网查词与翻译。")
                                         .font(.caption)
                                         .foregroundStyle(.secondary)
 
                                     VStack(spacing: 6) {
                                         HStack {
-                                            Text("英译中语言包")
+                                            Text("英译中语言包（英文查词 / 整句）")
                                                 .font(.caption)
                                             Spacer()
                                             Text(en2zhStatus)
@@ -699,7 +531,7 @@ struct SettingsView: View {
                                                 .foregroundStyle(en2zhStatus.contains("已安装") ? palette.accent : .secondary)
                                         }
                                         HStack {
-                                            Text("中译英语言包")
+                                            Text("中译英语言包（中文查词 / 整句）")
                                                 .font(.caption)
                                             Spacer()
                                             Text(zh2enStatus)
@@ -737,6 +569,167 @@ struct SettingsView: View {
                                         Text(appleStatusMsg)
                                             .font(.caption)
                                             .foregroundStyle(appleStatusIsError ? .red : palette.accent)
+                                    }
+                                }
+
+                                Divider()
+
+                                // 3.2 整句翻译引擎 & 阅读交互开关
+                                VStack(alignment: .leading, spacing: 10) {
+                                    Text("整句翻译引擎")
+                                        .font(.subheadline.weight(.semibold))
+
+                                    GlassSegmentedControl(
+                                        options: [
+                                            ("auto", "智能"),
+                                            ("ai", "AI"),
+                                            ("online", "在线"),
+                                            ("apple", "离线")
+                                        ],
+                                        selection: Binding(
+                                            get: {
+                                                store.settings.sentenceTranslateEngine == "offline"
+                                                    ? "apple"
+                                                    : store.settings.sentenceTranslateEngine
+                                            },
+                                            set: { store.settings.sentenceTranslateEngine = $0 }
+                                        ),
+                                        compact: true
+                                    )
+
+                                    Text(engineDescription(store.settings.sentenceTranslateEngine))
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+
+                                    Toggle("自动翻译当前焦点句", isOn: $store.settings.autoTranslateSentence)
+                                        .font(.subheadline)
+                                    Toggle("正文中对已查单词显示底部虚线", isOn: $store.settings.underlineLookedUpWords)
+                                        .font(.subheadline)
+                                }
+
+                                Divider()
+
+                                // 3.3 可选扩展：ECDICT 英文词库
+                                VStack(alignment: .leading, spacing: 8) {
+                                    HStack {
+                                        Text("可选增强：开源英汉词库 (ECDICT)")
+                                            .font(.subheadline.weight(.semibold))
+                                        Spacer()
+                                        MinimalTagPill(
+                                            text: isEnglishDownloaded ? "已下载" : "可选",
+                                            tintColor: isEnglishDownloaded ? palette.accent.opacity(0.16) : nil,
+                                            textColor: isEnglishDownloaded ? palette.accent : .secondary
+                                        )
+                                    }
+                                    Text(
+                                        ecdictState.message ?? (
+                                            isEnglishDownloaded
+                                                ? "已下载 · 本地英文词库 \(englishCount) 词（提供音标与多词性详尽释义）"
+                                                : "未下载时自动使用 Apple 原生翻译查词；下载后可额外提供离线音标与多词性词典释义"
+                                        )
+                                    )
+                                    .font(.caption)
+                                    .foregroundStyle(ecdictState.isError ? .red : .secondary)
+
+                                    if ecdictState.isDownloading {
+                                        ProgressView()
+                                            .progressViewStyle(.linear)
+                                    }
+
+                                    if isEnglishDownloaded {
+                                        HStack(spacing: 8) {
+                                            Button {
+                                                translationService.startEcdictDownload(db: db)
+                                            } label: {
+                                                Label(
+                                                    ecdictState.isDownloading ? "正在更新..." : "已下载 · 重下",
+                                                    systemImage: "checkmark.circle.fill"
+                                                )
+                                                .frame(maxWidth: .infinity)
+                                            }
+                                            .buttonStyle(.bordered)
+                                            .disabled(ecdictState.isDownloading || isDeletingDict)
+
+                                            Button(role: .destructive) {
+                                                pendingDelete = .english
+                                            } label: {
+                                                Label("删除", systemImage: "trash")
+                                            }
+                                            .buttonStyle(.bordered)
+                                            .disabled(ecdictState.isDownloading || isDeletingDict)
+                                        }
+                                    } else {
+                                        Button {
+                                            translationService.startEcdictDownload(db: db)
+                                        } label: {
+                                            Text(ecdictState.isDownloading ? "正在后台下载英文词库..." : "下载完整开源英汉词库 (ECDICT)")
+                                                .frame(maxWidth: .infinity)
+                                        }
+                                        .buttonStyle(.bordered)
+                                        .disabled(ecdictState.isDownloading || isDeletingDict)
+                                    }
+                                }
+
+                                Divider()
+
+                                // 3.4 汉语词典
+                                VStack(alignment: .leading, spacing: 8) {
+                                    HStack {
+                                        Text("可选增强：汉语词典（新华字典+成语+词语）")
+                                            .font(.subheadline.weight(.semibold))
+                                        Spacer()
+                                        MinimalTagPill(
+                                            text: isChineseDownloaded ? "已下载" : "可选",
+                                            tintColor: isChineseDownloaded ? palette.accent.opacity(0.16) : nil,
+                                            textColor: isChineseDownloaded ? palette.accent : .secondary
+                                        )
+                                    }
+                                    Text(
+                                        chineseState.message ?? (
+                                            isChineseDownloaded
+                                                ? "已下载 · 本地中文词典 \(db.chineseDictionaryCount) 词"
+                                                : "未下载完整词典（当前含内置基础 \(db.chineseDictionaryCount) 词，查词支持 Apple 中译英）"
+                                        )
+                                    )
+                                    .font(.caption)
+                                    .foregroundStyle(chineseState.isError ? .red : .secondary)
+
+                                    if chineseState.isDownloading {
+                                        ProgressView()
+                                            .progressViewStyle(.linear)
+                                    }
+
+                                    if isChineseDownloaded {
+                                        HStack(spacing: 8) {
+                                            Button {
+                                                translationService.startChineseDictDownload(db: db)
+                                            } label: {
+                                                Label(
+                                                    chineseState.isDownloading ? "正在更新..." : "已下载 · 重下",
+                                                    systemImage: "checkmark.circle.fill"
+                                                )
+                                                .frame(maxWidth: .infinity)
+                                            }
+                                            .buttonStyle(.bordered)
+                                            .disabled(chineseState.isDownloading || isDeletingDict)
+
+                                            Button(role: .destructive) {
+                                                pendingDelete = .chinese
+                                            } label: {
+                                                Label("删除", systemImage: "trash")
+                                            }
+                                            .buttonStyle(.bordered)
+                                            .disabled(chineseState.isDownloading || isDeletingDict)
+                                        }
+                                    } else {
+                                        Button {
+                                            translationService.startChineseDictDownload(db: db)
+                                        } label: {
+                                            Text(chineseState.isDownloading ? "正在后台下载中文词典..." : "下载完整汉语词典（新华字典+成语+词语）")
+                                                .frame(maxWidth: .infinity)
+                                        }
+                                        .buttonStyle(.bordered)
+                                        .disabled(chineseState.isDownloading || isDeletingDict)
                                     }
                                 }
                             }

@@ -8,7 +8,9 @@ struct WordCardState: Equatable {
     let word: String
     let lemma: String
     let phonetic: String
-    let translation: String
+    var translation: String
+    var translationLoading: Bool = false
+    var translationSource: String = ""
     var englishTranslation: String
     var englishLoading: Bool
     var lookupCount: Int
@@ -1040,6 +1042,14 @@ struct ReaderView: View {
                         )
                     }
 
+                    if !card.translationSource.isEmpty {
+                        MinimalTagPill(
+                            text: card.translationSource,
+                            tintColor: wordCardTextColor.opacity(0.07),
+                            textColor: wordCardSecondaryColor
+                        )
+                    }
+
                     Spacer()
 
                     if !settings.autoAiAnalyze {
@@ -1097,18 +1107,28 @@ struct ReaderView: View {
                     .background(wordCardTextColor.opacity(0.06), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
                 }
 
-                // Primary translation
-                Text(formattedTrans)
-                    .font(.subheadline)
-                    .lineSpacing(3)
-                    .foregroundStyle(wordCardTextColor)
-                    .lineLimit(wordDefExpanded ? nil : 4)
-                    .textSelection(.enabled)
-                    .onTapGesture {
-                        withAnimation(AppMotion.panelSpring) {
-                            wordDefExpanded.toggle()
-                        }
+                // Primary translation (Local dictionary or Apple System Translation)
+                if card.translationLoading && formattedTrans.isEmpty {
+                    HStack(spacing: 8) {
+                        ProgressView().controlSize(.small)
+                        Text("正在通过 Apple 翻译查询释义...")
+                            .font(.caption)
+                            .foregroundStyle(wordCardSecondaryColor)
                     }
+                    .padding(.vertical, 4)
+                } else if !formattedTrans.isEmpty {
+                    Text(formattedTrans)
+                        .font(.subheadline)
+                        .lineSpacing(3)
+                        .foregroundStyle(wordCardTextColor)
+                        .lineLimit(wordDefExpanded ? nil : 4)
+                        .textSelection(.enabled)
+                        .onTapGesture {
+                            withAnimation(AppMotion.panelSpring) {
+                                wordDefExpanded.toggle()
+                            }
+                        }
+                }
 
                 if formattedTrans.count > 120 {
                     Button(wordDefExpanded ? "收起" : "展开全部") {
@@ -1465,6 +1485,7 @@ struct ReaderView: View {
         lastInteractionDate = Date()
 
         let hit = db.lookupDictionary(word: clean)
+        let hasLocalDict = hit.found && !TranslationService.isDictionaryPlaceholder(hit.translation)
         let contextSent = unit.parentSentence.isEmpty ? unit.text : unit.parentSentence
         let existing = db.vocabList.first(where: { $0.word == clean })
         let isSaved = existing != nil
@@ -1475,13 +1496,23 @@ struct ReaderView: View {
                ?? (existing?.englishTranslation.isEmpty == false ? existing?.englishTranslation : nil))
             : nil
 
+        let initialTrans: String = {
+            if hasLocalDict { return hit.translation }
+            if let existingTrans = existing?.translation, !TranslationService.isDictionaryPlaceholder(existingTrans) {
+                return existingTrans
+            }
+            return ""
+        }()
+
         wordDefExpanded = false
         withAnimation(AppMotion.cardSpring) {
             wordCard = WordCardState(
                 word: clean,
                 lemma: hit.lemma,
                 phonetic: hit.phonetic,
-                translation: hit.translation,
+                translation: initialTrans,
+                translationLoading: !isCjk && initialTrans.isEmpty,
+                translationSource: hasLocalDict ? "本地词库" : (initialTrans.isEmpty ? "Apple 翻译" : "Apple 翻译"),
                 englishTranslation: cachedEn ?? "",
                 englishLoading: isCjk ? (cachedEn == nil) : true,
                 lookupCount: nextLookupCount,
@@ -1496,7 +1527,7 @@ struct ReaderView: View {
                 word: clean,
                 lemma: hit.lemma,
                 phonetic: hit.phonetic,
-                translation: hit.translation,
+                translation: initialTrans,
                 englishTranslation: cachedEn ?? "",
                 contextSentence: contextSent,
                 contextTranslation: TranslationService.isErrorPlaceholder(sentenceTranslation) ? "" : sentenceTranslation,
@@ -1510,7 +1541,7 @@ struct ReaderView: View {
             db.recordReadingLog(bookId: book.id, bookTitle: book.title, deltaSeconds: 0, unitsDelta: 0, lookupsDelta: 1)
         }
 
-        // Fetch bilingual English translation or English dictionary definition
+        // Fetch Apple native translation & English definition
         Task {
             if isCjk {
                 if cachedEn == nil {
@@ -1521,15 +1552,53 @@ struct ReaderView: View {
                             try await appleBridge.translate(text, toEnglish: toEn)
                         }
                     )
-                    if let enRes, !enRes.isEmpty, isSaved {
-                        db.updateVocabEnglishTranslation(word: clean, englishTranslation: enRes)
+                    if let enRes, !enRes.isEmpty {
+                        if wordCard?.word == clean && wordCard?.isSaved == true {
+                            db.updateVocabEnglishTranslation(word: clean, englishTranslation: enRes)
+                            if !hasLocalDict {
+                                db.updateVocabTranslation(word: clean, translation: enRes)
+                            }
+                        }
                     }
                     if wordCard?.word == clean {
                         wordCard?.englishTranslation = enRes ?? ""
                         wordCard?.englishLoading = false
+                        if !hasLocalDict, let enRes, !enRes.isEmpty {
+                            wordCard?.translation = enRes
+                        } else if !hasLocalDict {
+                            wordCard?.translation = hit.translation
+                        }
                     }
+                } else if !hasLocalDict, let cachedEn, wordCard?.word == clean {
+                    wordCard?.translation = cachedEn
                 }
             } else {
+                // If not in local dictionary, translate directly via Apple System Translation
+                if !hasLocalDict {
+                    let appleRes = await TranslationService.translateWordToChinese(
+                        word: clean,
+                        lemma: hit.lemma,
+                        phonetic: hit.phonetic,
+                        db: db,
+                        appleTranslator: { text, toEn in
+                            try await appleBridge.translate(text, toEnglish: toEn)
+                        }
+                    )
+                    if wordCard?.word == clean {
+                        if let appleRes, !appleRes.text.isEmpty {
+                            wordCard?.translation = appleRes.text
+                            wordCard?.translationSource = appleRes.source
+                            wordCard?.translationLoading = false
+                            if wordCard?.isSaved == true {
+                                db.updateVocabTranslation(word: clean, translation: appleRes.text)
+                            }
+                        } else {
+                            wordCard?.translation = hit.translation
+                            wordCard?.translationLoading = false
+                        }
+                    }
+                }
+
                 let enDef = await TranslationService.fetchEnglishDefinition(for: hit.lemma)
                 if wordCard?.word == clean {
                     wordCard?.englishTranslation = enDef ?? ""

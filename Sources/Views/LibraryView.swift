@@ -457,7 +457,7 @@ struct LibraryView: View {
                 localShelfView
             } else {
                 OpdsOnlineLibraryPane(
-                    heroTopSpacerHeight: heroCollapseDelta,
+                    heroTopSpacerHeight: isHeroCollapsed ? 0 : heroCollapseDelta,
                     emptyTopPadding: isHeroCollapsed ? 0 : heroCollapseDelta,
                     onScrollOffsetChange: { offset in
                         updateScrollOffset(offset, forTab: 1)
@@ -479,13 +479,13 @@ struct LibraryView: View {
 
         if !isHeroCollapsed {
             if let anchor = heroExpandedAtOffset {
-                if newOffset > anchor + 22 || newOffset < anchor - 40 {
+                if newOffset > anchor + 16 || newOffset < anchor - 36 {
                     setHeroCollapsed(true)
                 }
-            } else if newOffset > 24 {
+            } else if newOffset > 14 {
                 setHeroCollapsed(true)
             }
-        } else if newOffset <= 8 {
+        } else if newOffset < -20 {
             setHeroCollapsed(false)
         }
     }
@@ -563,7 +563,16 @@ struct LibraryView: View {
                                     }
                                     .padding(.leading, 10)
                                     .padding(.bottom, 4)
-                                    .transition(.opacity)
+                                    .transition(
+                                        .asymmetric(
+                                            insertion: .opacity
+                                                .combined(with: .scale(scale: 0.96, anchor: .top))
+                                                .combined(with: .offset(y: -8)),
+                                            removal: .opacity
+                                                .combined(with: .scale(scale: 0.97, anchor: .top))
+                                                .combined(with: .offset(y: -6))
+                                        )
+                                    )
                                 }
                             } header: {
                                 FolderHeaderGlassCard(
@@ -574,7 +583,7 @@ struct LibraryView: View {
                                     count: db.folders.count,
                                     onToggleExpand: {
                                         let willCollapse = isExpanded
-                                        withAnimation(.spring(response: 0.28, dampingFraction: 0.96)) {
+                                        withAnimation(AppMotion.panelSpring) {
                                             if willCollapse {
                                                 _ = expandedFolderIds.remove(folder.id)
                                             } else {
@@ -582,13 +591,13 @@ struct LibraryView: View {
                                             }
                                         }
                                         if willCollapse {
-                                            withAnimation(.spring(response: 0.28, dampingFraction: 0.96)) {
+                                            withAnimation(AppMotion.panelSpring) {
                                                 scrollProxy.scrollTo("folder_\(folder.id)", anchor: .top)
                                             }
                                         }
                                     },
                                     onImportHere: {
-                                        withAnimation(.spring(response: 0.28, dampingFraction: 0.96)) {
+                                        withAnimation(AppMotion.panelSpring) {
                                             _ = expandedFolderIds.insert(folder.id)
                                         }
                                         importTargetFolderId = folder.id
@@ -626,10 +635,21 @@ struct LibraryView: View {
                         }
                     }
                     .padding(.horizontal, 16)
-                    .padding(.top, heroCollapseDelta + 4)
+                    .padding(.top, (isHeroCollapsed ? 0 : heroCollapseDelta) + 4)
                     .padding(.bottom, 12)
                 }
                 .scrollBounceBehavior(.always)
+                .simultaneousGesture(
+                    DragGesture(minimumDistance: 20)
+                        .onEnded { value in
+                            guard abs(value.translation.height) > abs(value.translation.width) * 1.35 else { return }
+                            if value.translation.height < -22 && !isHeroCollapsed {
+                                setHeroCollapsed(true)
+                            } else if value.translation.height > 26 && isHeroCollapsed && localScrollOffset <= 4 {
+                                setHeroCollapsed(false)
+                            }
+                        }
+                )
                 .onScrollGeometryChange(for: CGFloat.self) { geo in
                     geo.contentOffset.y + geo.contentInsets.top
                 } action: { _, newOffset in
