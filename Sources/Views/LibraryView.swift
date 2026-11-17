@@ -65,6 +65,7 @@ struct LibraryView: View {
     @State private var heroPageIndex = 0
     @State private var collectionTab = 0 // 0 = 本地藏书, 1 = 在线书库
     @State private var expandedFolderIds: Set<Int64> = []
+    @State private var expandedFolderFrames: [Int64: CGRect] = [:]
     @State private var isHeroCollapsed = false
     @State private var lastHeroCollapseToggle: Date = .distantPast
     @State private var heroExpandedAtOffset: CGFloat? = nil
@@ -231,8 +232,19 @@ struct LibraryView: View {
                 }
             }
             .onChange(of: db.folders.map(\.id)) { _, validIds in
-                expandedFolderIds = expandedFolderIds.intersection(Set(validIds))
+                let validSet = Set(validIds)
+                expandedFolderIds = expandedFolderIds.intersection(validSet)
+                expandedFolderFrames = expandedFolderFrames.filter { validSet.contains($0.key) }
             }
+    }
+
+    private var pinnedExpandedFolder: (folder: BookFolder, idx: Int, minY: CGFloat, maxY: CGFloat)? {
+        for (idx, folder) in db.folders.enumerated() where expandedFolderIds.contains(folder.id) {
+            if let rect = expandedFolderFrames[folder.id], rect.minY < -1, rect.maxY > 56 {
+                return (folder, idx, rect.minY, rect.maxY)
+            }
+        }
+        return nil
     }
 
     private var hasRecentBooks: Bool {
@@ -529,132 +541,162 @@ struct LibraryView: View {
             .padding(24)
             .padding(.top, isHeroCollapsed ? 0 : heroCollapseDelta)
         } else {
-            ScrollViewReader { scrollProxy in
-                ScrollView {
-                    LazyVStack(spacing: 0, pinnedViews: [.sectionHeaders]) {
+            ScrollView {
+                VStack(spacing: 4) {
+                    // Folders (pure VStack: zero LazyVStack off-screen cell creation jump when scrolling)
+                    ForEach(Array(db.folders.enumerated()), id: \.element.id) { idx, folder in
+                        let folderBooks = folderBooksMap[folder.id] ?? []
+                        let isExpanded = expandedFolderIds.contains(folder.id)
 
-                        // Folders (sticky section headers stay pinned cleanly below sectionHeaderBar when expanded)
-                        ForEach(Array(db.folders.enumerated()), id: \.element.id) { idx, folder in
-                            let folderBooks = folderBooksMap[folder.id] ?? []
-                            let isExpanded = expandedFolderIds.contains(folder.id)
-
-                            Section {
-                                if isExpanded {
-                                    VStack(spacing: 4) {
-                                        if folderBooks.isEmpty {
-                                            GlassCard(cornerRadius: 14) {
-                                                Text("此文件夹暂无书籍，可点击右上角菜单导入或添加")
-                                                    .font(.caption)
-                                                    .foregroundStyle(.secondary)
-                                                    .frame(maxWidth: .infinity)
-                                                    .padding(.vertical, 12)
-                                                    .padding(.horizontal, 12)
-                                            }
+                        VStack(spacing: 4) {
+                            FolderHeaderGlassCard(
+                                folder: folder,
+                                bookCount: folderBooks.count,
+                                isExpanded: isExpanded,
+                                index: idx,
+                                count: db.folders.count,
+                                onToggleExpand: {
+                                    withAnimation(AppMotion.panelSpring) {
+                                        if isExpanded {
+                                            _ = expandedFolderIds.remove(folder.id)
+                                            expandedFolderFrames.removeValue(forKey: folder.id)
                                         } else {
-                                            ForEach(Array(folderBooks.enumerated()), id: \.element.id) { bIdx, book in
-                                                shelfBookRow(
-                                                    book: book,
-                                                    index: bIdx,
-                                                    count: folderBooks.count,
-                                                    inFolder: true
-                                                )
-                                            }
-                                        }
-                                    }
-                                    .padding(.leading, 10)
-                                    .padding(.bottom, 4)
-                                    .transition(
-                                        .asymmetric(
-                                            insertion: .opacity
-                                                .combined(with: .scale(scale: 0.96, anchor: .top))
-                                                .combined(with: .offset(y: -8)),
-                                            removal: .opacity
-                                                .combined(with: .scale(scale: 0.97, anchor: .top))
-                                                .combined(with: .offset(y: -6))
-                                        )
-                                    )
-                                }
-                            } header: {
-                                FolderHeaderGlassCard(
-                                    folder: folder,
-                                    bookCount: folderBooks.count,
-                                    isExpanded: isExpanded,
-                                    index: idx,
-                                    count: db.folders.count,
-                                    onToggleExpand: {
-                                        let willCollapse = isExpanded
-                                        withAnimation(AppMotion.panelSpring) {
-                                            if willCollapse {
-                                                _ = expandedFolderIds.remove(folder.id)
-                                            } else {
-                                                _ = expandedFolderIds.insert(folder.id)
-                                            }
-                                        }
-                                        if willCollapse {
-                                            withAnimation(AppMotion.panelSpring) {
-                                                scrollProxy.scrollTo("folder_\(folder.id)", anchor: .top)
-                                            }
-                                        }
-                                    },
-                                    onImportHere: {
-                                        withAnimation(AppMotion.panelSpring) {
                                             _ = expandedFolderIds.insert(folder.id)
                                         }
-                                        importTargetFolderId = folder.id
-                                        showFileImporter = true
-                                    },
-                                    onAddExistingBooks: {
-                                        activeSheet = .addBooksToFolder(folder)
-                                    },
-                                    onRename: {
-                                        folderModal = .renameFolder(folder)
-                                    },
-                                    onDeleteFolder: {
-                                        deletingFolder = folder
                                     }
+                                },
+                                onImportHere: {
+                                    withAnimation(AppMotion.panelSpring) {
+                                        _ = expandedFolderIds.insert(folder.id)
+                                    }
+                                    importTargetFolderId = folder.id
+                                    showFileImporter = true
+                                },
+                                onAddExistingBooks: {
+                                    activeSheet = .addBooksToFolder(folder)
+                                },
+                                onRename: {
+                                    folderModal = .renameFolder(folder)
+                                },
+                                onDeleteFolder: {
+                                    deletingFolder = folder
+                                }
+                            )
+
+                            if isExpanded {
+                                VStack(spacing: 4) {
+                                    if folderBooks.isEmpty {
+                                        GlassCard(cornerRadius: 14) {
+                                            Text("此文件夹暂无书籍，可点击右上角菜单导入或添加")
+                                                .font(.caption)
+                                                .foregroundStyle(.secondary)
+                                                .frame(maxWidth: .infinity)
+                                                .padding(.vertical, 12)
+                                                .padding(.horizontal, 12)
+                                        }
+                                    } else {
+                                        ForEach(Array(folderBooks.enumerated()), id: \.element.id) { bIdx, book in
+                                            shelfBookRow(
+                                                book: book,
+                                                index: bIdx,
+                                                count: folderBooks.count,
+                                                inFolder: true
+                                            )
+                                        }
+                                    }
+                                }
+                                .padding(.leading, 10)
+                                .transition(
+                                    .asymmetric(
+                                        insertion: .opacity
+                                            .combined(with: .scale(scale: 0.96, anchor: .top))
+                                            .combined(with: .offset(y: -8)),
+                                        removal: .opacity
+                                            .combined(with: .scale(scale: 0.97, anchor: .top))
+                                            .combined(with: .offset(y: -6))
+                                    )
                                 )
-                                .id("folder_\(folder.id)")
-                                .padding(.bottom, 4)
                             }
                         }
-
-                        // Root Books in a separate headerless Section so expanded folders unpin before root books
-                        if !rootShelfBooks.isEmpty {
-                            Section {
-                                ForEach(Array(rootShelfBooks.enumerated()), id: \.element.id) { idx, book in
-                                    shelfBookRow(
-                                        book: book,
-                                        index: idx,
-                                        count: rootShelfBooks.count,
-                                        inFolder: false
-                                    )
-                                    .padding(.top, idx == 0 && !db.folders.isEmpty ? 4 : 0)
-                                    .padding(.bottom, 4)
-                                }
+                        .onGeometryChange(for: CGRect.self) { proxy in
+                            proxy.frame(in: .named("localShelfScroll"))
+                        } action: { newRect in
+                            if isExpanded {
+                                expandedFolderFrames[folder.id] = newRect
+                            } else if expandedFolderFrames[folder.id] != nil {
+                                expandedFolderFrames.removeValue(forKey: folder.id)
                             }
                         }
                     }
-                    .padding(.horizontal, 16)
-                    .padding(.top, (isHeroCollapsed ? 0 : heroCollapseDelta) + 4)
-                    .padding(.bottom, 12)
-                }
-                .scrollBounceBehavior(.always)
-                .simultaneousGesture(
-                    DragGesture(minimumDistance: 20)
-                        .onEnded { value in
-                            guard abs(value.translation.height) > abs(value.translation.width) * 1.35 else { return }
-                            if value.translation.height < -22 && !isHeroCollapsed {
-                                setHeroCollapsed(true)
-                            } else if value.translation.height > 26 && isHeroCollapsed && localScrollOffset <= 4 {
-                                setHeroCollapsed(false)
-                            }
+
+                    // Root Books
+                    if !rootShelfBooks.isEmpty {
+                        ForEach(Array(rootShelfBooks.enumerated()), id: \.element.id) { idx, book in
+                            shelfBookRow(
+                                book: book,
+                                index: idx,
+                                count: rootShelfBooks.count,
+                                inFolder: false
+                            )
+                            .padding(.top, idx == 0 && !db.folders.isEmpty ? 4 : 0)
                         }
-                )
-                .onScrollGeometryChange(for: CGFloat.self) { geo in
-                    geo.contentOffset.y + geo.contentInsets.top
-                } action: { _, newOffset in
-                    updateScrollOffset(newOffset, forTab: 0)
+                    }
                 }
+                .padding(.horizontal, 16)
+                .padding(.top, (isHeroCollapsed ? 0 : heroCollapseDelta) + 4)
+                .padding(.bottom, 12)
+            }
+            .coordinateSpace(name: "localShelfScroll")
+            .overlay(alignment: .top) {
+                if let pinned = pinnedExpandedFolder {
+                    let folder = pinned.folder
+                    let folderBooks = folderBooksMap[folder.id] ?? []
+                    FolderHeaderGlassCard(
+                        folder: folder,
+                        bookCount: folderBooks.count,
+                        isExpanded: true,
+                        index: pinned.idx,
+                        count: db.folders.count,
+                        onToggleExpand: {
+                            withAnimation(AppMotion.panelSpring) {
+                                _ = expandedFolderIds.remove(folder.id)
+                                expandedFolderFrames.removeValue(forKey: folder.id)
+                            }
+                        },
+                        onImportHere: {
+                            importTargetFolderId = folder.id
+                            showFileImporter = true
+                        },
+                        onAddExistingBooks: {
+                            activeSheet = .addBooksToFolder(folder)
+                        },
+                        onRename: {
+                            folderModal = .renameFolder(folder)
+                        },
+                        onDeleteFolder: {
+                            deletingFolder = folder
+                        }
+                    )
+                    .padding(.horizontal, 16)
+                    .offset(y: min(0, pinned.maxY - 58))
+                }
+            }
+            .scrollBounceBehavior(.always)
+            .simultaneousGesture(
+                DragGesture(minimumDistance: 20)
+                    .onEnded { value in
+                        guard abs(value.translation.height) > abs(value.translation.width) * 1.35 else { return }
+                        if value.translation.height < -22 && !isHeroCollapsed {
+                            setHeroCollapsed(true)
+                        } else if value.translation.height > 26 && isHeroCollapsed && localScrollOffset <= 4 {
+                            setHeroCollapsed(false)
+                        }
+                    }
+            )
+            .onScrollGeometryChange(for: CGFloat.self) { geo in
+                geo.contentOffset.y + geo.contentInsets.top
+            } action: { _, newOffset in
+                updateScrollOffset(newOffset, forTab: 0)
             }
         }
     }
@@ -1642,7 +1684,7 @@ struct OpdsOnlineLibraryPane: View {
                 .padding(.top, emptyTopPadding)
             } else {
                 ScrollView {
-                    LazyVStack(spacing: 4) {
+                    VStack(spacing: 4) {
                         opdsControlsHeader
                             .padding(.top, 4)
                             .padding(.bottom, 4)

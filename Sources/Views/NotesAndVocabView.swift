@@ -1079,6 +1079,7 @@ private struct FlashcardDeckCard: View {
                         Text(card.translation.replacingOccurrences(of: #"\n{2,}"#, with: "\n", options: .regularExpression))
                             .font(.headline)
                             .lineSpacing(3)
+                            .minimumScaleFactor(0.82)
                             .multilineTextAlignment(.center)
                     }
                     if !card.contextTranslation.isEmpty {
@@ -1089,7 +1090,16 @@ private struct FlashcardDeckCard: View {
                     }
                 }
                 .padding(.top, 4)
-                .transition(AppMotion.panelTransition)
+                .transition(
+                    .asymmetric(
+                        insertion: .opacity
+                            .combined(with: .scale(scale: 0.94, anchor: .top))
+                            .combined(with: .offset(y: -8)),
+                        removal: .opacity
+                            .combined(with: .scale(scale: 0.95, anchor: .top))
+                            .combined(with: .offset(y: -6))
+                    )
+                )
             }
         }
         .padding(.horizontal, 22)
@@ -1103,26 +1113,14 @@ private struct FlashcardDeckCard: View {
 
     var body: some View {
         GlassCard(cornerRadius: 26, tintColor: flipped ? palette.accent.opacity(0.05) : nil) {
-            Group {
-                if flipped || sentenceExpanded {
-                    ViewThatFits(in: .vertical) {
-                        cardInnerContent
-                        ScrollView(showsIndicators: false) {
-                            cardInnerContent
-                        }
-                    }
-                } else {
-                    cardInnerContent
-                }
-            }
-            .frame(maxHeight: maxHeight)
-            .clipped()
+            cardInnerContent
+                .frame(maxHeight: maxHeight)
+                .clipped()
         }
         .contentShape(RoundedRectangle(cornerRadius: 26, style: .continuous))
         .onTapGesture {
             toggleFlip()
         }
-        .animation(AppMotion.panelSpring, value: flipped)
         .task(id: card.id) {
             await onResolveMissingTranslation(card)
         }
