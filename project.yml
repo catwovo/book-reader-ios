@@ -20,6 +20,12 @@ targets:
     dependencies:
       - sdk: libsqlite3.tbd
       - sdk: libz.tbd
+    info:
+      path: Info.plist
+      properties:
+        CFBundleDisplayName: 精读阅读器
+        NSAppTransportSecurity:
+          NSAllowsArbitraryLoads: true
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.tin.bookreader

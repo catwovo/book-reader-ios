@@ -16,13 +16,21 @@ struct BookItem: Identifiable, Hashable, Sendable {
     var currentChapter: Int
     var currentIndex: Int
     var totalItems: Int
+    var overallProgress: Float
     var readingSeconds: Int64
     var lastReadAt: Int64
     var folderId: Int64?
 
     var progressRatio: Double {
+        if overallProgress >= 0 {
+            return min(1.0, max(0.0, Double(overallProgress)))
+        }
         guard totalItems > 0 else { return 0 }
         return min(1.0, max(0.0, Double(currentIndex + 1) / Double(totalItems)))
+    }
+
+    var hasStartedReading: Bool {
+        readingSeconds > 0 || currentChapter > 0 || currentIndex > 0 || overallProgress > 0
     }
 }
 
@@ -38,7 +46,7 @@ struct VocabItem: Identifiable, Hashable, Sendable {
     var contextTranslation: String
     var bookId: Int64?
     var bookTitle: String
-    var familiarity: Int
+    var familiarity: Int // 0 = 生疏, 1 = 模糊, 2 = 掌握
     var createdAt: Int64
     var updatedAt: Int64
 }
@@ -48,9 +56,11 @@ struct SentenceNote: Identifiable, Hashable, Sendable {
     var bookId: Int64
     var bookTitle: String
     var chapterIndex: Int
+    var chapterTitle: String
     var unitIndex: Int
     var sentenceText: String
     var sentenceTranslation: String
+    var aiAnalysis: String
     var noteText: String
     var createdAt: Int64
     var updatedAt: Int64
@@ -90,6 +100,16 @@ struct DictionaryEntry: Hashable, Sendable {
     var translation: String
 }
 
+struct CacheStats: Hashable, Sendable {
+    var bookCacheBytes: Int64 = 0
+    var coverCacheBytes: Int64 = 0
+    var tempBytes: Int64 = 0
+
+    var totalBytes: Int64 {
+        bookCacheBytes + coverCacheBytes + tempBytes
+    }
+}
+
 enum StepMode: String, Codable, CaseIterable, Sendable {
     case sentence
     case line
@@ -103,65 +123,147 @@ enum StepMode: String, Codable, CaseIterable, Sendable {
 }
 
 enum AppThemeMode: String, Codable, CaseIterable, Sendable {
-    case system
+    case dynamic
     case light
     case dark
     case sepia
+    case sage
+    case slate
+    case amoled
+
+    init(from decoder: Decoder) throws {
+        let raw = try decoder.singleValueContainer().decode(String.self)
+        switch raw {
+        case "system", "dynamic": self = .dynamic
+        case "light": self = .light
+        case "dark": self = .dark
+        case "sepia": self = .sepia
+        case "sage": self = .sage
+        case "slate": self = .slate
+        case "amoled": self = .amoled
+        default: self = .dynamic
+        }
+    }
 
     var displayName: String {
         switch self {
-        case .system: return "跟随系统"
-        case .light: return "浅色"
-        case .dark: return "深色"
-        case .sepia: return "羊皮纸"
+        case .dynamic: return "随系统"
+        case .light: return "素净白"
+        case .dark: return "经典黑"
+        case .sepia: return "暖羊皮"
+        case .sage: return "护眼青"
+        case .slate: return "深海蓝"
+        case .amoled: return "纯黑夜"
+        }
+    }
+
+    var isDark: Bool {
+        switch self {
+        case .dark, .slate, .amoled: return true
+        case .dynamic, .light, .sepia, .sage: return false
         }
     }
 }
 
 enum StepSoundTrack: String, Codable, CaseIterable, Sendable {
     case off
-    case piano
-    case marimba
-    case chime
+    case canon
+    case twinkle
+    case fur_elise
+    case ode_to_joy
+
+    init(from decoder: Decoder) throws {
+        let raw = try decoder.singleValueContainer().decode(String.self)
+        switch raw {
+        case "off": self = .off
+        case "canon", "piano": self = .canon
+        case "twinkle", "marimba": self = .twinkle
+        case "fur_elise", "chime": self = .fur_elise
+        case "ode_to_joy": self = .ode_to_joy
+        default: self = .canon
+        }
+    }
 
     var displayName: String {
         switch self {
         case .off: return "关闭"
-        case .piano: return "轻柔钢琴"
-        case .marimba: return "清脆木琴"
-        case .chime: return "空灵风铃"
+        case .canon: return "卡农"
+        case .twinkle: return "小星星"
+        case .fur_elise: return "致爱丽丝"
+        case .ode_to_joy: return "欢乐颂"
+        }
+    }
+}
+
+enum StepHapticMode: String, Codable, CaseIterable, Sendable {
+    case single
+    case line
+
+    var displayName: String {
+        switch self {
+        case .single: return "单次"
+        case .line: return "随行数"
         }
     }
 }
 
 struct OpdsSource: Identifiable, Codable, Hashable, Sendable {
-    var id: UUID = UUID()
+    var id: String = UUID().uuidString
     var name: String
     var url: String
     var username: String = ""
     var password: String = ""
+
+    enum CodingKeys: String, CodingKey {
+        case id, name, url, username, password
+    }
+
+    init(id: String = UUID().uuidString, name: String, url: String, username: String = "", password: String = "") {
+        self.id = id
+        self.name = name
+        self.url = url
+        self.username = username
+        self.password = password
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        if let strId = try? c.decode(String.self, forKey: .id) {
+            self.id = strId
+        } else if let uuidId = try? c.decode(UUID.self, forKey: .id) {
+            self.id = uuidId.uuidString
+        } else {
+            self.id = UUID().uuidString
+        }
+        self.name = try c.decodeIfPresent(String.self, forKey: .name) ?? ""
+        self.url = try c.decodeIfPresent(String.self, forKey: .url) ?? ""
+        self.username = try c.decodeIfPresent(String.self, forKey: .username) ?? ""
+        self.password = try c.decodeIfPresent(String.self, forKey: .password) ?? ""
+    }
 }
 
 struct ReaderSettings: Codable, Equatable, Sendable {
     var visibleCount: Int = 3
     var stepMode: StepMode = .sentence
     var autoTranslateSentence: Bool = true
-    var sentenceTranslateEngine: String = "apple" // "apple" | "ai"
+    var sentenceTranslateEngine: String = "auto" // "auto" | "ai" | "online" | "apple"
     var autoAiAnalyze: Bool = false
     var underlineLookedUpWords: Bool = true
 
     // Layout & Typography
     var fontSize: Double = 20
-    var lineSpacingMultiplier: Double = 1.35
+    var lineSpacingMultiplier: Double = 1.2
     var readingPositionBias: Double = 0.0
     var readingZoneRatio: Double = 0.45
 
     // Step Feedback
-    var stepSoundTrack: StepSoundTrack = .off
-    var stepHapticLevel: Int = 1 // 0=off, 1=light, 2=medium, 3=heavy
+    var stepSoundTrack: StepSoundTrack = .canon
+    var stepNoteIntervalMs: Int = 240
+    var stepHapticLevel: Int = 1 // 0=off, 1=soft, 2=medium, 3=strong
+    var stepHapticMode: StepHapticMode = .single
 
-    // Theme & 5 Custom Reader Colors (-1 = default glass)
-    var themeMode: AppThemeMode = .system
+    // Theme & 5 Custom Reader Colors (-1 = default Liquid Glass / theme)
+    var themeMode: AppThemeMode = .dynamic
     var readerBgColorHex: Int64 = -1
     var readerFocusColorHex: Int64 = -1
     var readerBottomBgColorHex: Int64 = -1
@@ -174,30 +276,116 @@ struct ReaderSettings: Codable, Equatable, Sendable {
     var aiModel: String = "gpt-4o-mini"
     var aiSystemPrompt: String = "你是一个专业的英语精读助手。请用简洁清晰的中文，分析所给句子或词汇在当前语境中的含义、语法结构与核心用法。"
 
-    // OPDS & WebDAV
-    var opdsSources: [OpdsSource] = []
-    var activeOpdsSourceId: UUID? = nil
-    var opdsUrl: String = ""
-    var opdsUsername: String = ""
-    var opdsPassword: String = ""
+    // WebDAV
     var webdavUrl: String = ""
     var webdavUsername: String = ""
     var webdavPassword: String = ""
+
+    init() {}
+
+    enum CodingKeys: String, CodingKey {
+        case visibleCount, stepMode, autoTranslateSentence, sentenceTranslateEngine
+        case autoAiAnalyze, underlineLookedUpWords
+        case fontSize, lineSpacingMultiplier, readingPositionBias, readingZoneRatio
+        case stepSoundTrack, stepNoteIntervalMs, stepHapticLevel, stepHapticMode
+        case themeMode
+        case readerBgColorHex, readerFocusColorHex, readerBottomBgColorHex
+        case readerSentenceCardColorHex, readerWordCardColorHex
+        case aiBaseUrl, aiApiKey, aiModel, aiSystemPrompt
+        case webdavUrl, webdavUsername, webdavPassword
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        let d = ReaderSettings()
+        visibleCount = try c.decodeIfPresent(Int.self, forKey: .visibleCount) ?? d.visibleCount
+        stepMode = try c.decodeIfPresent(StepMode.self, forKey: .stepMode) ?? d.stepMode
+        autoTranslateSentence = try c.decodeIfPresent(Bool.self, forKey: .autoTranslateSentence) ?? d.autoTranslateSentence
+        let rawEngine = try c.decodeIfPresent(String.self, forKey: .sentenceTranslateEngine) ?? d.sentenceTranslateEngine
+        sentenceTranslateEngine = (rawEngine == "offline") ? "apple" : rawEngine
+        autoAiAnalyze = try c.decodeIfPresent(Bool.self, forKey: .autoAiAnalyze) ?? d.autoAiAnalyze
+        underlineLookedUpWords = try c.decodeIfPresent(Bool.self, forKey: .underlineLookedUpWords) ?? d.underlineLookedUpWords
+
+        fontSize = try c.decodeIfPresent(Double.self, forKey: .fontSize) ?? d.fontSize
+        lineSpacingMultiplier = min(1.8, max(1.0, try c.decodeIfPresent(Double.self, forKey: .lineSpacingMultiplier) ?? d.lineSpacingMultiplier))
+        readingPositionBias = min(1.0, max(0.0, try c.decodeIfPresent(Double.self, forKey: .readingPositionBias) ?? d.readingPositionBias))
+        readingZoneRatio = min(0.75, max(0.25, try c.decodeIfPresent(Double.self, forKey: .readingZoneRatio) ?? d.readingZoneRatio))
+
+        stepSoundTrack = try c.decodeIfPresent(StepSoundTrack.self, forKey: .stepSoundTrack) ?? d.stepSoundTrack
+        stepNoteIntervalMs = min(700, max(180, try c.decodeIfPresent(Int.self, forKey: .stepNoteIntervalMs) ?? d.stepNoteIntervalMs))
+        stepHapticLevel = min(3, max(0, try c.decodeIfPresent(Int.self, forKey: .stepHapticLevel) ?? d.stepHapticLevel))
+        stepHapticMode = try c.decodeIfPresent(StepHapticMode.self, forKey: .stepHapticMode) ?? d.stepHapticMode
+
+        themeMode = try c.decodeIfPresent(AppThemeMode.self, forKey: .themeMode) ?? d.themeMode
+        readerBgColorHex = try c.decodeIfPresent(Int64.self, forKey: .readerBgColorHex) ?? d.readerBgColorHex
+        readerFocusColorHex = try c.decodeIfPresent(Int64.self, forKey: .readerFocusColorHex) ?? d.readerFocusColorHex
+        readerBottomBgColorHex = try c.decodeIfPresent(Int64.self, forKey: .readerBottomBgColorHex) ?? d.readerBottomBgColorHex
+        readerSentenceCardColorHex = try c.decodeIfPresent(Int64.self, forKey: .readerSentenceCardColorHex) ?? d.readerSentenceCardColorHex
+        readerWordCardColorHex = try c.decodeIfPresent(Int64.self, forKey: .readerWordCardColorHex) ?? d.readerWordCardColorHex
+
+        aiBaseUrl = try c.decodeIfPresent(String.self, forKey: .aiBaseUrl) ?? d.aiBaseUrl
+        aiApiKey = try c.decodeIfPresent(String.self, forKey: .aiApiKey) ?? d.aiApiKey
+        aiModel = try c.decodeIfPresent(String.self, forKey: .aiModel) ?? d.aiModel
+        aiSystemPrompt = try c.decodeIfPresent(String.self, forKey: .aiSystemPrompt) ?? d.aiSystemPrompt
+
+        webdavUrl = try c.decodeIfPresent(String.self, forKey: .webdavUrl) ?? d.webdavUrl
+        webdavUsername = try c.decodeIfPresent(String.self, forKey: .webdavUsername) ?? d.webdavUsername
+        webdavPassword = try c.decodeIfPresent(String.self, forKey: .webdavPassword) ?? d.webdavPassword
+    }
+}
+
+struct OpdsAcquisitionLink: Hashable, Sendable {
+    let url: String
+    let format: String
+    let mimeType: String
+    let title: String
 }
 
 struct OpdsEntry: Identifiable, Hashable, Sendable {
     let id: String
     let title: String
-    let subtitle: String
-    let linkUrl: String
-    let isAcquisition: Bool
-    let formatHint: String
+    let author: String
+    let summary: String
+    let navigationUrl: String?
+    let coverUrl: String?
+    let acquisitions: [OpdsAcquisitionLink]
+    let updated: String
+
+    var isCategory: Bool { navigationUrl != nil && acquisitions.isEmpty }
+
+    var subtitle: String { author }
+    var linkUrl: String { navigationUrl ?? acquisitions.first?.url ?? "" }
+    var isAcquisition: Bool { !acquisitions.isEmpty }
+    var formatHint: String { acquisitions.first?.format ?? "" }
+}
+
+struct OpdsFeed: Sendable {
+    let title: String
+    let entries: [OpdsEntry]
+    let nextPageUrl: String?
+    let searchUrlTemplate: String?
+}
+
+struct OpdsDownloadResult: Sendable {
+    let uriString: String
+    let title: String
+    let format: String
 }
 
 struct WebDavEntry: Identifiable, Hashable, Sendable {
-    let id: String
+    var id: String { url }
     let name: String
-    let href: String
+    let url: String
     let isDirectory: Bool
     let sizeBytes: Int64
+    let lastModified: String
+    let format: String?
+
+    var href: String { url }
+}
+
+struct WebDavDownloadResult: Sendable {
+    let uriString: String
+    let title: String
+    let format: String
 }
