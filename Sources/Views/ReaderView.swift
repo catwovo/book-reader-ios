@@ -551,7 +551,8 @@ struct ReaderView: View {
                             .foregroundStyle(fgColor)
                     }
                     .padding(.horizontal, horizontalPadding)
-                    .frame(minWidth: 92, height: 44)
+                    .frame(minWidth: 92)
+                    .frame(height: 44)
                 } else {
                     Image(systemName: systemImage)
                         .font(.system(size: 16, weight: .semibold))
