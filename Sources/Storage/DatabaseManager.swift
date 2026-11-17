@@ -1344,6 +1344,9 @@ final class DatabaseManager: @unchecked Sendable {
     }
 
     private func seedSampleBookIfEmpty() {
+        let seededKey = "didSeedSampleBookV1"
+        guard !UserDefaults.standard.bool(forKey: seededKey) else { return }
+        UserDefaults.standard.set(true, forKey: seededKey)
         if fetchBooks().isEmpty {
             addBook(
                 title: "The Art of Slow Reading (示例英文读物)",

@@ -75,11 +75,27 @@ enum NetworkBookService {
         }
     }
 
+    static func resolveTemplateUrl(_ raw: String, relativeTo baseUrl: URL) -> String {
+        let token = "__OPDS_SEARCH_TERMS__"
+        let prepped = raw
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .replacingOccurrences(of: "%7BsearchTerms%7D", with: token, options: .caseInsensitive)
+            .replacingOccurrences(of: "%7BsearchTerms%3F%7D", with: token, options: .caseInsensitive)
+            .replacingOccurrences(of: "{searchTerms?}", with: token, options: .caseInsensitive)
+            .replacingOccurrences(of: "{searchTerms}", with: token, options: .caseInsensitive)
+        let resolved = URL(string: prepped, relativeTo: baseUrl)?.absoluteString ?? prepped
+        return resolved.replacingOccurrences(of: token, with: "{searchTerms}")
+    }
+
     static func buildSearchUrl(template: String, query: String) -> String {
         let allowed = CharacterSet.urlQueryAllowed.subtracting(CharacterSet(charactersIn: "&+=?#"))
         let encoded = query.trimmingCharacters(in: .whitespacesAndNewlines)
             .addingPercentEncoding(withAllowedCharacters: allowed) ?? ""
-        var url = template.replacingOccurrences(of: "{searchTerms}", with: encoded)
+        var url = template
+            .replacingOccurrences(of: "%7BsearchTerms%7D", with: encoded, options: .caseInsensitive)
+            .replacingOccurrences(of: "%7BsearchTerms%3F%7D", with: encoded, options: .caseInsensitive)
+            .replacingOccurrences(of: "{searchTerms?}", with: encoded, options: .caseInsensitive)
+            .replacingOccurrences(of: "{searchTerms}", with: encoded, options: .caseInsensitive)
         url = url.replacingOccurrences(of: #"\{[a-zA-Z0-9_:]+\?\}"#, with: "", options: .regularExpression)
         return url
     }
@@ -581,11 +597,12 @@ private final class OpdsXmlFeedParser: NSObject, XMLParserDelegate {
             if !inEntry {
                 if rel == "next" {
                     nextPageUrl = resolved
-                } else if rel == "search" {
-                    if resolved.contains("{searchTerms}") || type.contains("atom+xml") {
-                        if directSearchTemplate == nil { directSearchTemplate = resolved }
-                    } else if type.contains("opensearchdescription") {
+                } else if rel.contains("search") {
+                    let templateResolved = NetworkBookService.resolveTemplateUrl(href, relativeTo: baseUrl)
+                    if type.contains("opensearchdescription") {
                         if openSearchDescUrl == nil { openSearchDescUrl = resolved }
+                    } else if templateResolved.contains("{searchTerms}") || type.contains("atom+xml") {
+                        if directSearchTemplate == nil { directSearchTemplate = templateResolved }
                     }
                 }
             } else {
@@ -713,7 +730,7 @@ private final class OpenSearchParser: NSObject, XMLParserDelegate {
         guard local == "url" else { return }
         let type = (attributeDict["type"] ?? "").lowercased()
         let template = attributeDict["template"] ?? ""
-        let resolved = URL(string: template, relativeTo: baseUrl)?.absoluteString ?? template
+        let resolved = NetworkBookService.resolveTemplateUrl(template, relativeTo: baseUrl)
         guard resolved.contains("{searchTerms}") else { return }
         if type.contains("atom+xml") || type.contains("opds") {
             if preferredTemplate == nil { preferredTemplate = resolved }

@@ -41,10 +41,8 @@ targets:
         GENERATE_INFOPLIST_FILE: YES
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         ASSETCATALOG_COMPILER_ALTERNATE_APPICON_NAMES:
-          - AppIconNight
-          - AppIconSage
-          - AppIconInk
-          - AppIconSakura
+          - AppIconPearl
+          - AppIconMidnight
         ASSETCATALOG_COMPILER_INCLUDE_ALL_APPICON_ASSETS: YES
         CODE_SIGNING_ALLOWED: NO
         CODE_SIGNING_REQUIRED: NO

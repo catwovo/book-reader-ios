@@ -39,16 +39,15 @@ private var settingsBookContentTypes: [UTType] {
 private struct AppIconOption: Identifiable {
     let id: String
     let title: String
+    let subtitle: String
     let iconName: String? // nil = 默认 AppIcon
     let previewAssetName: String
 }
 
 private let appIconOptions: [AppIconOption] = [
-    AppIconOption(id: "default", title: "暖橙喵阅", iconName: nil, previewAssetName: "IconPreviewDefault"),
-    AppIconOption(id: "night", title: "星夜蓝", iconName: "AppIconNight", previewAssetName: "IconPreviewNight"),
-    AppIconOption(id: "sage", title: "护眼青", iconName: "AppIconSage", previewAssetName: "IconPreviewSage"),
-    AppIconOption(id: "ink", title: "极简墨", iconName: "AppIconInk", previewAssetName: "IconPreviewInk"),
-    AppIconOption(id: "sakura", title: "绯樱粉", iconName: "AppIconSakura", previewAssetName: "IconPreviewSakura")
+    AppIconOption(id: "warm_orange", title: "展翼暖橙", subtitle: "暖橙底 · 棕咖猫", iconName: nil, previewAssetName: "IconPreviewWarmOrange"),
+    AppIconOption(id: "pearl_white", title: "环抱白瓷", subtitle: "白瓷底 · 暖橘猫", iconName: "AppIconPearl", previewAssetName: "IconPreviewPearlWhite"),
+    AppIconOption(id: "midnight_blue", title: "叠页靛蓝", subtitle: "靛蓝底 · 奶白猫", iconName: "AppIconMidnight", previewAssetName: "IconPreviewMidnightBlue")
 ]
 
 struct SettingsView: View {
@@ -126,9 +125,23 @@ struct SettingsView: View {
 
         let currentIconOption = appIconOptions.first { $0.iconName == currentAlternateIconName } ?? appIconOptions[0]
 
-        NavigationStack {
-            ZStack {
-                AmbientGlassBackdrop(themeMode: store.settings.themeMode)
+        ZStack {
+            AmbientGlassBackdrop(themeMode: store.settings.themeMode)
+
+            VStack(spacing: 0) {
+                HStack(spacing: 8) {
+                    Text("设置")
+                        .font(.title2.bold())
+                    MinimalTagPill(
+                        text: store.settings.themeMode.displayName,
+                        tintColor: palette.accent.opacity(0.14),
+                        textColor: palette.accent
+                    )
+                    Spacer()
+                }
+                .padding(.horizontal, 16)
+                .padding(.top, 8)
+                .padding(.bottom, 8)
 
                 ScrollView {
                     VStack(spacing: 3) {
@@ -205,53 +218,56 @@ struct SettingsView: View {
                                 systemImage: "app.badge",
                                 expanded: $appIconSectionExpanded
                             ) {
-                                ScrollView(.horizontal, showsIndicators: false) {
-                                    HStack(spacing: 14) {
-                                        ForEach(appIconOptions) { option in
-                                            let isSelected = currentAlternateIconName == option.iconName
-                                            Button {
-                                                selectAppIcon(option)
-                                            } label: {
-                                                VStack(spacing: 6) {
-                                                    ZStack(alignment: .topTrailing) {
-                                                        Image(option.previewAssetName)
-                                                            .resizable()
-                                                            .scaledToFill()
-                                                            .frame(width: 58, height: 58)
-                                                            .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
-                                                            .overlay {
-                                                                RoundedRectangle(cornerRadius: 14, style: .continuous)
-                                                                    .strokeBorder(
-                                                                        isSelected ? palette.accent : Color.white.opacity(palette.isLight ? 0.65 : 0.22),
-                                                                        lineWidth: isSelected ? 2.4 : 0.8
-                                                                    )
-                                                            }
-                                                            .shadow(
-                                                                color: isSelected ? palette.accent.opacity(0.32) : .black.opacity(0.14),
-                                                                radius: isSelected ? 8 : 4,
-                                                                x: 0,
-                                                                y: 2
-                                                            )
-
-                                                        if isSelected {
-                                                            Image(systemName: "checkmark.circle.fill")
-                                                                .font(.system(size: 16))
-                                                                .foregroundStyle(.white, palette.accent)
-                                                                .offset(x: 4, y: -4)
+                                HStack(spacing: 12) {
+                                    ForEach(appIconOptions) { option in
+                                        let isSelected = currentAlternateIconName == option.iconName
+                                        Button {
+                                            selectAppIcon(option)
+                                        } label: {
+                                            VStack(spacing: 6) {
+                                                ZStack(alignment: .topTrailing) {
+                                                    Image(option.previewAssetName)
+                                                        .resizable()
+                                                        .scaledToFill()
+                                                        .frame(width: 64, height: 64)
+                                                        .clipShape(RoundedRectangle(cornerRadius: 15, style: .continuous))
+                                                        .overlay {
+                                                            RoundedRectangle(cornerRadius: 15, style: .continuous)
+                                                                .strokeBorder(
+                                                                    isSelected ? palette.accent : Color.white.opacity(palette.isLight ? 0.65 : 0.22),
+                                                                    lineWidth: isSelected ? 2.4 : 0.8
+                                                                )
                                                         }
-                                                    }
+                                                        .shadow(
+                                                            color: isSelected ? palette.accent.opacity(0.32) : .black.opacity(0.14),
+                                                            radius: isSelected ? 8 : 4,
+                                                            x: 0,
+                                                            y: 2
+                                                        )
 
-                                                    Text(option.title)
-                                                        .font(.caption2.weight(isSelected ? .semibold : .medium))
-                                                        .foregroundStyle(isSelected ? palette.accent : .primary)
+                                                    if isSelected {
+                                                        Image(systemName: "checkmark.circle.fill")
+                                                            .font(.system(size: 16))
+                                                            .foregroundStyle(.white, palette.accent)
+                                                            .offset(x: 4, y: -4)
+                                                    }
                                                 }
-                                                .padding(.vertical, 4)
-                                                .padding(.horizontal, 2)
+
+                                                Text(option.title)
+                                                    .font(.caption.weight(isSelected ? .semibold : .medium))
+                                                    .foregroundStyle(isSelected ? palette.accent : .primary)
+                                                    .lineLimit(1)
+
+                                                Text(option.subtitle)
+                                                    .font(.caption2)
+                                                    .foregroundStyle(.secondary)
+                                                    .lineLimit(1)
                                             }
-                                            .buttonStyle(GlassPressButtonStyle())
+                                            .frame(maxWidth: .infinity)
+                                            .padding(.vertical, 6)
                                         }
+                                        .buttonStyle(GlassPressButtonStyle())
                                     }
-                                    .padding(.horizontal, 2)
                                 }
 
                                 if let iconSwitchError {
@@ -875,21 +891,7 @@ struct SettingsView: View {
                     .padding(.vertical, 12)
                 }
             }
-            .navigationBarTitleDisplayMode(.inline)
-            .adaptiveGlassNavBar()
-            .toolbar {
-                ToolbarItem(placement: .topBarLeading) {
-                    HStack(spacing: 8) {
-                        Text("设置")
-                            .font(.title2.bold())
-                        MinimalTagPill(
-                            text: store.settings.themeMode.displayName,
-                            tintColor: palette.accent.opacity(0.14),
-                            textColor: palette.accent
-                        )
-                    }
-                }
-            }
+        }
 #if canImport(Translation)
             .translationTask(appleBridge.configuration) { session in
                 await appleBridge.handleSession(session)
@@ -965,7 +967,6 @@ struct SettingsView: View {
                     secondaryButton: .cancel(Text("取消"))
                 )
             }
-        }
     }
 
     // MARK: - Section Builder & Helpers

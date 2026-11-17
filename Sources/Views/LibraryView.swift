@@ -31,19 +31,20 @@ private var supportedBookContentTypes: [UTType] {
 }
 
 private enum LibraryActiveSheet: Identifiable {
-    case newFolder
-    case renameFolder(BookFolder)
     case addBooksToFolder(BookFolder)
     case moveBookToFolder(BookItem)
 
     var id: String {
         switch self {
-        case .newFolder: return "newFolder"
-        case .renameFolder(let f): return "rename_\(f.id)"
         case .addBooksToFolder(let f): return "addBooks_\(f.id)"
         case .moveBookToFolder(let b): return "moveBook_\(b.id)"
         }
     }
+}
+
+private enum LibraryFolderModal: Equatable {
+    case newFolder
+    case renameFolder(BookFolder)
 }
 
 struct LibraryView: View {
@@ -52,16 +53,19 @@ struct LibraryView: View {
     @Environment(\.appPalette) private var palette
 
     var onOpenBook: (BookItem) -> Void
+    var onModalOverlayChange: (Bool) -> Void = { _ in }
 
     @State private var heroPageIndex = 0
     @State private var collectionTab = 0 // 0 = 本地藏书, 1 = 在线书库
     @State private var expandedFolderIds: Set<Int64> = []
     @State private var isHeroCollapsed = false
+    @State private var lastHeroCollapseToggle: Date = .distantPast
 
     // Import & Folder Modals
     @State private var showFileImporter = false
     @State private var importTargetFolderId: Int64? = nil
     @State private var activeSheet: LibraryActiveSheet? = nil
+    @State private var folderModal: LibraryFolderModal? = nil
     @State private var deletingFolder: BookFolder? = nil
     @State private var deletingBook: BookItem? = nil
 
@@ -82,16 +86,11 @@ struct LibraryView: View {
     }
 
     var body: some View {
-        NavigationStack {
-            attachBookSheets(to: attachFolderAlerts(to: mainShellView))
-        }
+        attachBookSheets(to: attachFolderAlerts(to: mainShellView))
     }
 
     private func attachFolderAlerts<Content: View>(to content: Content) -> some View {
         content
-            .navigationBarTitleDisplayMode(.inline)
-            .adaptiveGlassNavBar()
-            .toolbar { libraryToolbar }
             .fileImporter(
                 isPresented: $showFileImporter,
                 allowedContentTypes: supportedBookContentTypes,
@@ -144,28 +143,6 @@ struct LibraryView: View {
             }
             .sheet(item: $activeSheet) { sheet in
                 switch sheet {
-                case .newFolder:
-                    GlassFolderInputSheet(
-                        title: "新建文件夹",
-                        subtitle: "输入名称，将藏书按主题或类型分类整理",
-                        systemImage: "folder.badge.plus",
-                        placeholder: "例如：英文原著、技术文档",
-                        confirmTitle: "创建",
-                        initialName: ""
-                    ) { trimmed in
-                        db.createFolder(name: trimmed)
-                    }
-                case .renameFolder(let target):
-                    GlassFolderInputSheet(
-                        title: "重命名文件夹",
-                        subtitle: "修改文件夹「\(target.name)」的名称",
-                        systemImage: "folder.badge.gearshape",
-                        placeholder: "输入新的文件夹名称",
-                        confirmTitle: "保存",
-                        initialName: target.name
-                    ) { trimmed in
-                        db.renameFolder(id: target.id, name: trimmed)
-                    }
                 case .addBooksToFolder(let folder):
                     AddBooksToFolderSheet(
                         folder: folder,
@@ -200,21 +177,113 @@ struct LibraryView: View {
             .onChange(of: db.folders.map(\.id)) { _, validIds in
                 expandedFolderIds = expandedFolderIds.intersection(Set(validIds))
             }
+            .onChange(of: folderModal != nil) { _, shown in
+                onModalOverlayChange(shown)
+            }
+    }
+
+    private func setHeroCollapsed(_ collapsed: Bool) {
+        guard isHeroCollapsed != collapsed else { return }
+        lastHeroCollapseToggle = Date()
+        withAnimation(.snappy(duration: 0.28, extraBounce: 0)) {
+            isHeroCollapsed = collapsed
+        }
     }
 
     @ViewBuilder
     private var mainShellView: some View {
-        ZStack(alignment: .top) {
+        ZStack {
             AmbientGlassBackdrop(themeMode: settingsStore.settings.themeMode)
 
             VStack(spacing: 0) {
-                VStack(spacing: 0) {
-                    heroContinueSection
-                    sectionHeaderBar
+                // Clean custom header (avoids iOS 26 toolbar auto-glass double wrapping)
+                HStack(spacing: 8) {
+                    Text("书架")
+                        .font(.title2.bold())
+                    if !db.books.isEmpty {
+                        MinimalTagPill(
+                            text: "\(db.books.count) 本",
+                            tintColor: palette.accent.opacity(0.14),
+                            textColor: palette.accent
+                        )
+                    }
+                    Spacer()
+                    GlassSegmentedControl(
+                        titles: ["本地藏书", "在线书库"],
+                        selection: $collectionTab,
+                        compact: true
+                    )
+                    .frame(width: 172)
                 }
-                .animation(AppMotion.panelSpring, value: isHeroCollapsed)
+                .padding(.horizontal, 16)
+                .padding(.top, 8)
+                .padding(.bottom, 6)
 
+                heroContinueSection
+                sectionHeaderBar
                 collectionPager
+            }
+
+            if let modal = folderModal {
+                ZStack {
+                    Color.black.opacity(0.30)
+                        .ignoresSafeArea()
+                        .onTapGesture {
+                            withAnimation(AppMotion.panelSpring) {
+                                folderModal = nil
+                            }
+                        }
+
+                    VStack {
+                        Spacer(minLength: 12)
+                        switch modal {
+                        case .newFolder:
+                            GlassFolderInputModal(
+                                title: "新建文件夹",
+                                subtitle: "输入名称，将藏书按主题或类型分类整理",
+                                systemImage: "folder.badge.plus",
+                                placeholder: "例如：英文原著、技术文档",
+                                confirmTitle: "创建",
+                                initialName: "",
+                                onCancel: {
+                                    withAnimation(AppMotion.panelSpring) {
+                                        folderModal = nil
+                                    }
+                                },
+                                onConfirm: { trimmed in
+                                    db.createFolder(name: trimmed)
+                                    withAnimation(AppMotion.panelSpring) {
+                                        folderModal = nil
+                                    }
+                                }
+                            )
+                        case .renameFolder(let target):
+                            GlassFolderInputModal(
+                                title: "重命名文件夹",
+                                subtitle: "修改文件夹「\(target.name)」的名称",
+                                systemImage: "folder.badge.gearshape",
+                                placeholder: "输入新的文件夹名称",
+                                confirmTitle: "保存",
+                                initialName: target.name,
+                                onCancel: {
+                                    withAnimation(AppMotion.panelSpring) {
+                                        folderModal = nil
+                                    }
+                                },
+                                onConfirm: { trimmed in
+                                    db.renameFolder(id: target.id, name: trimmed)
+                                    withAnimation(AppMotion.panelSpring) {
+                                        folderModal = nil
+                                    }
+                                }
+                            )
+                        }
+                        Spacer(minLength: 12)
+                    }
+                    .padding(.horizontal, 22)
+                }
+                .transition(.opacity.combined(with: .scale(scale: 0.96)))
+                .zIndex(20)
             }
         }
     }
@@ -222,48 +291,57 @@ struct LibraryView: View {
     @ViewBuilder
     private var heroContinueSection: some View {
         if !recentBooks.isEmpty {
-            let p: CGFloat = isHeroCollapsed ? 1.0 : 0.0
-            let dotsOpacity = isHeroCollapsed ? 0.0 : 1.0
-            let dotsHeight: CGFloat = isHeroCollapsed ? 0.0 : 18.0
-
-            VStack(spacing: isHeroCollapsed ? 0 : 6.0) {
-                GlassHorizontalPager(selection: $heroPageIndex, pageCount: recentBooks.count, fillHeight: false) { idx in
-                    if idx < recentBooks.count {
-                        let book = recentBooks[idx]
-                        HeroContinueCard(
-                            book: book,
-                            isCaching: BookCache.shared.cachingHints.contains(book.filePathHint),
-                            collapseProgress: p,
-                            onOpen: { onOpenBook(book) },
-                            onDelete: { deletingBook = book }
-                        )
-                        .padding(.horizontal, 16)
-                    }
-                }
-
-                if recentBooks.count > 1 && dotsHeight > 0.5 {
-                    MinimalPagerDots(
-                        pageCount: recentBooks.count,
-                        currentPage: min(heroPageIndex, recentBooks.count - 1),
-                        onSelectPage: { target in
-                            withAnimation(AppMotion.tabSpring) {
-                                heroPageIndex = target
+            let safePage = min(heroPageIndex, recentBooks.count - 1)
+            Group {
+                if isHeroCollapsed {
+                    let activeBook = recentBooks[safePage]
+                    CompactHeroContinueBar(
+                        book: activeBook,
+                        isCaching: BookCache.shared.cachingHints.contains(activeBook.filePathHint),
+                        onExpand: { setHeroCollapsed(false) },
+                        onOpen: { onOpenBook(activeBook) }
+                    )
+                    .padding(.horizontal, 16)
+                    .padding(.top, 4)
+                    .transition(.opacity)
+                } else {
+                    VStack(spacing: 6) {
+                        GlassHorizontalPager(selection: $heroPageIndex, pageCount: recentBooks.count, fillHeight: false) { idx in
+                            if idx < recentBooks.count {
+                                let book = recentBooks[idx]
+                                HeroContinueCard(
+                                    book: book,
+                                    isCaching: BookCache.shared.cachingHints.contains(book.filePathHint),
+                                    onOpen: { onOpenBook(book) },
+                                    onDelete: { deletingBook = book }
+                                )
+                                .padding(.horizontal, 16)
                             }
                         }
-                    )
-                    .frame(height: dotsHeight)
-                    .clipped()
-                    .opacity(dotsOpacity)
+
+                        if recentBooks.count > 1 {
+                            MinimalPagerDots(
+                                pageCount: recentBooks.count,
+                                currentPage: safePage,
+                                onSelectPage: { target in
+                                    withAnimation(AppMotion.tabSpring) {
+                                        heroPageIndex = target
+                                    }
+                                }
+                            )
+                            .frame(height: 16)
+                        }
+                    }
+                    .padding(.top, 6)
+                    .transition(.opacity)
                 }
             }
-            .padding(.top, isHeroCollapsed ? 4 : 10)
+            .clipped()
             .simultaneousGesture(
                 DragGesture(minimumDistance: 24)
                     .onEnded { value in
                         if abs(value.translation.height) > abs(value.translation.width) * 1.4 {
-                            withAnimation(AppMotion.panelSpring) {
-                                isHeroCollapsed = value.translation.height < 0
-                            }
+                            setHeroCollapsed(value.translation.height < 0)
                         }
                     }
             )
@@ -277,18 +355,6 @@ struct LibraryView: View {
                 .font(.caption.weight(.semibold))
                 .foregroundStyle(.secondary)
                 .animation(.easeOut(duration: 0.2), value: collectionTab)
-
-            if !recentBooks.isEmpty {
-                GlassCircleIconButton(
-                    systemImage: isHeroCollapsed ? "chevron.down" : "chevron.up",
-                    size: 24,
-                    iconFont: .caption2.bold()
-                ) {
-                    withAnimation(AppMotion.panelSpring) {
-                        isHeroCollapsed.toggle()
-                    }
-                }
-            }
 
             Spacer()
 
@@ -312,7 +378,9 @@ struct LibraryView: View {
                     iconFont: .subheadline,
                     isActive: true
                 ) {
-                    activeSheet = .newFolder
+                    withAnimation(AppMotion.panelSpring) {
+                        folderModal = .newFolder
+                    }
                 }
 
                 GlassCircleIconButton(
@@ -353,39 +421,11 @@ struct LibraryView: View {
     }
 
     private func handleScrollCollapse(_ offset: CGFloat) {
-        if offset > 28, !isHeroCollapsed {
-            withAnimation(AppMotion.panelSpring) {
-                isHeroCollapsed = true
-            }
-        } else if offset < -42, isHeroCollapsed {
-            withAnimation(AppMotion.panelSpring) {
-                isHeroCollapsed = false
-            }
-        }
-    }
-
-    @ToolbarContentBuilder
-    private var libraryToolbar: some ToolbarContent {
-        ToolbarItem(placement: .topBarLeading) {
-            HStack(spacing: 8) {
-                Text("书架")
-                    .font(.title2.bold())
-                if !db.books.isEmpty {
-                    MinimalTagPill(
-                        text: "\(db.books.count) 本",
-                        tintColor: palette.accent.opacity(0.14),
-                        textColor: palette.accent
-                    )
-                }
-            }
-        }
-        ToolbarItem(placement: .topBarTrailing) {
-            GlassSegmentedControl(
-                titles: ["本地藏书", "在线书库"],
-                selection: $collectionTab,
-                compact: true
-            )
-            .frame(width: 172)
+        guard Date().timeIntervalSince(lastHeroCollapseToggle) > 0.34 else { return }
+        if offset > 32, !isHeroCollapsed {
+            setHeroCollapsed(true)
+        } else if offset < -46, isHeroCollapsed {
+            setHeroCollapsed(false)
         }
     }
 
@@ -461,7 +501,9 @@ struct LibraryView: View {
                                     activeSheet = .addBooksToFolder(folder)
                                 },
                                 onRename: {
-                                    activeSheet = .renameFolder(folder)
+                                    withAnimation(AppMotion.panelSpring) {
+                                        folderModal = .renameFolder(folder)
+                                    }
                                 },
                                 onDeleteFolder: {
                                     deletingFolder = folder
@@ -554,12 +596,10 @@ struct LibraryView: View {
                             Label(inFolder ? "移至其他文件夹" : "移入文件夹", systemImage: "folder")
                         }
                     }
-                    if book.filePathHint != "sample://art_of_slow_reading" {
-                        Button(role: .destructive) {
-                            deletingBook = book
-                        } label: {
-                            Label("从书架移除", systemImage: "trash")
-                        }
+                    Button(role: .destructive) {
+                        deletingBook = book
+                    } label: {
+                        Label("从书架移除", systemImage: "trash")
                     }
                 } label: {
                     Image(systemName: "ellipsis")
@@ -616,175 +656,169 @@ struct LibraryView: View {
 
 // MARK: - Hero Continue Card
 
+private struct CompactHeroContinueBar: View {
+    let book: BookItem
+    let isCaching: Bool
+    var onExpand: () -> Void
+    var onOpen: () -> Void
+
+    @Environment(\.appPalette) private var palette
+
+    var body: some View {
+        let progress = computeBookProgress(book)
+        GlassCard(cornerRadius: 18, tintColor: palette.accent.opacity(0.06)) {
+            HStack(spacing: 11) {
+                Button(action: onExpand) {
+                    HStack(spacing: 11) {
+                        BookCoverArtwork(book: book, compact: true)
+                            .frame(width: 32, height: 44)
+                            .shadow(color: .black.opacity(0.12), radius: 2, x: 0, y: 1)
+
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text(book.title)
+                                .font(.subheadline.weight(.bold))
+                                .foregroundStyle(.primary)
+                                .lineLimit(1)
+
+                            HStack(spacing: 5) {
+                                if isCaching {
+                                    ProgressView().controlSize(.mini)
+                                    Text("解析中")
+                                        .foregroundStyle(palette.accent)
+                                } else {
+                                    Text(book.readingSeconds > 0
+                                         ? "\(Int(progress * 100))% · 已读 \(formatDuration(book.readingSeconds))"
+                                         : "\(Int(progress * 100))% · 尚未开始")
+                                }
+                            }
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+
+                            SmoothLinearProgressBar(progress: progress, height: 3.5)
+                        }
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+
+                Button(action: onOpen) {
+                    Image(systemName: "play.fill")
+                        .font(.caption.bold())
+                        .foregroundStyle(.white)
+                        .frame(width: 34, height: 34)
+                        .background {
+                            ZStack {
+                                Circle().fill(palette.accent)
+                                Circle().strokeBorder(.white.opacity(0.42), lineWidth: 0.8)
+                            }
+                        }
+                        .shadow(color: palette.accent.opacity(0.28), radius: 6, x: 0, y: 2)
+                }
+                .buttonStyle(GlassPressButtonStyle())
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 9)
+        }
+    }
+}
+
 private struct HeroContinueCard: View {
     let book: BookItem
     let isCaching: Bool
-    var collapseProgress: CGFloat = 0
     var onOpen: () -> Void
     var onDelete: () -> Void
 
     @Environment(\.appPalette) private var palette
 
     var body: some View {
-        let p = min(1.0, max(0.0, collapseProgress))
-        let topRatio = min(1.0, p / 0.55)
-        let topHeight = max(0.0, (1.0 - topRatio) * 26.0)
-        let topAlpha = max(0.0, 1.0 - Double(topRatio))
-        let gapScale = max(0.0, 1.0 - min(1.0, p / 0.65))
-        let ctaHeight = gapScale * 36.0
-        let ctaAlpha = max(0.0, 1.0 - Double(min(1.0, p / 0.55)))
-        let coverW = 50.0 - 16.0 * p
-        let coverH = 68.0 - 22.0 * p
-        let cardPad = 14.0 - 4.0 * p
-        let cornerR = 24.0 - 6.0 * p
-        let compactPlayAlpha = max(0.0, Double((p - 0.35) / 0.65))
-
         let progress = computeBookProgress(book)
-        GlassCard(cornerRadius: cornerR, tintColor: palette.accent.opacity(0.06)) {
-            VStack(alignment: .leading, spacing: 0) {
-                // Top bar (collapses smoothly)
-                if topHeight > 0.5 {
-                    HStack(spacing: 6) {
-                        HStack(spacing: 5) {
-                            Image(systemName: book.readingSeconds > 0 ? "book.fill" : "sparkles")
-                                .font(.system(size: 10, weight: .semibold))
-                            Text(book.readingSeconds > 0 ? "最近阅读" : "开始阅读")
-                                .font(.caption2.weight(.semibold))
-                        }
-                        .foregroundStyle(palette.accent)
-                        .padding(.horizontal, 9)
-                        .padding(.vertical, 3.5)
-                        .background(palette.accent.opacity(0.12), in: Capsule())
-
-                        Spacer()
-                        if isCaching {
-                            ProgressView()
-                                .controlSize(.mini)
-                            Text("解析中")
-                                .font(.caption2)
-                                .foregroundStyle(palette.accent)
-                        } else {
-                            Text("\(Int(progress * 100))%")
-                                .font(.caption.weight(.semibold))
-                                .monospacedDigit()
-                                .foregroundStyle(palette.accent)
-                        }
-                        if book.filePathHint != "sample://art_of_slow_reading" {
-                            Button(action: onDelete) {
-                                Image(systemName: "trash")
-                                    .font(.caption2.weight(.semibold))
-                                    .foregroundStyle(.secondary)
-                                    .frame(width: 26, height: 26)
-                                    .background(Color.secondary.opacity(0.10), in: Circle())
-                            }
-                            .buttonStyle(GlassPressButtonStyle())
-                            .disabled(topAlpha < 0.3)
-                        }
+        GlassCard(cornerRadius: 24, tintColor: palette.accent.opacity(0.06)) {
+            VStack(alignment: .leading, spacing: 9) {
+                HStack(spacing: 6) {
+                    HStack(spacing: 5) {
+                        Image(systemName: book.readingSeconds > 0 ? "book.fill" : "sparkles")
+                            .font(.system(size: 10, weight: .semibold))
+                        Text(book.readingSeconds > 0 ? "最近阅读" : "开始阅读")
+                            .font(.caption2.weight(.semibold))
                     }
-                    .frame(height: topHeight)
-                    .clipped()
-                    .opacity(topAlpha)
+                    .foregroundStyle(palette.accent)
+                    .padding(.horizontal, 9)
+                    .padding(.vertical, 3.5)
+                    .background(palette.accent.opacity(0.12), in: Capsule())
 
-                    Spacer().frame(height: 8 * gapScale)
+                    Spacer()
+                    if isCaching {
+                        ProgressView()
+                            .controlSize(.mini)
+                        Text("解析中")
+                            .font(.caption2)
+                            .foregroundStyle(palette.accent)
+                    } else {
+                        Text("\(Int(progress * 100))%")
+                            .font(.caption.weight(.semibold))
+                            .monospacedDigit()
+                            .foregroundStyle(palette.accent)
+                    }
+                    Button(action: onDelete) {
+                        Image(systemName: "trash")
+                            .font(.caption2.weight(.semibold))
+                            .foregroundStyle(.secondary)
+                            .frame(width: 26, height: 26)
+                            .background(Color.secondary.opacity(0.10), in: Circle())
+                    }
+                    .buttonStyle(GlassPressButtonStyle())
                 }
 
-                // Cover + metadata + compact play button
-                HStack(spacing: 12 - 2 * p) {
+                HStack(spacing: 13) {
                     Button(action: onOpen) {
-                        HStack(spacing: 13 - 2 * p) {
-                            BookCoverArtwork(book: book, compact: p > 0.5)
-                                .frame(width: coverW, height: coverH)
-                                .shadow(color: .black.opacity(0.14), radius: 4 - 2 * p, x: 0, y: 2)
+                        HStack(spacing: 13) {
+                            BookCoverArtwork(book: book, compact: false)
+                                .frame(width: 50, height: 68)
+                                .shadow(color: .black.opacity(0.14), radius: 4, x: 0, y: 2)
 
-                            VStack(alignment: .leading, spacing: 5 - 1.5 * p) {
+                            VStack(alignment: .leading, spacing: 5) {
                                 Text(book.title)
-                                    .font(p > 0.5 ? .subheadline.weight(.bold) : .headline)
+                                    .font(.headline)
                                     .foregroundStyle(.primary)
-                                    .lineLimit(p > 0.5 ? 1 : 2)
+                                    .lineLimit(2)
                                     .multilineTextAlignment(.leading)
 
                                 HStack(spacing: 5) {
                                     Image(systemName: "clock")
                                         .font(.caption2)
-                                    if p > 0.5 {
-                                        Text(book.readingSeconds > 0
-                                             ? "\(Int(progress * 100))% · 已读 \(formatDuration(book.readingSeconds))"
-                                             : "\(Int(progress * 100))% · 尚未开始")
-                                            .font(.caption)
-                                            .lineLimit(1)
-                                    } else {
-                                        Text(book.readingSeconds > 0 ? "已读 \(formatDuration(book.readingSeconds))" : "尚未开始")
-                                            .font(.caption)
-                                            .lineLimit(1)
-                                    }
+                                    Text(book.readingSeconds > 0 ? "已读 \(formatDuration(book.readingSeconds))" : "尚未开始")
+                                        .font(.caption)
+                                        .lineLimit(1)
                                 }
                                 .foregroundStyle(.secondary)
 
-                                SmoothLinearProgressBar(progress: progress, height: 4.5 - 0.8 * p)
+                                SmoothLinearProgressBar(progress: progress, height: 4.5)
                             }
                         }
                         .contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
-
-                    if compactPlayAlpha > 0.02 {
-                        Button(action: onOpen) {
-                            Image(systemName: "play.fill")
-                                .font(.caption.bold())
-                                .foregroundStyle(.white)
-                                .frame(width: 34, height: 34)
-                                .background {
-                                    ZStack {
-                                        Circle().fill(palette.accent)
-                                        Circle().strokeBorder(.white.opacity(0.42), lineWidth: 0.8)
-                                    }
-                                }
-                                .shadow(color: palette.accent.opacity(0.28), radius: 6, x: 0, y: 2)
-                        }
-                        .buttonStyle(GlassPressButtonStyle())
-                        .scaleEffect(0.75 + 0.25 * compactPlayAlpha)
-                        .opacity(compactPlayAlpha)
-                    }
                 }
 
-                // CTA Pill (collapses smoothly)
-                if ctaHeight > 0.5 {
-                    Spacer().frame(height: 8 * gapScale)
+                Button(action: onOpen) {
+                    let ctaLabel = HStack(spacing: 5) {
+                        Image(systemName: "play.fill")
+                            .font(.caption)
+                        Text(book.readingSeconds > 0 ? "继续阅读" : "立即阅读")
+                            .font(.subheadline.weight(.semibold))
+                    }
+                    .frame(maxWidth: .infinity)
+                    .frame(height: 40)
+                    .foregroundStyle(.white)
 
-                    Button(action: onOpen) {
-                        let ctaLabel = HStack(spacing: 5) {
-                            Image(systemName: "play.fill")
-                                .font(.caption)
-                            Text(book.readingSeconds > 0 ? "继续阅读" : "立即阅读")
-                                .font(.subheadline.weight(.semibold))
-                        }
-                        .frame(maxWidth: .infinity)
-                        .frame(height: 36)
-                        .foregroundStyle(.white)
-
-                        #if compiler(>=6.2)
-                        if #available(iOS 26.0, *) {
-                            ctaLabel
-                                .glassEffect(.regular.tint(palette.accent.opacity(0.86)).interactive(), in: Capsule())
-                        } else {
-                            ctaLabel
-                                .background {
-                                    ZStack {
-                                        Capsule().fill(palette.accent)
-                                        Capsule().fill(
-                                            LinearGradient(
-                                                colors: [.white.opacity(0.24), .clear],
-                                                startPoint: .top,
-                                                endPoint: .bottom
-                                            )
-                                        )
-                                    }
-                                }
-                                .overlay {
-                                    Capsule().strokeBorder(.white.opacity(0.35), lineWidth: 0.7)
-                                }
-                        }
-                        #else
+                    #if compiler(>=6.2)
+                    if #available(iOS 26.0, *) {
+                        ctaLabel
+                            .glassEffect(.regular.tint(palette.accent.opacity(0.86)).interactive(), in: Capsule())
+                            .contentShape(Capsule())
+                    } else {
                         ctaLabel
                             .background {
                                 ZStack {
@@ -801,15 +835,32 @@ private struct HeroContinueCard: View {
                             .overlay {
                                 Capsule().strokeBorder(.white.opacity(0.35), lineWidth: 0.7)
                             }
-                        #endif
+                            .contentShape(Capsule())
                     }
-                    .buttonStyle(GlassPressButtonStyle())
-                    .frame(height: ctaHeight)
-                    .clipped()
-                    .opacity(ctaAlpha)
+                    #else
+                    ctaLabel
+                        .background {
+                            ZStack {
+                                Capsule().fill(palette.accent)
+                                Capsule().fill(
+                                    LinearGradient(
+                                        colors: [.white.opacity(0.24), .clear],
+                                        startPoint: .top,
+                                        endPoint: .bottom
+                                    )
+                                )
+                            }
+                        }
+                        .overlay {
+                            Capsule().strokeBorder(.white.opacity(0.35), lineWidth: 0.7)
+                        }
+                        .contentShape(Capsule())
+                    #endif
                 }
+                .buttonStyle(GlassPressButtonStyle())
+                .contentShape(Capsule())
             }
-            .padding(cardPad)
+            .padding(14)
         }
     }
 }
@@ -1069,8 +1120,7 @@ private struct MoveBookToFolderSheet: View {
     }
 }
 
-private struct GlassFolderInputSheet: View {
-    @Environment(\.dismiss) private var dismiss
+private struct GlassFolderInputModal: View {
     @Environment(\.appPalette) private var palette
 
     let title: String
@@ -1079,6 +1129,7 @@ private struct GlassFolderInputSheet: View {
     let placeholder: String
     let confirmTitle: String
     let initialName: String
+    var onCancel: () -> Void
     var onConfirm: (String) -> Void
 
     @State private var name: String = ""
@@ -1091,6 +1142,7 @@ private struct GlassFolderInputSheet: View {
         placeholder: String,
         confirmTitle: String,
         initialName: String,
+        onCancel: @escaping () -> Void,
         onConfirm: @escaping (String) -> Void
     ) {
         self.title = title
@@ -1099,6 +1151,7 @@ private struct GlassFolderInputSheet: View {
         self.placeholder = placeholder
         self.confirmTitle = confirmTitle
         self.initialName = initialName
+        self.onCancel = onCancel
         self.onConfirm = onConfirm
         _name = State(initialValue: initialName)
     }
@@ -1108,99 +1161,127 @@ private struct GlassFolderInputSheet: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 18) {
-            HStack(spacing: 12) {
-                AppleIconBadge(
-                    systemImage: systemImage,
-                    size: 38,
-                    cornerRadius: 11,
-                    filled: true
-                )
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(title)
-                        .font(.headline)
-                        .foregroundStyle(.primary)
-                    Text(subtitle)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                }
-                Spacer()
-            }
-
-            HStack(spacing: 10) {
-                Image(systemName: "folder.fill")
-                    .font(.body)
-                    .foregroundStyle(palette.accent)
-
-                TextField(placeholder, text: $name)
-                    .font(.body)
-                    .textInputAutocapitalization(.never)
-                    .autocorrectionDisabled(false)
-                    .submitLabel(.done)
-                    .focused($isInputFocused)
-                    .onSubmit {
-                        submitIfValid()
-                    }
-
-                if !name.isEmpty {
-                    Button {
-                        name = ""
-                    } label: {
-                        Image(systemName: "xmark.circle.fill")
-                            .font(.body)
-                            .foregroundStyle(.secondary.opacity(0.75))
-                    }
-                    .buttonStyle(.plain)
-                }
-            }
-            .padding(.horizontal, 14)
-            .padding(.vertical, 13)
-            .background {
-                RoundedRectangle(cornerRadius: 16, style: .continuous)
-                    .fill(Color.primary.opacity(palette.isLight ? 0.055 : 0.12))
-            }
-            .overlay {
-                RoundedRectangle(cornerRadius: 16, style: .continuous)
-                    .strokeBorder(
-                        isInputFocused
-                            ? palette.accent.opacity(0.75)
-                            : Color.primary.opacity(palette.isLight ? 0.12 : 0.20),
-                        lineWidth: isInputFocused ? 1.3 : 0.75
+        GlassCard(cornerRadius: 26) {
+            VStack(alignment: .leading, spacing: 16) {
+                HStack(spacing: 12) {
+                    AppleIconBadge(
+                        systemImage: systemImage,
+                        size: 38,
+                        cornerRadius: 11,
+                        filled: true
                     )
-            }
-
-            HStack(spacing: 12) {
-                Button {
-                    dismiss()
-                } label: {
-                    Text("取消")
-                        .font(.subheadline.weight(.medium))
-                        .foregroundStyle(.primary)
-                        .frame(maxWidth: .infinity)
-                        .padding(.vertical, 12)
-                        .appleLiquidGlassCapsule()
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(title)
+                            .font(.headline)
+                            .foregroundStyle(.primary)
+                        Text(subtitle)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                    }
+                    Spacer()
                 }
-                .buttonStyle(GlassPressButtonStyle())
 
-                Button {
-                    submitIfValid()
-                } label: {
-                    let confirmLabel = Text(confirmTitle)
-                        .font(.subheadline.weight(.semibold))
-                        .foregroundStyle(.white)
-                        .frame(maxWidth: .infinity)
-                        .padding(.vertical, 12)
+                HStack(spacing: 10) {
+                    Image(systemName: "folder.fill")
+                        .font(.body)
+                        .foregroundStyle(palette.accent)
 
-                    #if compiler(>=6.2)
-                    if #available(iOS 26.0, *) {
-                        let baseGlass: Glass = .regular.tint(palette.accent.opacity(trimmedName.isEmpty ? 0.34 : 0.88))
-                        confirmLabel
-                            .glassEffect(
-                                trimmedName.isEmpty ? baseGlass : baseGlass.interactive(),
-                                in: Capsule()
-                            )
-                    } else {
+                    TextField(placeholder, text: $name)
+                        .font(.body)
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled(false)
+                        .submitLabel(.done)
+                        .focused($isInputFocused)
+                        .onSubmit {
+                            submitIfValid()
+                        }
+
+                    if !name.isEmpty {
+                        Button {
+                            name = ""
+                        } label: {
+                            Image(systemName: "xmark.circle.fill")
+                                .font(.body)
+                                .foregroundStyle(.secondary.opacity(0.75))
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+                .padding(.horizontal, 14)
+                .padding(.vertical, 12)
+                .background {
+                    RoundedRectangle(cornerRadius: 15, style: .continuous)
+                        .fill(Color.primary.opacity(palette.isLight ? 0.055 : 0.12))
+                }
+                .overlay {
+                    RoundedRectangle(cornerRadius: 15, style: .continuous)
+                        .strokeBorder(
+                            isInputFocused
+                                ? palette.accent.opacity(0.75)
+                                : Color.primary.opacity(palette.isLight ? 0.12 : 0.20),
+                            lineWidth: isInputFocused ? 1.3 : 0.75
+                        )
+                }
+
+                HStack(spacing: 12) {
+                    Button {
+                        isInputFocused = false
+                        onCancel()
+                    } label: {
+                        Text("取消")
+                            .font(.subheadline.weight(.medium))
+                            .foregroundStyle(.primary)
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 11)
+                            .appleLiquidGlassCapsule()
+                    }
+                    .buttonStyle(GlassPressButtonStyle())
+
+                    Button {
+                        submitIfValid()
+                    } label: {
+                        let confirmLabel = Text(confirmTitle)
+                            .font(.subheadline.weight(.semibold))
+                            .foregroundStyle(.white)
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 11)
+
+                        #if compiler(>=6.2)
+                        if #available(iOS 26.0, *) {
+                            let baseGlass: Glass = .regular.tint(palette.accent.opacity(trimmedName.isEmpty ? 0.34 : 0.88))
+                            confirmLabel
+                                .glassEffect(
+                                    trimmedName.isEmpty ? baseGlass : baseGlass.interactive(),
+                                    in: Capsule()
+                                )
+                        } else {
+                            confirmLabel
+                                .background {
+                                    Capsule()
+                                        .fill(
+                                            LinearGradient(
+                                                colors: [
+                                                    palette.accent.opacity(trimmedName.isEmpty ? 0.35 : 0.96),
+                                                    palette.accent.opacity(trimmedName.isEmpty ? 0.28 : 0.80)
+                                                ],
+                                                startPoint: .top,
+                                                endPoint: .bottom
+                                            )
+                                        )
+                                }
+                                .overlay {
+                                    Capsule()
+                                        .strokeBorder(.white.opacity(trimmedName.isEmpty ? 0.15 : 0.42), lineWidth: 0.75)
+                                }
+                                .shadow(
+                                    color: trimmedName.isEmpty ? .clear : palette.accent.opacity(0.28),
+                                    radius: 10,
+                                    x: 0,
+                                    y: 4
+                                )
+                        }
+                        #else
                         confirmLabel
                             .background {
                                 Capsule()
@@ -1225,53 +1306,22 @@ private struct GlassFolderInputSheet: View {
                                 x: 0,
                                 y: 4
                             )
+                        #endif
                     }
-                    #else
-                    confirmLabel
-                        .background {
-                            Capsule()
-                                .fill(
-                                    LinearGradient(
-                                        colors: [
-                                            palette.accent.opacity(trimmedName.isEmpty ? 0.35 : 0.96),
-                                            palette.accent.opacity(trimmedName.isEmpty ? 0.28 : 0.80)
-                                        ],
-                                        startPoint: .top,
-                                        endPoint: .bottom
-                                    )
-                                )
-                        }
-                        .overlay {
-                            Capsule()
-                                .strokeBorder(.white.opacity(trimmedName.isEmpty ? 0.15 : 0.42), lineWidth: 0.75)
-                        }
-                        .shadow(
-                            color: trimmedName.isEmpty ? .clear : palette.accent.opacity(0.28),
-                            radius: 10,
-                            x: 0,
-                            y: 4
-                        )
-                    #endif
+                    .buttonStyle(GlassPressButtonStyle())
+                    .disabled(trimmedName.isEmpty)
                 }
-                .buttonStyle(GlassPressButtonStyle())
-                .disabled(trimmedName.isEmpty)
             }
+            .padding(20)
         }
-        .padding(.horizontal, 20)
-        .padding(.top, 24)
-        .padding(.bottom, 18)
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
-        .presentationDetents([.height(276), .medium])
-        .presentationCornerRadius(30)
-        .presentationDragIndicator(.visible)
-        .adaptiveGlassSheetBackground(palette: palette)
+        .frame(maxWidth: 360)
     }
 
     private func submitIfValid() {
         let trimmed = trimmedName
         guard !trimmed.isEmpty else { return }
+        isInputFocused = false
         onConfirm(trimmed)
-        dismiss()
     }
 }
 
@@ -1329,6 +1379,17 @@ struct OpdsOnlineLibraryPane: View {
         return nil
     }
 
+    private var displayedOpdsEntries: [OpdsEntry] {
+        guard searchTemplate == nil else { return entries }
+        let q = searchQuery.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !q.isEmpty else { return entries }
+        return entries.filter { entry in
+            entry.title.localizedCaseInsensitiveContains(q)
+                || entry.author.localizedCaseInsensitiveContains(q)
+                || entry.summary.localizedCaseInsensitiveContains(q)
+        }
+    }
+
     @ViewBuilder
     private var opdsControlsHeader: some View {
         VStack(spacing: 8) {
@@ -1348,15 +1409,16 @@ struct OpdsOnlineLibraryPane: View {
                     .padding(.vertical, 2)
                 }
 
-                if searchTemplate != nil {
-                    GlassCircleIconButton(
-                        systemImage: showSearchBar ? "xmark" : "magnifyingglass",
-                        size: 30,
-                        iconFont: .caption.bold(),
-                        isActive: showSearchBar
-                    ) {
-                        withAnimation(AppMotion.panelSpring) {
-                            showSearchBar.toggle()
+                GlassCircleIconButton(
+                    systemImage: showSearchBar ? "xmark" : "magnifyingglass",
+                    size: 30,
+                    iconFont: .caption.bold(),
+                    isActive: showSearchBar
+                ) {
+                    withAnimation(AppMotion.panelSpring) {
+                        showSearchBar.toggle()
+                        if !showSearchBar && searchTemplate == nil {
+                            searchQuery = ""
                         }
                     }
                 }
@@ -1382,26 +1444,42 @@ struct OpdsOnlineLibraryPane: View {
             }
             .padding(.horizontal, 16)
 
-            // Search bar
-            if showSearchBar, let tpl = searchTemplate {
+            // Search bar (remote OPDS search when searchTemplate is provided, or instant catalog filter otherwise)
+            if showSearchBar {
                 HStack(spacing: 8) {
-                    TextField("输入书名或作者搜索...", text: $searchQuery)
-                        .textFieldStyle(.plain)
-                        .submitLabel(.search)
-                        .onSubmit {
+                    Image(systemName: "magnifyingglass")
+                        .foregroundStyle(.secondary)
+                    TextField(
+                        searchTemplate != nil ? "输入书名或作者全库搜索..." : "筛选当前目录的书名、作者或简介...",
+                        text: $searchQuery
+                    )
+                    .textFieldStyle(.plain)
+                    .submitLabel(.search)
+                    .onSubmit {
+                        if let tpl = searchTemplate {
                             executeSearch(template: tpl)
                         }
-                    Button {
-                        executeSearch(template: tpl)
-                    } label: {
-                        Image(systemName: "magnifyingglass")
-                            .foregroundStyle(palette.accent)
+                    }
+                    if !searchQuery.isEmpty {
+                        Button {
+                            searchQuery = ""
+                        } label: {
+                            Image(systemName: "xmark.circle.fill")
+                                .foregroundStyle(.secondary)
+                        }
+                        .buttonStyle(.plain)
+                    }
+                    if let tpl = searchTemplate {
+                        Button("搜索") {
+                            executeSearch(template: tpl)
+                        }
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(palette.accent)
                     }
                 }
                 .padding(.horizontal, 12)
                 .padding(.vertical, 9)
-                .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-                .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).strokeBorder(.white.opacity(0.28), lineWidth: 0.7))
+                .appleLiquidGlassRect(cornerRadius: 14, interactive: true)
                 .padding(.horizontal, 16)
                 .transition(AppMotion.panelTransition)
             }
@@ -1522,29 +1600,46 @@ struct OpdsOnlineLibraryPane: View {
                             .padding(.top, 4)
 
                         LazyVStack(spacing: 4) {
-                            ForEach(Array(entries.enumerated()), id: \.element.id) { idx, entry in
-                                opdsEntryRow(entry: entry, index: idx, count: entries.count)
-                            }
-
-                            if let nextUrl = nextPageUrl {
-                                Button {
-                                    loadMore(nextUrl: nextUrl)
-                                } label: {
-                                    HStack(spacing: 6) {
-                                        if isLoadingMore {
-                                            ProgressView().controlSize(.mini)
+                            let visibleEntries = displayedOpdsEntries
+                            if visibleEntries.isEmpty {
+                                VStack(spacing: 8) {
+                                    Text("当前目录没有匹配的书目")
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                    if !searchQuery.isEmpty {
+                                        GlassCapsuleChip(title: "清除搜索", selected: true) {
+                                            searchQuery = ""
                                         }
-                                        Text(isLoadingMore ? "加载中..." : "加载更多")
-                                            .font(.subheadline.weight(.medium))
                                     }
-                                    .frame(maxWidth: .infinity)
-                                    .padding(.vertical, 10)
-                                    .background(.ultraThinMaterial, in: Capsule())
-                                    .overlay(Capsule().strokeBorder(.white.opacity(0.32), lineWidth: 0.7))
                                 }
-                                .buttonStyle(GlassPressButtonStyle())
-                                .disabled(isLoadingMore)
-                                .padding(.top, 6)
+                                .frame(maxWidth: .infinity)
+                                .padding(.vertical, 36)
+                            } else {
+                                ForEach(Array(visibleEntries.enumerated()), id: \.element.id) { idx, entry in
+                                    opdsEntryRow(entry: entry, index: idx, count: visibleEntries.count)
+                                }
+
+                                if searchQuery.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+                                   let nextUrl = nextPageUrl {
+                                    Button {
+                                        loadMore(nextUrl: nextUrl)
+                                    } label: {
+                                        HStack(spacing: 6) {
+                                            if isLoadingMore {
+                                                ProgressView().controlSize(.mini)
+                                            }
+                                            Text(isLoadingMore ? "加载中..." : "加载更多")
+                                                .font(.subheadline.weight(.medium))
+                                        }
+                                        .frame(maxWidth: .infinity)
+                                        .padding(.vertical, 10)
+                                        .background(.ultraThinMaterial, in: Capsule())
+                                        .overlay(Capsule().strokeBorder(.white.opacity(0.32), lineWidth: 0.7))
+                                    }
+                                    .buttonStyle(GlassPressButtonStyle())
+                                    .disabled(isLoadingMore)
+                                    .padding(.top, 6)
+                                }
                             }
                         }
                         .padding(.horizontal, 16)

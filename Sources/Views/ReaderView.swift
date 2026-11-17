@@ -542,21 +542,21 @@ struct ReaderView: View {
                 if let title, !title.isEmpty {
                     HStack(spacing: 5) {
                         Image(systemName: systemImage)
-                            .font(.caption.weight(.semibold))
+                            .font(.system(size: 14, weight: .semibold))
                             .foregroundStyle(isEmphasized ? palette.accent : fgColor.opacity(0.88))
                         Text(title)
-                            .font(.caption.weight(isEmphasized ? .semibold : .medium))
+                            .font(.subheadline.weight(isEmphasized ? .semibold : .medium))
                             .monospacedDigit()
                             .lineLimit(1)
                             .foregroundStyle(fgColor)
                     }
                     .padding(.horizontal, horizontalPadding)
-                    .padding(.vertical, 9)
+                    .frame(minWidth: 92, height: 44)
                 } else {
                     Image(systemName: systemImage)
-                        .font(.subheadline.weight(.semibold))
+                        .font(.system(size: 16, weight: .semibold))
                         .foregroundStyle(isEmphasized ? palette.accent : fgColor.opacity(0.90))
-                        .frame(width: 40, height: 38)
+                        .frame(width: 44, height: 44)
                 }
             }
             .contentShape(Capsule())
@@ -574,9 +574,13 @@ struct ReaderView: View {
                 }()
                 let glass: Glass = tint != nil ? .regular.tint(tint!).interactive() : .regular.interactive()
                 if hasTitle {
-                    label.glassEffect(glass, in: Capsule())
+                    label
+                        .glassEffect(glass, in: Capsule())
+                        .contentShape(Capsule())
                 } else {
-                    label.glassEffect(glass, in: Circle())
+                    label
+                        .glassEffect(glass, in: Circle())
+                        .contentShape(Circle())
                 }
             } else {
                 legacyReaderDockCapsule(label: label, activeCustomBg: activeCustomBg, isLightDock: isLightDock)

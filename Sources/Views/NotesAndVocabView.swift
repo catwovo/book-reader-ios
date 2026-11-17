@@ -105,73 +105,28 @@ struct NotesAndVocabView: View {
     }
 
     var body: some View {
-        NavigationStack {
-            ZStack {
-                AmbientGlassBackdrop(themeMode: settingsStore.settings.themeMode)
+        ZStack {
+            AmbientGlassBackdrop(themeMode: settingsStore.settings.themeMode)
 
-                VStack(spacing: 0) {
-                    if showSearch {
-                        HStack(spacing: 8) {
-                            Image(systemName: "magnifyingglass")
-                                .foregroundStyle(.secondary)
-                            TextField(
-                                segment == 0 ? "搜索句子、批注或书名..." : "搜索生词、释义、例句或书名...",
-                                text: $searchQuery
-                            )
-                            .textFieldStyle(.plain)
-                            if !searchQuery.isEmpty {
-                                Button {
-                                    searchQuery = ""
-                                } label: {
-                                    Image(systemName: "xmark.circle.fill")
-                                        .foregroundStyle(.secondary)
-                                }
-                            }
-                        }
-                        .padding(.horizontal, 12)
-                        .padding(.vertical, 9)
-                        .appleLiquidGlassRect(cornerRadius: 14, interactive: true)
-                        .padding(.horizontal, 16)
-                        .padding(.top, 8)
-                        .padding(.bottom, 6)
-                        .transition(AppMotion.panelTransition)
-                    }
-
-                    GlassHorizontalPager(selection: $segment, pageCount: 3) { page in
-                        switch page {
-                        case 0: notesPage
-                        case 1: vocabPage
-                        default: flashcardsPage
-                        }
-                    }
-                    .onChange(of: segment) { _, _ in
-                        flipped = false
-                    }
-                }
-            }
-            .navigationBarTitleDisplayMode(.inline)
-            .adaptiveGlassNavBar()
-            .toolbar {
-                ToolbarItem(placement: .topBarLeading) {
-                    HStack(spacing: 8) {
-                        Text("笔记")
-                            .font(.title2.bold())
-                        if canSearchCurrent || showSearch {
-                            GlassCircleIconButton(
-                                systemImage: showSearch ? "xmark" : "magnifyingglass",
-                                size: 30,
-                                iconFont: .caption.bold(),
-                                isActive: showSearch
-                            ) {
-                                withAnimation(AppMotion.panelSpring) {
-                                    showSearch.toggle()
-                                    if !showSearch { searchQuery = "" }
-                                }
+            VStack(spacing: 0) {
+                // Clean custom header (avoids iOS 26 toolbar auto-glass double wrapping)
+                HStack(spacing: 8) {
+                    Text("笔记")
+                        .font(.title2.bold())
+                    if canSearchCurrent || showSearch {
+                        GlassCircleIconButton(
+                            systemImage: showSearch ? "xmark" : "magnifyingglass",
+                            size: 32,
+                            iconFont: .caption.bold(),
+                            isActive: showSearch
+                        ) {
+                            withAnimation(AppMotion.panelSpring) {
+                                showSearch.toggle()
+                                if !showSearch { searchQuery = "" }
                             }
                         }
                     }
-                }
-                ToolbarItem(placement: .topBarTrailing) {
+                    Spacer()
                     GlassSegmentedControl(
                         titles: ["句子", "词汇", "闪卡"],
                         selection: $segment,
@@ -179,37 +134,78 @@ struct NotesAndVocabView: View {
                     )
                     .frame(width: 184)
                 }
-            }
-            .sheet(item: $editingNote) { note in
-                NavigationStack {
-                    Form {
-                        Section("原句") {
-                            Text(note.sentenceText)
-                                .font(.subheadline)
-                                .foregroundStyle(.secondary)
-                        }
-                        Section("我的想法 / 批注") {
-                            TextEditor(text: $editDraft)
-                                .frame(minHeight: 130)
+                .padding(.horizontal, 16)
+                .padding(.top, 8)
+                .padding(.bottom, 8)
+
+                if showSearch {
+                    HStack(spacing: 8) {
+                        Image(systemName: "magnifyingglass")
+                            .foregroundStyle(.secondary)
+                        TextField(
+                            segment == 0 ? "搜索句子、批注或书名..." : "搜索生词、释义、例句或书名...",
+                            text: $searchQuery
+                        )
+                        .textFieldStyle(.plain)
+                        if !searchQuery.isEmpty {
+                            Button {
+                                searchQuery = ""
+                            } label: {
+                                Image(systemName: "xmark.circle.fill")
+                                    .foregroundStyle(.secondary)
+                            }
                         }
                     }
-                    .navigationTitle("编辑句子笔记")
-                    .navigationBarTitleDisplayMode(.inline)
-                    .toolbar {
-                        ToolbarItem(placement: .topBarLeading) {
-                            Button("取消") { editingNote = nil }
-                        }
-                        ToolbarItem(placement: .topBarTrailing) {
-                            Button("保存") {
-                                db.updateNoteText(id: note.id, noteText: editDraft.trimmingCharacters(in: .whitespacesAndNewlines))
-                                editingNote = nil
-                            }
-                            .bold()
-                        }
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 9)
+                    .appleLiquidGlassRect(cornerRadius: 14, interactive: true)
+                    .padding(.horizontal, 16)
+                    .padding(.top, 2)
+                    .padding(.bottom, 6)
+                    .transition(AppMotion.panelTransition)
+                }
+
+                GlassHorizontalPager(selection: $segment, pageCount: 3) { page in
+                    switch page {
+                    case 0: notesPage
+                    case 1: vocabPage
+                    default: flashcardsPage
                     }
                 }
-                .presentationDetents([.medium])
+                .onChange(of: segment) { _, _ in
+                    flipped = false
+                }
             }
+        }
+        .sheet(item: $editingNote) { note in
+            NavigationStack {
+                Form {
+                    Section("原句") {
+                        Text(note.sentenceText)
+                            .font(.subheadline)
+                            .foregroundStyle(.secondary)
+                    }
+                    Section("我的想法 / 批注") {
+                        TextEditor(text: $editDraft)
+                            .frame(minHeight: 130)
+                    }
+                }
+                .navigationTitle("编辑句子笔记")
+                .navigationBarTitleDisplayMode(.inline)
+                .toolbar {
+                    ToolbarItem(placement: .topBarLeading) {
+                        Button("取消") { editingNote = nil }
+                    }
+                    ToolbarItem(placement: .topBarTrailing) {
+                        Button("保存") {
+                            db.updateNoteText(id: note.id, noteText: editDraft.trimmingCharacters(in: .whitespacesAndNewlines))
+                            editingNote = nil
+                        }
+                        .bold()
+                    }
+                }
+            }
+            .presentationDetents([.medium])
         }
     }
 
@@ -362,40 +358,44 @@ struct NotesAndVocabView: View {
                 let card = deck[safeIdx]
                 let isZhCard = isChineseVocab(card)
 
-                VStack(spacing: 12) {
-                    VStack(spacing: 6) {
-                        HStack {
-                            Text("\(safeIdx + 1) / \(deck.count)")
-                                .font(.caption.weight(.semibold))
-                                .foregroundStyle(palette.accent)
-                            Spacer()
-                            Text("\(isZhCard ? "中文" : "英文") · 已查 \(card.lookupCount) 次")
-                                .font(.caption2)
-                                .foregroundStyle(.secondary)
+                GeometryReader { geo in
+                    let maxCardH = max(140, geo.size.height - 134)
+
+                    VStack(spacing: 12) {
+                        VStack(spacing: 6) {
+                            HStack {
+                                Text("\(safeIdx + 1) / \(deck.count)")
+                                    .font(.caption.weight(.semibold))
+                                    .foregroundStyle(palette.accent)
+                                Spacer()
+                                Text("\(isZhCard ? "中文" : "英文") · 已查 \(card.lookupCount) 次")
+                                    .font(.caption2)
+                                    .foregroundStyle(.secondary)
+                            }
+                            SmoothLinearProgressBar(
+                                progress: Double(safeIdx + 1) / Double(deck.count),
+                                height: 4
+                            )
                         }
-                        SmoothLinearProgressBar(
-                            progress: Double(safeIdx + 1) / Double(deck.count),
-                            height: 4
+
+                        Spacer(minLength: 4)
+
+                        FlashcardDeckCard(
+                            card: card,
+                            flipped: $flipped,
+                            maxHeight: maxCardH,
+                            onSpeak: { speech.speak($0) }
                         )
+
+                        Spacer(minLength: 4)
+
+                        flashcardActionButtonsRow(safeIdx: safeIdx, deck: deck, card: card)
                     }
-
-                    Spacer(minLength: 4)
-
-                    FlashcardDeckCard(
-                        card: card,
-                        flipped: $flipped,
-                        onSpeak: { speech.speak($0) }
-                    )
-                    .frame(maxWidth: .infinity, minHeight: 240, maxHeight: 365)
-
-                    Spacer(minLength: 4)
-
-                    flashcardActionButtonsRow(safeIdx: safeIdx, deck: deck, card: card)
+                    .padding(.horizontal, 20)
+                    .padding(.top, 10)
+                    .padding(.bottom, 16)
+                    .frame(width: geo.size.width, height: geo.size.height, alignment: .center)
                 }
-                .padding(.horizontal, 20)
-                .padding(.top, 10)
-                .padding(.bottom, 16)
-                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
             }
         }
     }
@@ -924,10 +924,113 @@ private struct VocabCardView: View {
 private struct FlashcardDeckCard: View {
     let card: VocabItem
     @Binding var flipped: Bool
+    var maxHeight: CGFloat = 340
     var onSpeak: (String) -> Void
 
     @Environment(\.appPalette) private var palette
     @State private var sentenceExpanded = false
+
+    @ViewBuilder
+    private var cardInnerContent: some View {
+        VStack(spacing: 14) {
+            HStack(spacing: 5) {
+                Image(systemName: flipped ? "sparkles" : "hand.tap")
+                    .font(.caption2.weight(.semibold))
+                Text(flipped ? "释义已展开 · 点击收起" : "轻点卡片翻看释义")
+                    .font(.caption2.weight(.semibold))
+            }
+            .foregroundStyle(flipped ? palette.accent : .secondary)
+            .padding(.horizontal, 11)
+            .padding(.vertical, 4.5)
+            .background((flipped ? palette.accent.opacity(0.12) : Color.secondary.opacity(0.10)), in: Capsule())
+
+            Text(card.word)
+                .font(.system(.largeTitle, design: .serif).bold())
+                .minimumScaleFactor(0.7)
+                .multilineTextAlignment(.center)
+                .padding(.top, 4)
+
+            HStack(spacing: 8) {
+                if !card.phonetic.isEmpty {
+                    Text(card.phonetic)
+                        .font(.body)
+                        .foregroundStyle(.secondary)
+                }
+                Button { onSpeak(card.word) } label: {
+                    Image(systemName: "speaker.wave.2.fill")
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(palette.accent)
+                        .frame(width: 32, height: 32)
+                        .background(palette.accent.opacity(0.12), in: Circle())
+                }
+                .buttonStyle(GlassPressButtonStyle())
+            }
+
+            if !card.contextSentence.isEmpty {
+                VStack(spacing: 5) {
+                    Text("“\(card.contextSentence)”")
+                        .font(.system(.caption, design: .serif).italic())
+                        .lineSpacing(2.5)
+                        .multilineTextAlignment(.center)
+                        .lineLimit(sentenceExpanded ? nil : 3)
+                    if card.contextSentence.count > 90 {
+                        Button(sentenceExpanded ? "收起原句" : "展开原句") {
+                            withAnimation(AppMotion.panelSpring) {
+                                sentenceExpanded.toggle()
+                            }
+                        }
+                        .font(.caption2.weight(.semibold))
+                        .foregroundStyle(palette.accent)
+                    }
+                }
+                .padding(12)
+                .frame(maxWidth: .infinity)
+                .background(Color.secondary.opacity(0.06), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 14, style: .continuous)
+                        .strokeBorder(Color.white.opacity(palette.isLight ? 0.40 : 0.10), lineWidth: 0.5)
+                )
+            }
+
+            if flipped {
+                VStack(spacing: 10) {
+                    Divider()
+                        .opacity(0.5)
+                    if !card.englishTranslation.isEmpty {
+                        HStack(spacing: 6) {
+                            Text(card.englishTranslation)
+                                .font(.headline)
+                                .foregroundStyle(.teal)
+                            Button { onSpeak(card.englishTranslation) } label: {
+                                Image(systemName: "speaker.wave.2.fill")
+                                    .font(.caption)
+                                    .foregroundStyle(.teal)
+                                    .frame(width: 26, height: 26)
+                                    .background(Color.teal.opacity(0.14), in: Circle())
+                            }
+                            .buttonStyle(GlassPressButtonStyle())
+                        }
+                    }
+                    Text(card.translation.replacingOccurrences(of: #"\n{2,}"#, with: "\n", options: .regularExpression))
+                        .font(.headline)
+                        .lineSpacing(3)
+                        .multilineTextAlignment(.center)
+                    if !card.contextTranslation.isEmpty {
+                        Text(card.contextTranslation)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .multilineTextAlignment(.center)
+                    }
+                }
+                .padding(.top, 4)
+                .transition(AppMotion.panelTransition)
+            }
+        }
+        .padding(.horizontal, 22)
+        .padding(.vertical, 20)
+        .frame(maxWidth: .infinity)
+        .contentShape(Rectangle())
+    }
 
     var body: some View {
         ZStack(alignment: .bottom) {
@@ -940,104 +1043,14 @@ private struct FlashcardDeckCard: View {
                 .opacity(0.70)
 
             GlassCard(cornerRadius: 26, tintColor: flipped ? palette.accent.opacity(0.05) : nil) {
-                ScrollView {
-                    VStack(spacing: 15) {
-                        HStack(spacing: 5) {
-                            Image(systemName: flipped ? "sparkles" : "hand.tap")
-                                .font(.caption2.weight(.semibold))
-                            Text(flipped ? "释义已展开 · 点击收起" : "轻点卡片翻看释义")
-                                .font(.caption2.weight(.semibold))
-                        }
-                        .foregroundStyle(flipped ? palette.accent : .secondary)
-                        .padding(.horizontal, 11)
-                        .padding(.vertical, 4.5)
-                        .background((flipped ? palette.accent.opacity(0.12) : Color.secondary.opacity(0.10)), in: Capsule())
+                ViewThatFits(in: .vertical) {
+                    cardInnerContent
 
-                        Text(card.word)
-                            .font(.system(.largeTitle, design: .serif).bold())
-                            .multilineTextAlignment(.center)
-                            .padding(.top, 6)
-
-                        HStack(spacing: 8) {
-                            if !card.phonetic.isEmpty {
-                                Text(card.phonetic)
-                                    .font(.body)
-                                    .foregroundStyle(.secondary)
-                            }
-                            Button { onSpeak(card.word) } label: {
-                                Image(systemName: "speaker.wave.2.fill")
-                                    .font(.subheadline.weight(.semibold))
-                                    .foregroundStyle(palette.accent)
-                                    .frame(width: 32, height: 32)
-                                    .background(palette.accent.opacity(0.12), in: Circle())
-                            }
-                            .buttonStyle(GlassPressButtonStyle())
-                        }
-
-                        if !card.contextSentence.isEmpty {
-                            VStack(spacing: 5) {
-                                Text("“\(card.contextSentence)”")
-                                    .font(.system(.caption, design: .serif).italic())
-                                    .lineSpacing(2.5)
-                                    .multilineTextAlignment(.center)
-                                    .lineLimit(sentenceExpanded ? nil : 3)
-                                if card.contextSentence.count > 90 {
-                                    Button(sentenceExpanded ? "收起原句" : "展开原句") {
-                                        withAnimation(AppMotion.panelSpring) {
-                                            sentenceExpanded.toggle()
-                                        }
-                                    }
-                                    .font(.caption2.weight(.semibold))
-                                    .foregroundStyle(palette.accent)
-                                }
-                            }
-                            .padding(13)
-                            .frame(maxWidth: .infinity)
-                            .background(Color.secondary.opacity(0.06), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
-                            .overlay(
-                                RoundedRectangle(cornerRadius: 14, style: .continuous)
-                                    .strokeBorder(Color.white.opacity(palette.isLight ? 0.40 : 0.10), lineWidth: 0.5)
-                            )
-                        }
-
-                        if flipped {
-                            VStack(spacing: 10) {
-                                Divider()
-                                    .opacity(0.5)
-                                if !card.englishTranslation.isEmpty {
-                                    HStack(spacing: 6) {
-                                        Text(card.englishTranslation)
-                                            .font(.headline)
-                                            .foregroundStyle(.teal)
-                                        Button { onSpeak(card.englishTranslation) } label: {
-                                            Image(systemName: "speaker.wave.2.fill")
-                                                .font(.caption)
-                                                .foregroundStyle(.teal)
-                                                .frame(width: 26, height: 26)
-                                                .background(Color.teal.opacity(0.14), in: Circle())
-                                        }
-                                        .buttonStyle(GlassPressButtonStyle())
-                                    }
-                                }
-                                Text(card.translation.replacingOccurrences(of: #"\n{2,}"#, with: "\n", options: .regularExpression))
-                                    .font(.headline)
-                                    .lineSpacing(3)
-                                    .multilineTextAlignment(.center)
-                                if !card.contextTranslation.isEmpty {
-                                    Text(card.contextTranslation)
-                                        .font(.caption)
-                                        .foregroundStyle(.secondary)
-                                        .multilineTextAlignment(.center)
-                                }
-                            }
-                            .padding(.top, 4)
-                            .transition(AppMotion.panelTransition)
-                        }
+                    ScrollView {
+                        cardInnerContent
                     }
-                    .padding(24)
-                    .frame(maxWidth: .infinity, minHeight: 240)
-                    .contentShape(Rectangle())
                 }
+                .frame(maxHeight: maxHeight)
                 .clipped()
             }
             .onTapGesture {
@@ -1047,6 +1060,7 @@ private struct FlashcardDeckCard: View {
             }
         }
         .padding(.bottom, 8)
+        .animation(AppMotion.panelSpring, value: flipped)
         .onChange(of: card.id) { _, _ in
             sentenceExpanded = false
         }

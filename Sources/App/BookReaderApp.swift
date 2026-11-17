@@ -32,6 +32,7 @@ private struct RootContentView: View {
     @State private var openingTitle = ""
     @State private var openError: String?
     @State private var openTask: Task<Void, Never>?
+    @State private var isTabBarHiddenForModal = false
 
     private var palette: AppThemePalette {
         AppThemePalette.resolve(mode: settingsStore.settings.themeMode, systemScheme: systemScheme)
@@ -45,7 +46,59 @@ private struct RootContentView: View {
     ]
 
     var body: some View {
+        let isReaderOpen = activeBook != nil && parsedBook != nil
         ZStack {
+            Group {
+                #if compiler(>=6.2)
+                if #available(iOS 26.0, *) {
+                    TabView(selection: $selectedTab) {
+                        Tab("书架", systemImage: "books.vertical", value: 0) {
+                            LibraryView(
+                                onOpenBook: { book in
+                                    openBook(book, chapter: nil, unit: nil)
+                                },
+                                onModalOverlayChange: { hidden in
+                                    withAnimation(AppMotion.panelSpring) {
+                                        isTabBarHiddenForModal = hidden
+                                    }
+                                }
+                            )
+                            .toolbarVisibility(isTabBarHiddenForModal ? .hidden : .visible, for: .tabBar)
+                        }
+
+                        Tab("笔记", systemImage: "bookmark", value: 1) {
+                            NotesAndVocabView { book, chap, unit in
+                                openBook(book, chapter: chap, unit: unit)
+                            }
+                            .toolbarVisibility(isTabBarHiddenForModal ? .hidden : .visible, for: .tabBar)
+                        }
+
+                        Tab("统计", systemImage: "chart.bar", value: 2) {
+                            ReadingHistoryView()
+                                .toolbarVisibility(isTabBarHiddenForModal ? .hidden : .visible, for: .tabBar)
+                        }
+
+                        Tab("设置", systemImage: "gearshape", value: 3) {
+                            SettingsView { book in
+                                openBook(book, chapter: nil, unit: nil)
+                            }
+                            .toolbarVisibility(isTabBarHiddenForModal ? .hidden : .visible, for: .tabBar)
+                        }
+                    }
+                    .tint(palette.accent)
+                } else {
+                    legacyTabShell
+                }
+                #else
+                legacyTabShell
+                #endif
+            }
+            .scaleEffect(isReaderOpen ? 0.96 : 1.0)
+            .opacity(isReaderOpen ? 0.86 : 1.0)
+            .allowsHitTesting(!isReaderOpen)
+            .accessibilityHidden(isReaderOpen)
+            .zIndex(0)
+
             if let book = activeBook, let parsed = parsedBook {
                 ReaderView(
                     book: book,
@@ -63,38 +116,7 @@ private struct RootContentView: View {
                 )
                 .id(book.id)
                 .transition(AppMotion.bookTransition)
-            } else {
-                ZStack {
-                    LibraryView { book in
-                        openBook(book, chapter: nil, unit: nil)
-                    }
-                    .opacity(selectedTab == 0 ? 1 : 0)
-                    .allowsHitTesting(selectedTab == 0)
-                    .zIndex(selectedTab == 0 ? 1 : 0)
-
-                    NotesAndVocabView { book, chap, unit in
-                        openBook(book, chapter: chap, unit: unit)
-                    }
-                    .opacity(selectedTab == 1 ? 1 : 0)
-                    .allowsHitTesting(selectedTab == 1)
-                    .zIndex(selectedTab == 1 ? 1 : 0)
-
-                    ReadingHistoryView()
-                        .opacity(selectedTab == 2 ? 1 : 0)
-                        .allowsHitTesting(selectedTab == 2)
-                        .zIndex(selectedTab == 2 ? 1 : 0)
-
-                    SettingsView { book in
-                        openBook(book, chapter: nil, unit: nil)
-                    }
-                    .opacity(selectedTab == 3 ? 1 : 0)
-                    .allowsHitTesting(selectedTab == 3)
-                    .zIndex(selectedTab == 3 ? 1 : 0)
-                }
-                .animation(AppMotion.tabSpring, value: selectedTab)
-                .safeAreaInset(edge: .bottom, spacing: 0) {
-                    LiquidGlassTabBar(items: rootTabs, selectedTab: $selectedTab)
-                }
+                .zIndex(10)
             }
 
             if isOpeningBook {
@@ -130,6 +152,55 @@ private struct RootContentView: View {
             Button("确定", role: .cancel) { openError = nil }
         } message: {
             Text(openError ?? "")
+        }
+    }
+
+    @ViewBuilder
+    private var legacyTabShell: some View {
+        ZStack {
+            ZStack {
+                LibraryView(
+                    onOpenBook: { book in
+                        openBook(book, chapter: nil, unit: nil)
+                    },
+                    onModalOverlayChange: { hidden in
+                        isTabBarHiddenForModal = hidden
+                    }
+                )
+                .opacity(selectedTab == 0 ? 1 : 0)
+                .allowsHitTesting(selectedTab == 0)
+                .zIndex(selectedTab == 0 ? 1 : 0)
+
+                NotesAndVocabView { book, chap, unit in
+                    openBook(book, chapter: chap, unit: unit)
+                }
+                .opacity(selectedTab == 1 ? 1 : 0)
+                .allowsHitTesting(selectedTab == 1)
+                .zIndex(selectedTab == 1 ? 1 : 0)
+
+                ReadingHistoryView()
+                    .opacity(selectedTab == 2 ? 1 : 0)
+                    .allowsHitTesting(selectedTab == 2)
+                    .zIndex(selectedTab == 2 ? 1 : 0)
+
+                SettingsView { book in
+                    openBook(book, chapter: nil, unit: nil)
+                }
+                .opacity(selectedTab == 3 ? 1 : 0)
+                .allowsHitTesting(selectedTab == 3)
+                .zIndex(selectedTab == 3 ? 1 : 0)
+            }
+            .animation(AppMotion.tabSpring, value: selectedTab)
+            .safeAreaPadding(.bottom, 74)
+
+            VStack {
+                Spacer(minLength: 0)
+                LiquidGlassTabBar(items: rootTabs, selectedTab: $selectedTab)
+                    .opacity(isTabBarHiddenForModal ? 0 : 1)
+                    .allowsHitTesting(!isTabBarHiddenForModal)
+                    .animation(AppMotion.panelSpring, value: isTabBarHiddenForModal)
+            }
+            .ignoresSafeArea(.keyboard)
         }
     }
 

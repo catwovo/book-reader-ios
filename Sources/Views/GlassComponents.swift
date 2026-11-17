@@ -223,9 +223,19 @@ enum AppMotion {
 
 struct GlassPressButtonStyle: ButtonStyle {
     func makeBody(configuration: Configuration) -> some View {
+        #if compiler(>=6.2)
+        if #available(iOS 26.0, *) {
+            configuration.label
+        } else {
+            configuration.label
+                .scaleEffect(configuration.isPressed ? 0.975 : 1.0)
+                .animation(AppMotion.pressSpring, value: configuration.isPressed)
+        }
+        #else
         configuration.label
             .scaleEffect(configuration.isPressed ? 0.975 : 1.0)
             .animation(AppMotion.pressSpring, value: configuration.isPressed)
+        #endif
     }
 }
 
@@ -737,12 +747,45 @@ struct GlassSegmentedControl<Option: Hashable>: View {
 
     @Namespace private var glassNamespace
     @Environment(\.appPalette) private var palette
+    @State private var trackSize: CGSize = .zero
+    @State private var isPressing: Bool = false
+    @State private var dragCenterX: CGFloat? = nil
+    @State private var dragStretch: CGFloat = 0
+
+    private var trackInset: CGFloat { 3 }
+
+    private var count: Int {
+        max(1, options.count)
+    }
+
+    private var segmentWidth: CGFloat {
+        max(1, (trackSize.width - trackInset * 2) / CGFloat(count))
+    }
+
+    private var selectedIndex: Int {
+        options.firstIndex(where: { $0.value == selection }) ?? 0
+    }
+
+    private var restCenterX: CGFloat {
+        trackInset + segmentWidth * (CGFloat(selectedIndex) + 0.5)
+    }
+
+    private var activeCenterX: CGFloat {
+        dragCenterX ?? restCenterX
+    }
+
+    private var hoveredIndex: Int {
+        guard isPressing else { return selectedIndex }
+        let idx = Int(floor((activeCenterX - trackInset) / max(1, segmentWidth)))
+        return min(count - 1, max(0, idx))
+    }
 
     var body: some View {
         #if compiler(>=6.2)
         if #available(iOS 26.0, *) {
-            segmentRow(useNativeGlass: true)
-                .glassEffect(.regular.interactive(), in: Capsule())
+            GlassEffectContainer(spacing: 4) {
+                interactiveTrack(useNativeGlass: true)
+            }
         } else {
             legacySegmentedBody
         }
@@ -752,82 +795,179 @@ struct GlassSegmentedControl<Option: Hashable>: View {
     }
 
     @ViewBuilder
-    private func segmentRow(useNativeGlass: Bool) -> some View {
-        HStack(spacing: 2) {
-            ForEach(options, id: \.value) { item in
-                let isSelected = selection == item.value
-                Button {
-                    if selection != item.value {
-                        withAnimation(AppMotion.tabSpring) {
-                            selection = item.value
-                        }
-                    }
-                } label: {
+    private func interactiveTrack(useNativeGlass: Bool) -> some View {
+        let pillWidth = max(20, segmentWidth)
+        let pillHeight = max(22, trackSize.height - trackInset * 2)
+        let offsetX = trackSize.width > 1 ? (activeCenterX - trackSize.width * 0.5) : 0
+
+        ZStack {
+            if useNativeGlass, trackSize.width > 1 {
+                #if compiler(>=6.2)
+                if #available(iOS 26.0, *) {
+                    Capsule()
+                        .fill(.clear)
+                        .frame(width: trackSize.width, height: trackSize.height)
+                        .glassEffect(.regular, in: Capsule())
+                        .zIndex(0)
+                        .allowsHitTesting(false)
+                }
+                #endif
+            }
+
+            // Sliding Liquid Glass droplet: rests behind selected label, lifts above labels on finger press/drag
+            if trackSize.width > 1 {
+                slidingGlassPill(
+                    useNativeGlass: useNativeGlass,
+                    width: pillWidth,
+                    height: pillHeight
+                )
+                .offset(x: offsetX)
+                .zIndex(isPressing ? 3 : 0.5)
+                .allowsHitTesting(false)
+            }
+
+            HStack(spacing: 0) {
+                ForEach(Array(options.enumerated()), id: \.element.value) { idx, item in
+                    let isLit = hoveredIndex == idx
                     Text(item.title)
-                        .font(compact ? .caption.weight(isSelected ? .semibold : .medium) : .subheadline.weight(isSelected ? .semibold : .medium))
+                        .font(compact ? .caption.weight(isLit ? .semibold : .medium) : .subheadline.weight(isLit ? .semibold : .medium))
                         .lineLimit(1)
                         .minimumScaleFactor(0.85)
-                        .foregroundStyle(isSelected ? palette.accent : .primary.opacity(0.68))
+                        .foregroundStyle(isLit ? palette.accent : .primary.opacity(0.70))
+                        .scaleEffect(isPressing && isLit ? 1.04 : 1.0)
                         .frame(maxWidth: .infinity)
-                        .padding(.horizontal, compact ? 9 : 12)
+                        .padding(.horizontal, compact ? 8 : 12)
                         .padding(.vertical, compact ? 5 : 7)
-                        .background {
-                            if isSelected {
-                                if useNativeGlass {
-                                    Capsule()
-                                        .fill(palette.isLight ? Color.white.opacity(0.76) : palette.accent.opacity(0.28))
-                                        .overlay {
-                                            Capsule().strokeBorder(
-                                                .white.opacity(palette.isLight ? 0.90 : 0.36),
-                                                lineWidth: 0.65
-                                            )
-                                        }
-                                        .shadow(color: .black.opacity(palette.isLight ? 0.08 : 0.22), radius: 5, x: 0, y: 2)
-                                        .matchedGeometryEffect(id: "glassSegmentIndicator", in: glassNamespace)
-                                } else {
-                                    Capsule()
-                                        .fill(.regularMaterial)
-                                        .overlay {
-                                            Capsule().fill(
-                                                LinearGradient(
-                                                    colors: [
-                                                        .white.opacity(palette.isLight ? 0.62 : 0.24),
-                                                        palette.accent.opacity(palette.isLight ? 0.12 : 0.22)
-                                                    ],
-                                                    startPoint: .top,
-                                                    endPoint: .bottom
-                                                )
-                                            )
-                                        }
-                                        .overlay {
-                                            Capsule().strokeBorder(
-                                                LinearGradient(
-                                                    colors: [
-                                                        .white.opacity(palette.isLight ? 0.85 : 0.38),
-                                                        palette.accent.opacity(0.32)
-                                                    ],
-                                                    startPoint: .topLeading,
-                                                    endPoint: .bottomTrailing
-                                                ),
-                                                lineWidth: 0.85
-                                            )
-                                        }
-                                        .shadow(color: .black.opacity(palette.isLight ? 0.08 : 0.24), radius: 5, x: 0, y: 2)
-                                        .matchedGeometryEffect(id: "glassSegmentIndicator", in: glassNamespace)
-                                }
-                            }
-                        }
-                        .contentShape(Capsule())
                 }
-                .buttonStyle(.plain)
             }
+            .padding(trackInset)
+            .allowsHitTesting(false)
+            .zIndex(1)
         }
-        .padding(3)
+        .onGeometryChange(for: CGSize.self) { $0.size } action: { newSize in
+            trackSize = newSize
+        }
+        .contentShape(Capsule())
+        .gesture(
+            DragGesture(minimumDistance: 0)
+                .onChanged { value in
+                    guard trackSize.width > 1 else { return }
+                    let minCenter = trackInset + segmentWidth * 0.5 - 3
+                    let maxCenter = max(minCenter, trackSize.width - trackInset - segmentWidth * 0.5 + 3)
+                    let clampedX = min(maxCenter, max(minCenter, value.location.x))
+                    let stretch = min(0.08, abs(value.velocity.width) / 4200.0)
+                    if !isPressing {
+                        withAnimation(.spring(response: 0.22, dampingFraction: 0.78)) {
+                            isPressing = true
+                            dragCenterX = clampedX
+                            dragStretch = stretch
+                        }
+                    } else {
+                        withAnimation(.interactiveSpring(response: 0.12, dampingFraction: 0.86)) {
+                            dragCenterX = clampedX
+                            dragStretch = stretch
+                        }
+                    }
+                }
+                .onEnded { value in
+                    guard trackSize.width > 1 else {
+                        withAnimation(AppMotion.tabSpring) {
+                            isPressing = false
+                            dragCenterX = nil
+                            dragStretch = 0
+                        }
+                        return
+                    }
+                    let isTap = abs(value.translation.width) < 6 && abs(value.translation.height) < 10
+                    let targetX = isTap
+                        ? value.location.x
+                        : (value.location.x + value.velocity.width * 0.035)
+                    let clampedTarget = min(trackSize.width - trackInset, max(trackInset, targetX))
+                    let targetIdx = min(count - 1, max(0, Int(floor((clampedTarget - trackInset) / max(1, segmentWidth)))))
+                    withAnimation(.spring(response: 0.30, dampingFraction: 0.76)) {
+                        if options[targetIdx].value != selection {
+                            selection = options[targetIdx].value
+                        }
+                        isPressing = false
+                        dragCenterX = nil
+                        dragStretch = 0
+                    }
+                }
+        )
+    }
+
+    @ViewBuilder
+    private func slidingGlassPill(useNativeGlass: Bool, width: CGFloat, height: CGFloat) -> some View {
+        let basePill = Capsule()
+            .fill(.clear)
+            .frame(width: width, height: height)
+
+        if useNativeGlass {
+            #if compiler(>=6.2)
+            if #available(iOS 26.0, *) {
+                let glass: Glass = isPressing
+                    ? .clear.interactive()
+                    : .regular.tint(palette.accent.opacity(palette.isLight ? 0.16 : 0.28))
+                basePill
+                    .glassEffect(glass, in: Capsule())
+                    .glassEffectID("glassSegmentIndicator", in: glassNamespace)
+                    .overlay {
+                        if isPressing {
+                            Capsule()
+                                .strokeBorder(.white.opacity(palette.isLight ? 0.85 : 0.45), lineWidth: 0.85)
+                        }
+                    }
+                    .scaleEffect(x: isPressing ? (1.08 + dragStretch) : 1.0, y: isPressing ? 1.22 : 1.0)
+                    .shadow(
+                        color: .black.opacity(isPressing ? (palette.isLight ? 0.14 : 0.34) : 0),
+                        radius: isPressing ? 10 : 0,
+                        x: 0,
+                        y: isPressing ? 4 : 0
+                    )
+            }
+            #endif
+        } else {
+            Capsule()
+                .fill(.regularMaterial)
+                .frame(width: width, height: height)
+                .overlay {
+                    Capsule().fill(
+                        LinearGradient(
+                            colors: [
+                                .white.opacity(isPressing ? 0.55 : (palette.isLight ? 0.62 : 0.24)),
+                                palette.accent.opacity(isPressing ? 0.08 : (palette.isLight ? 0.12 : 0.22))
+                            ],
+                            startPoint: .top,
+                            endPoint: .bottom
+                        )
+                    )
+                }
+                .overlay {
+                    Capsule().strokeBorder(
+                        LinearGradient(
+                            colors: [
+                                .white.opacity(palette.isLight ? 0.88 : 0.42),
+                                palette.accent.opacity(0.32)
+                            ],
+                            startPoint: .topLeading,
+                            endPoint: .bottomTrailing
+                        ),
+                        lineWidth: isPressing ? 1.1 : 0.85
+                    )
+                }
+                .scaleEffect(x: isPressing ? (1.08 + dragStretch) : 1.0, y: isPressing ? 1.18 : 1.0)
+                .shadow(
+                    color: .black.opacity(palette.isLight ? (isPressing ? 0.14 : 0.08) : 0.28),
+                    radius: isPressing ? 9 : 5,
+                    x: 0,
+                    y: isPressing ? 4 : 2
+                )
+        }
     }
 
     @ViewBuilder
     private var legacySegmentedBody: some View {
-        segmentRow(useNativeGlass: false)
+        interactiveTrack(useNativeGlass: false)
             .background {
                 ZStack {
                     Capsule().fill(.ultraThinMaterial)
@@ -881,10 +1021,10 @@ struct GlassCircleIconButton: View {
                     .font(iconFont)
                     .foregroundStyle(isActive ? activeTint : .primary)
                     .frame(width: size, height: size)
+                    .glassEffect(glass, in: Circle())
                     .contentShape(Circle())
             }
             .buttonStyle(.plain)
-            .glassEffect(glass, in: Circle())
         } else {
             legacyCircleBody(activeTint: activeTint)
         }
@@ -958,10 +1098,10 @@ struct GlassCapsuleChip: View {
                 .foregroundStyle(selected ? activeTint : .primary)
                 .padding(.horizontal, 12)
                 .padding(.vertical, 6)
+                .glassEffect(glass, in: Capsule())
                 .contentShape(Capsule())
             }
             .buttonStyle(.plain)
-            .glassEffect(glass, in: Capsule())
         } else {
             legacyCapsuleBody(activeTint: activeTint)
         }
@@ -1043,6 +1183,10 @@ struct GlassHorizontalPager<PageContent: View>: View {
                     .scrollTargetBehavior(.paging)
                     .scrollPosition(id: $scrollPage)
                 }
+            } else if pageCount <= 1 {
+                if pageCount == 1 {
+                    pageContent(0)
+                }
             } else {
                 ScrollView(.horizontal, showsIndicators: false) {
                     HStack(spacing: 0) {
@@ -1105,14 +1249,45 @@ struct LiquidGlassTabBar: View {
 
     @Namespace private var tabNamespace
     @Environment(\.appPalette) private var palette
+    @State private var barSize: CGSize = .zero
+    @State private var isPressing: Bool = false
+    @State private var dragCenterX: CGFloat? = nil
+
+    private var inset: CGFloat { 5 }
+
+    private var itemCount: Int {
+        max(1, items.count)
+    }
+
+    private var itemWidth: CGFloat {
+        max(1, (barSize.width - inset * 2) / CGFloat(itemCount))
+    }
+
+    private var selectedIndex: Int {
+        items.firstIndex(where: { $0.id == selectedTab }) ?? 0
+    }
+
+    private var restCenterX: CGFloat {
+        inset + itemWidth * (CGFloat(selectedIndex) + 0.5)
+    }
+
+    private var activeCenterX: CGFloat {
+        dragCenterX ?? restCenterX
+    }
+
+    private var hoveredIndex: Int {
+        guard isPressing else { return selectedIndex }
+        let idx = Int(floor((activeCenterX - inset) / max(1, itemWidth)))
+        return min(itemCount - 1, max(0, idx))
+    }
 
     var body: some View {
         #if compiler(>=6.2)
         if #available(iOS 26.0, *) {
             GlassEffectContainer(spacing: 8) {
                 tabBarItemsRow(useNativeGlass: true)
-                    .padding(5)
-                    .glassEffect(.regular.interactive(), in: Capsule())
+                    .padding(inset)
+                    .glassEffect(.regular, in: Capsule())
             }
             .padding(.horizontal, 16)
             .padding(.bottom, 6)
@@ -1126,83 +1301,116 @@ struct LiquidGlassTabBar: View {
 
     @ViewBuilder
     private func tabBarItemsRow(useNativeGlass: Bool) -> some View {
-        HStack(spacing: 4) {
-            ForEach(items) { item in
-                let isSelected = selectedTab == item.id
-                Button {
-                    if selectedTab != item.id {
-                        withAnimation(AppMotion.tabSpring) {
-                            selectedTab = item.id
-                        }
+        let offsetX = barSize.width > 1 ? (activeCenterX - barSize.width * 0.5) : 0
+
+        ZStack {
+            if barSize.width > 1 {
+                Capsule()
+                    .fill(.regularMaterial)
+                    .frame(width: itemWidth, height: 52)
+                    .overlay {
+                        Capsule().fill(
+                            LinearGradient(
+                                colors: [
+                                    .white.opacity(palette.isLight ? 0.65 : 0.22),
+                                    palette.accent.opacity(isPressing ? 0.10 : (palette.isLight ? 0.14 : 0.24))
+                                ],
+                                startPoint: .top,
+                                endPoint: .bottom
+                            )
+                        )
                     }
-                } label: {
+                    .overlay {
+                        Capsule().strokeBorder(
+                            LinearGradient(
+                                colors: [
+                                    .white.opacity(palette.isLight ? 0.85 : 0.42),
+                                    palette.accent.opacity(0.35)
+                                ],
+                                startPoint: .topLeading,
+                                endPoint: .bottomTrailing
+                            ),
+                            lineWidth: isPressing ? 1.15 : 0.9
+                        )
+                    }
+                    .scaleEffect(x: isPressing ? 1.08 : 1.0, y: isPressing ? 1.12 : 1.0)
+                    .shadow(color: palette.accent.opacity(palette.isLight ? 0.14 : 0.24), radius: isPressing ? 12 : 8, x: 0, y: 3)
+                    .offset(x: offsetX)
+                    .zIndex(isPressing ? 2 : 0)
+                    .allowsHitTesting(false)
+            }
+
+            HStack(spacing: 0) {
+                ForEach(Array(items.enumerated()), id: \.element.id) { idx, item in
+                    let isLit = hoveredIndex == idx
                     VStack(spacing: 3) {
-                        Image(systemName: isSelected ? item.selectedImage : item.systemImage)
-                            .font(.system(size: 18, weight: isSelected ? .semibold : .medium))
-                            .symbolEffect(.bounce.byLayer, value: isSelected)
+                        Image(systemName: isLit ? item.selectedImage : item.systemImage)
+                            .font(.system(size: 18, weight: isLit ? .semibold : .medium))
+                            .symbolEffect(.bounce.byLayer, value: selectedTab == item.id)
                         Text(item.title)
-                            .font(.system(size: 10.5, weight: isSelected ? .semibold : .medium))
+                            .font(.system(size: 10.5, weight: isLit ? .semibold : .medium))
                             .lineLimit(1)
                     }
-                    .foregroundStyle(isSelected ? palette.accent : .primary.opacity(0.68))
+                    .foregroundStyle(isLit ? palette.accent : .primary.opacity(0.68))
+                    .scaleEffect(isPressing && isLit ? 1.06 : 1.0)
                     .frame(maxWidth: .infinity)
                     .frame(height: 52)
-                    .background {
-                        if isSelected {
-                            if useNativeGlass {
-                                Capsule()
-                                    .fill(palette.accent.opacity(palette.isLight ? 0.14 : 0.24))
-                                    .overlay {
-                                        Capsule().strokeBorder(
-                                            .white.opacity(palette.isLight ? 0.72 : 0.32),
-                                            lineWidth: 0.65
-                                        )
-                                    }
-                                    .matchedGeometryEffect(id: "liquidGlassTabPill", in: tabNamespace)
-                            } else {
-                                Capsule()
-                                    .fill(.regularMaterial)
-                                    .overlay {
-                                        Capsule().fill(
-                                            LinearGradient(
-                                                colors: [
-                                                    .white.opacity(palette.isLight ? 0.65 : 0.22),
-                                                    palette.accent.opacity(palette.isLight ? 0.14 : 0.24)
-                                                ],
-                                                startPoint: .top,
-                                                endPoint: .bottom
-                                            )
-                                        )
-                                    }
-                                    .overlay {
-                                        Capsule().strokeBorder(
-                                            LinearGradient(
-                                                colors: [
-                                                    .white.opacity(palette.isLight ? 0.85 : 0.42),
-                                                    palette.accent.opacity(0.35)
-                                                ],
-                                                startPoint: .topLeading,
-                                                endPoint: .bottomTrailing
-                                            ),
-                                            lineWidth: 0.9
-                                        )
-                                    }
-                                    .shadow(color: palette.accent.opacity(palette.isLight ? 0.14 : 0.24), radius: 8, x: 0, y: 3)
-                                    .matchedGeometryEffect(id: "liquidGlassTabPill", in: tabNamespace)
-                            }
+                }
+            }
+            .allowsHitTesting(false)
+            .zIndex(1)
+        }
+        .onGeometryChange(for: CGSize.self) { $0.size } action: { newSize in
+            barSize = newSize
+        }
+        .contentShape(Capsule())
+        .gesture(
+            DragGesture(minimumDistance: 0)
+                .onChanged { value in
+                    guard barSize.width > 1 else { return }
+                    let minCenter = inset + itemWidth * 0.5 - 4
+                    let maxCenter = max(minCenter, barSize.width - inset - itemWidth * 0.5 + 4)
+                    let clampedX = min(maxCenter, max(minCenter, value.location.x))
+                    if !isPressing {
+                        withAnimation(.spring(response: 0.22, dampingFraction: 0.78)) {
+                            isPressing = true
+                            dragCenterX = clampedX
+                        }
+                    } else {
+                        withAnimation(.interactiveSpring(response: 0.12, dampingFraction: 0.86)) {
+                            dragCenterX = clampedX
                         }
                     }
-                    .contentShape(Capsule())
                 }
-                .buttonStyle(GlassPressButtonStyle())
-            }
-        }
+                .onEnded { value in
+                    guard barSize.width > 1 else {
+                        withAnimation(AppMotion.tabSpring) {
+                            isPressing = false
+                            dragCenterX = nil
+                        }
+                        return
+                    }
+                    let isTap = abs(value.translation.width) < 6 && abs(value.translation.height) < 10
+                    let targetX = isTap
+                        ? value.location.x
+                        : (value.location.x + value.velocity.width * 0.035)
+                    let clampedTarget = min(barSize.width - inset, max(inset, targetX))
+                    let targetIdx = min(itemCount - 1, max(0, Int(floor((clampedTarget - inset) / max(1, itemWidth)))))
+                    withAnimation(.spring(response: 0.30, dampingFraction: 0.76)) {
+                        if items[targetIdx].id != selectedTab {
+                            selectedTab = items[targetIdx].id
+                        }
+                        isPressing = false
+                        dragCenterX = nil
+                    }
+                }
+        )
     }
 
     @ViewBuilder
     private var legacyTabBar: some View {
         tabBarItemsRow(useNativeGlass: false)
-            .padding(5)
+            .padding(inset)
             .background {
                 ZStack {
                     Capsule().fill(.ultraThinMaterial)
