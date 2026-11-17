@@ -117,9 +117,10 @@ struct ReadingHistoryView: View {
     @State private var bookMonth: Int = HistoryDateHelper.calendar.component(.month, from: Date())
     @State private var bookListYear: Int = HistoryDateHelper.calendar.component(.year, from: Date())
     @State private var expandedBookDates: Set<String> = []
+    @State private var isBookHeaderCollapsed = false
+    @State private var lastBookCollapseToggle: Date = .distantPast
+    @State private var bookExpandedAtOffset: CGFloat? = nil
     @State private var bookScrollOffset: CGFloat = 0
-    @State private var bookManualOverride: Bool? = nil
-    @State private var bookOverrideAnchor: CGFloat = 0
     @State private var bookExpandedCard1H: CGFloat = 76
     @State private var bookCompactCard1H: CGFloat = 36
     @State private var bookExpandedCard2H: CGFloat = 152
@@ -133,9 +134,10 @@ struct ReadingHistoryView: View {
     @State private var vocabMonth: Int = HistoryDateHelper.calendar.component(.month, from: Date())
     @State private var vocabListYear: Int = HistoryDateHelper.calendar.component(.year, from: Date())
     @State private var expandedVocabDates: Set<String> = []
+    @State private var isVocabHeaderCollapsed = false
+    @State private var lastVocabCollapseToggle: Date = .distantPast
+    @State private var vocabExpandedAtOffset: CGFloat? = nil
     @State private var vocabScrollOffset: CGFloat = 0
-    @State private var vocabManualOverride: Bool? = nil
-    @State private var vocabOverrideAnchor: CGFloat = 0
     @State private var vocabExpandedCard1H: CGFloat = 114
     @State private var vocabCompactCard1H: CGFloat = 36
     @State private var vocabExpandedCard2H: CGFloat = 186
@@ -394,19 +396,8 @@ struct ReadingHistoryView: View {
         max(1, bookExpandedHeaderTotalH - bookCompactHeaderTotalH)
     }
 
-    private var bookCollapseProgress: CGFloat {
-        if let bookManualOverride {
-            return bookManualOverride ? 1 : 0
-        }
-        return min(1, max(0, bookScrollOffset / bookCollapseDelta))
-    }
-
-    private var isBookMostlyCollapsed: Bool {
-        bookCollapseProgress > 0.65
-    }
-
     private var bookListTopPadding: CGFloat {
-        bookManualOverride == true ? 0 : bookCollapseDelta
+        isBookHeaderCollapsed ? 0 : bookCollapseDelta
     }
 
     private var vocabExpandedHeaderTotalH: CGFloat {
@@ -421,19 +412,8 @@ struct ReadingHistoryView: View {
         max(1, vocabExpandedHeaderTotalH - vocabCompactHeaderTotalH)
     }
 
-    private var vocabCollapseProgress: CGFloat {
-        if let vocabManualOverride {
-            return vocabManualOverride ? 1 : 0
-        }
-        return min(1, max(0, vocabScrollOffset / vocabCollapseDelta))
-    }
-
-    private var isVocabMostlyCollapsed: Bool {
-        vocabCollapseProgress > 0.65
-    }
-
     private var vocabListTopPadding: CGFloat {
-        vocabManualOverride == true ? 0 : vocabCollapseDelta
+        isVocabHeaderCollapsed ? 0 : vocabCollapseDelta
     }
 
     var body: some View {
@@ -445,16 +425,16 @@ struct ReadingHistoryView: View {
                 HStack(spacing: 8) {
                     Text("阅读记录")
                         .font(.title2.bold())
-                    let currentCollapsed = category == 0 ? isBookMostlyCollapsed : isVocabMostlyCollapsed
+                    let currentCollapsed = category == 0 ? isBookHeaderCollapsed : isVocabHeaderCollapsed
                     GlassCircleIconButton(
                         systemImage: currentCollapsed ? "chevron.down" : "chevron.up",
                         size: 26,
                         iconFont: .caption2.bold()
                     ) {
                         if category == 0 {
-                            toggleBookManualCollapse(!isBookMostlyCollapsed)
+                            setBookHeaderCollapsed(!isBookHeaderCollapsed, recordAnchor: true)
                         } else {
-                            toggleVocabManualCollapse(!isVocabMostlyCollapsed)
+                            setVocabHeaderCollapsed(!isVocabHeaderCollapsed, recordAnchor: true)
                         }
                     }
                     Spacer()
@@ -480,59 +460,61 @@ struct ReadingHistoryView: View {
         }
     }
 
-    private func toggleBookManualCollapse(_ collapsed: Bool) {
-        bookOverrideAnchor = bookScrollOffset
-        withAnimation(AppMotion.panelSpring) {
-            if !collapsed && bookScrollOffset <= 2 {
-                bookManualOverride = nil
-            } else {
-                bookManualOverride = collapsed
-            }
+    private func setBookHeaderCollapsed(_ collapsed: Bool, recordAnchor: Bool = false) {
+        if !collapsed && recordAnchor && bookScrollOffset > 30 {
+            bookExpandedAtOffset = bookScrollOffset
+        } else if collapsed {
+            bookExpandedAtOffset = nil
+        }
+        guard isBookHeaderCollapsed != collapsed else { return }
+        lastBookCollapseToggle = Date()
+        withAnimation(.spring(response: 0.34, dampingFraction: 0.86)) {
+            isBookHeaderCollapsed = collapsed
         }
     }
 
-    private func toggleVocabManualCollapse(_ collapsed: Bool) {
-        vocabOverrideAnchor = vocabScrollOffset
-        withAnimation(AppMotion.panelSpring) {
-            if !collapsed && vocabScrollOffset <= 2 {
-                vocabManualOverride = nil
-            } else {
-                vocabManualOverride = collapsed
-            }
+    private func setVocabHeaderCollapsed(_ collapsed: Bool, recordAnchor: Bool = false) {
+        if !collapsed && recordAnchor && vocabScrollOffset > 30 {
+            vocabExpandedAtOffset = vocabScrollOffset
+        } else if collapsed {
+            vocabExpandedAtOffset = nil
+        }
+        guard isVocabHeaderCollapsed != collapsed else { return }
+        lastVocabCollapseToggle = Date()
+        withAnimation(.spring(response: 0.34, dampingFraction: 0.86)) {
+            isVocabHeaderCollapsed = collapsed
         }
     }
 
     private func handleBookScrollOffset(_ newOffset: CGFloat) {
-        if abs(bookScrollOffset - newOffset) > 0.25 {
-            bookScrollOffset = newOffset
-        }
-        if let override = bookManualOverride {
-            if override == false && abs(newOffset - bookOverrideAnchor) > 16 {
-                withAnimation(AppMotion.panelSpring) {
-                    bookManualOverride = nil
+        bookScrollOffset = newOffset
+        guard Date().timeIntervalSince(lastBookCollapseToggle) > 0.42 else { return }
+        if !isBookHeaderCollapsed {
+            if let anchor = bookExpandedAtOffset {
+                if newOffset > anchor + 22 || newOffset < anchor - 40 {
+                    setBookHeaderCollapsed(true)
                 }
-            } else if override == true && (newOffset < -18 || (bookOverrideAnchor > 20 && newOffset < 4)) {
-                withAnimation(AppMotion.panelSpring) {
-                    bookManualOverride = nil
-                }
+            } else if newOffset > 22 {
+                setBookHeaderCollapsed(true)
             }
+        } else if newOffset < -26 {
+            setBookHeaderCollapsed(false)
         }
     }
 
     private func handleVocabScrollOffset(_ newOffset: CGFloat) {
-        if abs(vocabScrollOffset - newOffset) > 0.25 {
-            vocabScrollOffset = newOffset
-        }
-        if let override = vocabManualOverride {
-            if override == false && abs(newOffset - vocabOverrideAnchor) > 16 {
-                withAnimation(AppMotion.panelSpring) {
-                    vocabManualOverride = nil
+        vocabScrollOffset = newOffset
+        guard Date().timeIntervalSince(lastVocabCollapseToggle) > 0.42 else { return }
+        if !isVocabHeaderCollapsed {
+            if let anchor = vocabExpandedAtOffset {
+                if newOffset > anchor + 22 || newOffset < anchor - 40 {
+                    setVocabHeaderCollapsed(true)
                 }
-            } else if override == true && (newOffset < -18 || (vocabOverrideAnchor > 20 && newOffset < 4)) {
-                withAnimation(AppMotion.panelSpring) {
-                    vocabManualOverride = nil
-                }
+            } else if newOffset > 22 {
+                setVocabHeaderCollapsed(true)
             }
+        } else if newOffset < -26 {
+            setVocabHeaderCollapsed(false)
         }
     }
 
@@ -559,7 +541,8 @@ struct ReadingHistoryView: View {
                     DragGesture(minimumDistance: 24)
                         .onEnded { value in
                             if abs(value.translation.height) > abs(value.translation.width) * 1.4 {
-                                toggleBookManualCollapse(value.translation.height < 0)
+                                let collapse = value.translation.height < 0
+                                setBookHeaderCollapsed(collapse, recordAnchor: !collapse)
                             }
                         }
                 )
@@ -645,7 +628,7 @@ struct ReadingHistoryView: View {
             .padding(.top, bookListTopPadding + 4)
             .padding(.bottom, 16)
         }
-        .safeAreaPadding(.top, bookCompactHeaderTotalH)
+        .padding(.top, bookCompactHeaderTotalH)
         .onScrollGeometryChange(for: CGFloat.self) { geo in
             geo.contentOffset.y + geo.contentInsets.top
         } action: { _, newOffset in
@@ -655,13 +638,11 @@ struct ReadingHistoryView: View {
 
     @ViewBuilder
     private var bookHistoryFloatingHeader: some View {
-        let p = bookCollapseProgress
-        let expandedOpacity = max(0, 1.0 - p * 1.55)
-        let compactOpacity = max(0, min(1, (p - 0.35) / 0.65))
-        let card1Height = max(bookCompactCard1H, bookExpandedCard1H - p * (bookExpandedCard1H - bookCompactCard1H))
-        let card2Height = max(bookCompactCard2H, bookExpandedCard2H - p * (bookExpandedCard2H - bookCompactCard2H))
-        let cardSpacing = 8 - p * 2
-        let topPad = 8 - p * 4
+        let collapsed = isBookHeaderCollapsed
+        let card1Height = collapsed ? bookCompactCard1H : bookExpandedCard1H
+        let card2Height = collapsed ? bookCompactCard2H : bookExpandedCard2H
+        let cardSpacing: CGFloat = collapsed ? 6 : 8
+        let topPad: CGFloat = collapsed ? 4 : 8
         let compactPeriodTitle = bookPeriod == 0
             ? "\(bookYear)年\(bookMonth)月 · \(formatDuration(monthSeconds))"
             : "\(bookListYear)年 · \(formatDuration(yearSeconds))"
@@ -685,7 +666,7 @@ struct ReadingHistoryView: View {
                             bookCompactCard1H = h
                         }
                     }
-                    .opacity(compactOpacity)
+                    .opacity(collapsed ? 1 : 0)
 
                     HStack(spacing: 0) {
                         HistorySummaryStatItem(label: "累计阅读", value: "\(totalDaysRead) 天", systemImage: "calendar", iconColor: palette.accent)
@@ -702,15 +683,15 @@ struct ReadingHistoryView: View {
                             bookExpandedCard1H = h
                         }
                     }
-                    .opacity(expandedOpacity)
+                    .opacity(collapsed ? 0 : 1)
                 }
                 .frame(maxWidth: .infinity)
                 .frame(height: card1Height, alignment: .center)
                 .clipped()
                 .contentShape(Rectangle())
                 .onTapGesture {
-                    if isBookMostlyCollapsed {
-                        toggleBookManualCollapse(false)
+                    if collapsed {
+                        setBookHeaderCollapsed(false, recordAnchor: true)
                     }
                 }
             }
@@ -746,8 +727,8 @@ struct ReadingHistoryView: View {
                             bookCompactCard2H = h
                         }
                     }
-                    .opacity(compactOpacity)
-                    .allowsHitTesting(p >= 0.45)
+                    .opacity(collapsed ? 1 : 0)
+                    .allowsHitTesting(collapsed)
 
                     VStack(spacing: 10) {
                         GlassSegmentedControl(
@@ -803,8 +784,8 @@ struct ReadingHistoryView: View {
                             bookExpandedCard2H = h
                         }
                     }
-                    .opacity(expandedOpacity)
-                    .allowsHitTesting(p < 0.45)
+                    .opacity(collapsed ? 0 : 1)
+                    .allowsHitTesting(!collapsed)
                 }
                 .frame(maxWidth: .infinity)
                 .frame(height: card2Height, alignment: .top)
@@ -839,7 +820,8 @@ struct ReadingHistoryView: View {
                     DragGesture(minimumDistance: 24)
                         .onEnded { value in
                             if abs(value.translation.height) > abs(value.translation.width) * 1.4 {
-                                toggleVocabManualCollapse(value.translation.height < 0)
+                                let collapse = value.translation.height < 0
+                                setVocabHeaderCollapsed(collapse, recordAnchor: !collapse)
                             }
                         }
                 )
@@ -989,7 +971,7 @@ struct ReadingHistoryView: View {
             .padding(.top, vocabListTopPadding + 4)
             .padding(.bottom, 16)
         }
-        .safeAreaPadding(.top, vocabCompactHeaderTotalH)
+        .padding(.top, vocabCompactHeaderTotalH)
         .onScrollGeometryChange(for: CGFloat.self) { geo in
             geo.contentOffset.y + geo.contentInsets.top
         } action: { _, newOffset in
@@ -1042,13 +1024,11 @@ struct ReadingHistoryView: View {
 
     @ViewBuilder
     private var vocabHistoryFloatingHeader: some View {
-        let p = vocabCollapseProgress
-        let expandedOpacity = max(0, 1.0 - p * 1.55)
-        let compactOpacity = max(0, min(1, (p - 0.35) / 0.65))
-        let card1Height = max(vocabCompactCard1H, vocabExpandedCard1H - p * (vocabExpandedCard1H - vocabCompactCard1H))
-        let card2Height = max(vocabCompactCard2H, vocabExpandedCard2H - p * (vocabExpandedCard2H - vocabCompactCard2H))
-        let cardSpacing = 8 - p * 2
-        let topPad = 8 - p * 4
+        let collapsed = isVocabHeaderCollapsed
+        let card1Height = collapsed ? vocabCompactCard1H : vocabExpandedCard1H
+        let card2Height = collapsed ? vocabCompactCard2H : vocabExpandedCard2H
+        let cardSpacing: CGFloat = collapsed ? 6 : 8
+        let topPad: CGFloat = collapsed ? 4 : 8
 
         VStack(spacing: cardSpacing) {
             // Card 1: Overall Vocab Summary + Tri-color mastery bar (always full-width, zero teardown)
@@ -1069,7 +1049,7 @@ struct ReadingHistoryView: View {
                             vocabCompactCard1H = h
                         }
                     }
-                    .opacity(compactOpacity)
+                    .opacity(collapsed ? 1 : 0)
 
                     VStack(spacing: 10) {
                         HStack(spacing: 0) {
@@ -1104,15 +1084,15 @@ struct ReadingHistoryView: View {
                             vocabExpandedCard1H = h
                         }
                     }
-                    .opacity(expandedOpacity)
+                    .opacity(collapsed ? 0 : 1)
                 }
                 .frame(maxWidth: .infinity)
                 .frame(height: card1Height, alignment: .center)
                 .clipped()
                 .contentShape(Rectangle())
                 .onTapGesture {
-                    if isVocabMostlyCollapsed {
-                        toggleVocabManualCollapse(false)
+                    if collapsed {
+                        setVocabHeaderCollapsed(false, recordAnchor: true)
                     }
                 }
             }
@@ -1132,8 +1112,8 @@ struct ReadingHistoryView: View {
                             vocabCompactCard2H = h
                         }
                     }
-                    .opacity(compactOpacity)
-                    .allowsHitTesting(p >= 0.45)
+                    .opacity(collapsed ? 1 : 0)
+                    .allowsHitTesting(collapsed)
 
                     VStack(spacing: 10) {
                         GlassSegmentedControl(
@@ -1234,8 +1214,8 @@ struct ReadingHistoryView: View {
                             vocabExpandedCard2H = h
                         }
                     }
-                    .opacity(expandedOpacity)
-                    .allowsHitTesting(p < 0.45)
+                    .opacity(collapsed ? 0 : 1)
+                    .allowsHitTesting(!collapsed)
                 }
                 .frame(maxWidth: .infinity)
                 .frame(height: card2Height, alignment: .top)

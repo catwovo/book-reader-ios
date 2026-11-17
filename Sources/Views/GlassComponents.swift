@@ -782,7 +782,15 @@ struct GlassSegmentedControl<Option: Hashable>: View {
     var body: some View {
         #if compiler(>=6.2)
         if #available(iOS 26.0, *) {
-            segmentedTrackBody(useNativeGlass: true)
+            Picker("", selection: $selection) {
+                ForEach(options, id: \.value) { item in
+                    Text(item.title)
+                        .tag(item.value)
+                }
+            }
+            .pickerStyle(.segmented)
+            .labelsHidden()
+            .tint(palette.accent)
         } else {
             segmentedTrackBody(useNativeGlass: false)
         }

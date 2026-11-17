@@ -1033,33 +1033,22 @@ private struct FlashcardDeckCard: View {
     }
 
     var body: some View {
-        ZStack(alignment: .bottom) {
-            // Subtle Apple card-stack depth layer underneath
-            Color.clear
-                .frame(height: 44)
-                .appleLiquidGlassRect(cornerRadius: 24)
-                .padding(.horizontal, 12)
-                .offset(y: 7)
-                .opacity(0.70)
+        GlassCard(cornerRadius: 26, tintColor: flipped ? palette.accent.opacity(0.05) : nil) {
+            ViewThatFits(in: .vertical) {
+                cardInnerContent
 
-            GlassCard(cornerRadius: 26, tintColor: flipped ? palette.accent.opacity(0.05) : nil) {
-                ViewThatFits(in: .vertical) {
+                ScrollView {
                     cardInnerContent
-
-                    ScrollView {
-                        cardInnerContent
-                    }
                 }
-                .frame(maxHeight: maxHeight)
-                .clipped()
             }
-            .onTapGesture {
-                withAnimation(AppMotion.panelSpring) {
-                    flipped.toggle()
-                }
+            .frame(maxHeight: maxHeight)
+            .clipped()
+        }
+        .onTapGesture {
+            withAnimation(AppMotion.panelSpring) {
+                flipped.toggle()
             }
         }
-        .padding(.bottom, 8)
         .animation(AppMotion.panelSpring, value: flipped)
         .onChange(of: card.id) { _, _ in
             sentenceExpanded = false
