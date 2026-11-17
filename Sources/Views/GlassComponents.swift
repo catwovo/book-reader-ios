@@ -56,35 +56,26 @@ struct GlassCard<Content: View>: View {
     }
 }
 
-/// Grouped asymmetric corner radius matching expressive grouped cards
-struct GroupedCardShape: Shape {
+struct GlassGroupedCard<Content: View>: View {
     let index: Int
     let count: Int
     var outerRadius: CGFloat = 20
     var innerRadius: CGFloat = 6
-
-    func path(in rect: CGRect) -> Path {
-        let tl: CGFloat = (count <= 1 || index == 0) ? outerRadius : innerRadius
-        let tr: CGFloat = (count <= 1 || index == 0) ? outerRadius : innerRadius
-        let bl: CGFloat = (count <= 1 || index == count - 1) ? outerRadius : innerRadius
-        let br: CGFloat = (count <= 1 || index == count - 1) ? outerRadius : innerRadius
-        return UnevenRoundedRectangle(
-            topLeadingRadius: tl,
-            bottomLeadingRadius: bl,
-            bottomTrailingRadius: br,
-            topTrailingRadius: tr,
-            style: .continuous
-        ).path(in: rect)
-    }
-}
-
-struct GlassGroupedCard<Content: View>: View {
-    let index: Int
-    let count: Int
     @ViewBuilder var content: () -> Content
 
+    private var shape: UnevenRoundedRectangle {
+        let topR: CGFloat = (count <= 1 || index == 0) ? outerRadius : innerRadius
+        let botR: CGFloat = (count <= 1 || index == count - 1) ? outerRadius : innerRadius
+        return UnevenRoundedRectangle(
+            topLeadingRadius: topR,
+            bottomLeadingRadius: botR,
+            bottomTrailingRadius: botR,
+            topTrailingRadius: topR,
+            style: .continuous
+        )
+    }
+
     var body: some View {
-        let shape = GroupedCardShape(index: index, count: count)
         content()
             .background {
                 shape.fill(.ultraThinMaterial)
