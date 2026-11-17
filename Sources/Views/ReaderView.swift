@@ -611,6 +611,6 @@ private struct WordFlowLayout: Layout {
 
 private extension Int {
     func clamped(to range: ClosedRange<Int>) -> Int {
-        min(max(self, range.lowerBound), range.upperBound)
+        Swift.min(Swift.max(self, range.lowerBound), range.upperBound)
     }
 }

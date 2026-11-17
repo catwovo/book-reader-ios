@@ -83,7 +83,7 @@ enum BookParser {
         if let utf8 = String(data: data, encoding: .utf8) {
             return parseTxtContent(title: title, text: utf8)
         }
-        let cfEnc = CFStringConvertNSStringEncodingToEncoding(CFStringEncoding(CFStringEncodings.GB_18030_2000.rawValue))
+        let cfEnc = CFStringConvertEncodingToNSStringEncoding(CFStringEncoding(CFStringEncodings.GB_18030_2000.rawValue))
         let gbEncoding = String.Encoding(rawValue: cfEnc)
         let text = String(data: data, encoding: gbEncoding) ?? String(decoding: data, as: UTF8.self)
         return parseTxtContent(title: title, text: text)
