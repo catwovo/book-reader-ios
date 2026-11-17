@@ -117,6 +117,7 @@ struct ReadingHistoryView: View {
     @State private var bookMonth: Int = HistoryDateHelper.calendar.component(.month, from: Date())
     @State private var bookListYear: Int = HistoryDateHelper.calendar.component(.year, from: Date())
     @State private var expandedBookDates: Set<String> = []
+    @State private var bookScrollOffset: CGFloat = 0
 
     // Vocab state
     @State private var vocabPeriod = 0 // 0 = 按日, 1 = 按周, 2 = 按月, 3 = 按年
@@ -126,6 +127,7 @@ struct ReadingHistoryView: View {
     @State private var vocabMonth: Int = HistoryDateHelper.calendar.component(.month, from: Date())
     @State private var vocabListYear: Int = HistoryDateHelper.calendar.component(.year, from: Date())
     @State private var expandedVocabDates: Set<String> = []
+    @State private var vocabScrollOffset: CGFloat = 0
 
     private var today: Date {
         HistoryDateHelper.calendar.startOfDay(for: Date())
@@ -379,24 +381,29 @@ struct ReadingHistoryView: View {
                         Text("阅读记录")
                             .font(.title2.bold())
                         Spacer()
-                        Picker("维度", selection: $category) {
-                            ForEach(0..<historyCategories.count, id: \.self) { idx in
-                                Text(historyCategories[idx]).tag(idx)
-                            }
-                        }
-                        .pickerStyle(.segmented)
-                        .frame(width: 144)
+                        GlassSegmentedControl(
+                            titles: historyCategories,
+                            selection: $category,
+                            compact: true
+                        )
+                        .frame(width: 148)
                     }
                     .padding(.horizontal, 16)
                     .padding(.vertical, 10)
-
-                    TabView(selection: $category) {
-                        bookHistoryPage
-                            .tag(0)
-                        vocabHistoryPage
-                            .tag(1)
+                    .background(.ultraThinMaterial.opacity(0.65))
+                    .overlay(alignment: .bottom) {
+                        Rectangle()
+                            .fill(Color.white.opacity(palette.isLight ? 0.32 : 0.10))
+                            .frame(height: 0.5)
                     }
-                    .tabViewStyle(.page(indexDisplayMode: .never))
+
+                    GlassHorizontalPager(selection: $category, pageCount: 2) { page in
+                        if page == 0 {
+                            bookHistoryPage
+                        } else {
+                            vocabHistoryPage
+                        }
+                    }
                 }
             }
             .toolbar(.hidden, for: .navigationBar)
@@ -406,497 +413,701 @@ struct ReadingHistoryView: View {
     // MARK: - Book History Page
 
     private var bookHistoryPage: some View {
-        VStack(spacing: 10) {
-            // Card 1: Overall Book Summary
-            GlassCard(cornerRadius: 20) {
-                HStack(spacing: 0) {
-                    HistorySummaryStatItem(label: "累计阅读", value: "\(totalDaysRead) 天")
-                    HistoryStatDivider()
-                    HistorySummaryStatItem(label: "连续打卡", value: "\(streakDays) 天")
-                    HistoryStatDivider()
-                    HistorySummaryStatItem(label: "累计时长", value: formatDuration(totalSecondsAll))
-                }
-                .padding(.horizontal, 12)
-                .padding(.vertical, 16)
-            }
-            .padding(.horizontal, 16)
+        let p = min(1.0, max(0.0, bookScrollOffset / 124.0))
+        return ZStack(alignment: .top) {
+            bookHistoryScrollList(topSpacer: 224)
+            bookHistoryFloatingHeader(p: p)
+        }
+    }
 
-            // Card 2: Swipeable Book Period Card (按月 <-> 按年)
-            GlassCard(cornerRadius: 20) {
-                VStack(spacing: 10) {
-                    PeriodPillRow(
-                        options: bookPeriodOptions,
-                        selectedIndex: bookPeriod,
-                        onSelect: { target in
-                            withAnimation(AppMotion.tabSpring) {
-                                bookPeriod = target
-                            }
-                        }
-                    )
+    @ViewBuilder
+    private func bookHistoryScrollList(topSpacer: CGFloat) -> some View {
+        ScrollView {
+            LazyVStack(spacing: 4) {
+                Color.clear.frame(height: topSpacer)
 
-                    TabView(selection: $bookPeriod) {
-                        VStack(spacing: 12) {
-                            PeriodNavigatorRow(
-                                title: "\(bookYear) 年 \(bookMonth) 月",
-                                onPrev: {
-                                    let shifted = HistoryDateHelper.shiftYearMonth(year: bookYear, month: bookMonth, delta: -1)
-                                    bookYear = shifted.0
-                                    bookMonth = shifted.1
-                                },
-                                onNext: {
-                                    let shifted = HistoryDateHelper.shiftYearMonth(year: bookYear, month: bookMonth, delta: 1)
-                                    bookYear = shifted.0
-                                    bookMonth = shifted.1
-                                }
-                            )
-                            HStack(spacing: 0) {
-                                HistorySummaryStatItem(label: "本月天数", value: "\(monthByDate.count) 天")
-                                HistorySummaryStatItem(label: "本月时长", value: formatDuration(monthSeconds))
-                                HistorySummaryStatItem(label: "读句 / 查词", value: "\(monthUnits) / \(monthLookups)")
-                            }
-                        }
-                        .padding(.horizontal, 16)
-                        .tag(0)
-
-                        VStack(spacing: 12) {
-                            PeriodNavigatorRow(
-                                title: "\(bookListYear) 年",
-                                onPrev: { bookListYear -= 1 },
-                                onNext: { bookListYear += 1 }
-                            )
-                            HStack(spacing: 0) {
-                                HistorySummaryStatItem(label: "阅读天数", value: "\(yearDaysCount) 天")
-                                HistorySummaryStatItem(label: "总时长", value: formatDuration(yearSeconds))
-                                HistorySummaryStatItem(label: "读句 / 查词", value: "\(yearUnits) / \(yearLookups)")
-                            }
-                        }
-                        .padding(.horizontal, 16)
-                        .tag(1)
-                    }
-                    .tabViewStyle(.page(indexDisplayMode: .never))
-                    .frame(height: 98)
-                }
-                .padding(.vertical, 14)
-            }
-            .padding(.horizontal, 16)
-
-            // Card 3+: Scrollable records
-            ScrollView {
-                LazyVStack(spacing: 4) {
-                    if bookPeriod == 0 {
-                        if displayDays.isEmpty {
-                            EmptyHistoryCard(
-                                systemImage: "calendar",
-                                message: "本月暂无满 1 分钟的阅读记录"
-                            )
-                        } else {
-                            ForEach(Array(displayDays.enumerated()), id: \.element.0) { idx, pair in
-                                let dateKey = pair.0
-                                let dayLogs = pair.1
-                                DailyBookRecordCard(
-                                    index: idx,
-                                    count: displayDays.count,
-                                    dateKey: dateKey,
-                                    dayLogs: dayLogs,
-                                    booksById: booksById,
-                                    expanded: expandedBookDates.contains(dateKey),
-                                    onToggle: {
-                                        withAnimation(AppMotion.panelSpring) {
-                                            if expandedBookDates.contains(dateKey) {
-                                                expandedBookDates.remove(dateKey)
-                                            } else {
-                                                expandedBookDates.insert(dateKey)
-                                            }
-                                        }
-                                    }
-                                )
-                            }
-                        }
+                if bookPeriod == 0 {
+                    if displayDays.isEmpty {
+                        EmptyHistoryCard(
+                            systemImage: "calendar",
+                            message: "本月暂无满 1 分钟的阅读记录"
+                        )
                     } else {
-                        if activeBookMonths.isEmpty {
-                            EmptyHistoryCard(
-                                systemImage: "calendar",
-                                message: "\(bookListYear) 年暂无满 1 分钟的阅读记录"
-                            )
-                        } else {
-                            ForEach(Array(activeBookMonths.enumerated()), id: \.element.id) { idx, item in
-                                Button {
-                                    bookYear = bookListYear
-                                    bookMonth = item.month
-                                    withAnimation(AppMotion.tabSpring) {
-                                        bookPeriod = 0
-                                    }
-                                } label: {
-                                    GlassGroupedCard(index: idx, count: activeBookMonths.count, outerRadius: 18, innerRadius: 6) {
-                                        VStack(spacing: 8) {
-                                            HStack {
-                                                Text("\(item.month) 月")
-                                                    .font(.subheadline.bold())
-                                                    .foregroundStyle(.primary)
-                                                Spacer()
-                                                Text("\(item.days) 天 · \(formatDuration(item.seconds)) · \(item.bookCount) 本")
-                                                    .font(.caption.weight(.medium))
-                                                    .foregroundStyle(palette.accent)
-                                            }
-                                            SmoothLinearProgressBar(
-                                                progress: max(0.05, Double(item.seconds) / Double(maxMonthSeconds)),
-                                                height: 5
-                                            )
+                        ForEach(Array(displayDays.enumerated()), id: \.element.0) { idx, pair in
+                            let dateKey = pair.0
+                            let dayLogs = pair.1
+                            DailyBookRecordCard(
+                                index: idx,
+                                count: displayDays.count,
+                                dateKey: dateKey,
+                                dayLogs: dayLogs,
+                                booksById: booksById,
+                                expanded: expandedBookDates.contains(dateKey),
+                                onToggle: {
+                                    withAnimation(AppMotion.panelSpring) {
+                                        if expandedBookDates.contains(dateKey) {
+                                            _ = expandedBookDates.remove(dateKey)
+                                        } else {
+                                            _ = expandedBookDates.insert(dateKey)
                                         }
-                                        .padding(.horizontal, 16)
-                                        .padding(.vertical, 14)
                                     }
                                 }
-                                .buttonStyle(GlassPressButtonStyle())
+                            )
+                        }
+                    }
+                } else {
+                    if activeBookMonths.isEmpty {
+                        EmptyHistoryCard(
+                            systemImage: "calendar",
+                            message: "\(bookListYear) 年暂无满 1 分钟的阅读记录"
+                        )
+                    } else {
+                        ForEach(Array(activeBookMonths.enumerated()), id: \.element.id) { idx, item in
+                            Button {
+                                bookYear = bookListYear
+                                bookMonth = item.month
+                                withAnimation(AppMotion.tabSpring) {
+                                    bookPeriod = 0
+                                }
+                            } label: {
+                                GlassGroupedCard(index: idx, count: activeBookMonths.count, outerRadius: 18, innerRadius: 6) {
+                                    VStack(spacing: 8) {
+                                        HStack {
+                                            Text("\(item.month) 月")
+                                                .font(.subheadline.bold())
+                                                .foregroundStyle(.primary)
+                                            Spacer()
+                                            Text("\(item.days) 天 · \(formatDuration(item.seconds)) · \(item.bookCount) 本")
+                                                .font(.caption.weight(.medium))
+                                                .foregroundStyle(palette.accent)
+                                        }
+                                        SmoothLinearProgressBar(
+                                            progress: max(0.05, Double(item.seconds) / Double(maxMonthSeconds)),
+                                            height: 5
+                                        )
+                                    }
+                                    .padding(.horizontal, 16)
+                                    .padding(.vertical, 14)
+                                }
                             }
+                            .buttonStyle(GlassPressButtonStyle())
                         }
                     }
                 }
-                .padding(.horizontal, 16)
-                .padding(.top, 2)
-                .padding(.bottom, 24)
+            }
+            .padding(.horizontal, 16)
+            .padding(.bottom, 16)
+        }
+        .onScrollGeometryChange(for: CGFloat.self) { geo in
+            geo.contentOffset.y + geo.contentInsets.top
+        } action: { _, newOffset in
+            if abs(bookScrollOffset - newOffset) > 0.5 {
+                bookScrollOffset = newOffset
             }
         }
-        .padding(.top, 4)
+        .onChange(of: bookPeriod) { _, _ in
+            withAnimation(AppMotion.panelSpring) {
+                bookScrollOffset = 0
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func bookHistoryFloatingHeader(p: CGFloat) -> some View {
+        let cornerR = 20.0 - 6.0 * p
+        let card1VertPad = 15.0 - 7.0 * p
+        let card1Height = 44.0 - 22.0 * p
+        let card1ExpandAlpha = max(0.0, 1.0 - Double(p / 0.55))
+        let card1CompactAlpha = max(0.0, Double((p - 0.45) / 0.55))
+
+        let card2VertPad = 14.0 - 7.0 * p
+        let pillRatio = min(1.0, p / 0.58)
+        let pillHeight = max(0.0, (1.0 - pillRatio) * 32.0)
+        let pillGap = max(0.0, (1.0 - pillRatio) * 10.0)
+        let pillAlpha = max(0.0, 1.0 - Double(min(1.0, p / 0.48)))
+
+        let statsRatio = min(1.0, p / 0.70)
+        let statsHeight = max(0.0, (1.0 - statsRatio) * 44.0)
+        let statsGap = max(0.0, (1.0 - statsRatio) * 10.0)
+        let statsAlpha = max(0.0, 1.0 - Double(min(1.0, p / 0.58)))
+
+        VStack(spacing: 8 - 2 * p) {
+                // Card 1: Overall Book Summary
+                GlassCard(cornerRadius: cornerR) {
+                    ZStack {
+                        if card1ExpandAlpha > 0.01 {
+                            HStack(spacing: 0) {
+                                HistorySummaryStatItem(label: "累计阅读", value: "\(totalDaysRead) 天", systemImage: "calendar", iconColor: palette.accent)
+                                HistoryStatDivider()
+                                HistorySummaryStatItem(label: "连续打卡", value: "\(streakDays) 天", systemImage: "flame.fill", iconColor: .orange)
+                                HistoryStatDivider()
+                                HistorySummaryStatItem(label: "累计时长", value: formatDuration(totalSecondsAll), systemImage: "clock.fill", iconColor: .teal)
+                            }
+                            .opacity(card1ExpandAlpha)
+                        }
+                        if card1CompactAlpha > 0.01 {
+                            HStack(spacing: 10) {
+                                CompactInlineStat(label: "累计", value: "\(totalDaysRead) 天")
+                                HistoryStatDivider(height: 14)
+                                CompactInlineStat(label: "连续", value: "\(streakDays) 天")
+                                HistoryStatDivider(height: 14)
+                                CompactInlineStat(label: "总计", value: formatDuration(totalSecondsAll))
+                            }
+                            .opacity(card1CompactAlpha)
+                        }
+                    }
+                    .frame(height: card1Height)
+                    .clipped()
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, card1VertPad)
+                }
+
+                // Card 2: Swipeable Book Period Card (按月 <-> 按年)
+                GlassCard(cornerRadius: cornerR) {
+                    VStack(spacing: 0) {
+                        if pillHeight > 0.5 {
+                            GlassSegmentedControl(
+                                titles: bookPeriodOptions,
+                                selection: $bookPeriod,
+                                compact: true
+                            )
+                            .frame(width: 150)
+                            .frame(height: pillHeight)
+                            .clipped()
+                            .opacity(pillAlpha)
+
+                            Spacer().frame(height: pillGap)
+                        }
+
+                        GlassHorizontalPager(selection: $bookPeriod, pageCount: 2, fillHeight: false) { page in
+                            if page == 0 {
+                                VStack(spacing: 0) {
+                                    let title = p > 0.55
+                                        ? "\(bookYear)年\(bookMonth)月 · \(formatDuration(monthSeconds))"
+                                        : "\(bookYear) 年 \(bookMonth) 月"
+                                    PeriodNavigatorRow(
+                                        title: title,
+                                        onPrev: {
+                                            let shifted = HistoryDateHelper.shiftYearMonth(year: bookYear, month: bookMonth, delta: -1)
+                                            bookYear = shifted.0
+                                            bookMonth = shifted.1
+                                        },
+                                        onNext: {
+                                            let shifted = HistoryDateHelper.shiftYearMonth(year: bookYear, month: bookMonth, delta: 1)
+                                            bookYear = shifted.0
+                                            bookMonth = shifted.1
+                                        }
+                                    )
+                                    if statsHeight > 0.5 {
+                                        Spacer().frame(height: statsGap)
+                                        HStack(spacing: 0) {
+                                            HistorySummaryStatItem(label: "本月天数", value: "\(monthByDate.count) 天")
+                                            HistorySummaryStatItem(label: "本月时长", value: formatDuration(monthSeconds))
+                                            HistorySummaryStatItem(label: "读句 / 查词", value: "\(monthUnits) / \(monthLookups)")
+                                        }
+                                        .frame(height: statsHeight)
+                                        .clipped()
+                                        .opacity(statsAlpha)
+                                    }
+                                }
+                                .padding(.horizontal, 16)
+                            } else {
+                                VStack(spacing: 0) {
+                                    let title = p > 0.55
+                                        ? "\(bookListYear)年 · \(formatDuration(yearSeconds))"
+                                        : "\(bookListYear) 年"
+                                    PeriodNavigatorRow(
+                                        title: title,
+                                        onPrev: { bookListYear -= 1 },
+                                        onNext: { bookListYear += 1 }
+                                    )
+                                    if statsHeight > 0.5 {
+                                        Spacer().frame(height: statsGap)
+                                        HStack(spacing: 0) {
+                                            HistorySummaryStatItem(label: "阅读天数", value: "\(yearDaysCount) 天")
+                                            HistorySummaryStatItem(label: "总时长", value: formatDuration(yearSeconds))
+                                            HistorySummaryStatItem(label: "读句 / 查词", value: "\(yearUnits) / \(yearLookups)")
+                                        }
+                                        .frame(height: statsHeight)
+                                        .clipped()
+                                        .opacity(statsAlpha)
+                                    }
+                                }
+                                .padding(.horizontal, 16)
+                            }
+                        }
+                    }
+                    .padding(.vertical, card2VertPad)
+                }
+            }
+            .padding(.horizontal, 16)
+            .padding(.top, 8 - 4 * p)
+            .padding(.bottom, 6)
+            .background {
+                if p > 0.02 {
+                    LinearGradient(
+                        colors: [
+                            palette.backgroundBase.opacity(0.75 * Double(min(1.0, p * 1.4))),
+                            Color.clear
+                        ],
+                        startPoint: .top,
+                        endPoint: .bottom
+                    )
+                }
+            }
     }
 
     // MARK: - Vocab History Page
 
     private var vocabHistoryPage: some View {
-        VStack(spacing: 10) {
-            // Card 1: Overall Vocab Summary + Tri-color mastery bar
-            GlassCard(cornerRadius: 20) {
-                VStack(spacing: 10) {
-                    HStack(spacing: 0) {
-                        HistorySummaryStatItem(label: "生词总量", value: "\(db.vocabList.count) 词")
-                        HistoryStatDivider()
-                        HistorySummaryStatItem(label: "累计复习", value: "\(allVocabReviewTotals.total) 次")
-                        HistoryStatDivider()
-                        HistorySummaryStatItem(label: "已认识", value: "\(vocabPoolCounts.known) 词")
-                    }
+        let vp = min(1.0, max(0.0, vocabScrollOffset / 168.0))
+        let topSpacer: CGFloat = db.vocabList.isEmpty ? 256 : 298
+        return ZStack(alignment: .top) {
+            vocabHistoryScrollList(topSpacer: topSpacer)
+            vocabHistoryFloatingHeader(vp: vp)
+        }
+    }
 
-                    if !db.vocabList.isEmpty {
-                        TriColorVocabBar(
-                            unknown: vocabPoolCounts.unknown,
-                            fuzzy: vocabPoolCounts.fuzzy,
-                            known: vocabPoolCounts.known,
-                            height: 5
-                        )
-                        HStack(spacing: 16) {
-                            MiniOptionBadge(text: "不认识 \(vocabPoolCounts.unknown)", dotColor: .red)
-                            MiniOptionBadge(text: "模糊 \(vocabPoolCounts.fuzzy)", dotColor: .orange)
-                            MiniOptionBadge(text: "已认识 \(vocabPoolCounts.known)", dotColor: palette.accent)
-                        }
-                    }
-                }
-                .padding(.horizontal, 16)
-                .padding(.vertical, 16)
-            }
-            .padding(.horizontal, 16)
+    @ViewBuilder
+    private func vocabHistoryScrollList(topSpacer: CGFloat) -> some View {
+        ScrollView {
+            LazyVStack(spacing: 4) {
+                Color.clear.frame(height: topSpacer)
 
-            // Card 2: Swipeable Vocab Period Card (按日 / 按周 / 按月 / 按年)
-            GlassCard(cornerRadius: 20) {
-                VStack(spacing: 10) {
-                    PeriodPillRow(
-                        options: vocabPeriodOptions,
-                        selectedIndex: vocabPeriod,
-                        onSelect: { target in
-                            withAnimation(AppMotion.tabSpring) {
-                                vocabPeriod = target
-                            }
-                        }
-                    )
-
-                    TabView(selection: $vocabPeriod) {
-                        // Day
-                        VStack(spacing: 10) {
-                            let isToday = HistoryDateHelper.dateKey(for: selectedVocabDate) == HistoryDateHelper.dateKey(for: today)
-                            let m = HistoryDateHelper.calendar.component(.month, from: selectedVocabDate)
-                            let d = HistoryDateHelper.calendar.component(.day, from: selectedVocabDate)
-                            let y = HistoryDateHelper.calendar.component(.year, from: selectedVocabDate)
-                            let dayTitle = isToday
-                                ? "今天 · \(m)月\(d)日"
-                                : "\(y)年\(m)月\(d)日 · \(HistoryDateHelper.weekdayShortName(for: selectedVocabDate))"
-
-                            PeriodNavigatorRow(
-                                title: dayTitle,
-                                onPrev: { selectedVocabDate = HistoryDateHelper.addDays(-1, to: selectedVocabDate) },
-                                onNext: { selectedVocabDate = HistoryDateHelper.addDays(1, to: selectedVocabDate) }
-                            )
-                            VocabPeriodBreakdownContent(
-                                totals: selectedDayTotals,
-                                subtitle: "当日 \(selectedDayTotals.total) 次闪卡 · 新增收藏 \(selectedDayCollectedCount) 词"
-                            )
-                        }
-                        .padding(.horizontal, 16)
-                        .tag(0)
-
-                        // Week
-                        VStack(spacing: 10) {
-                            let weekEnd = HistoryDateHelper.addDays(6, to: selectedVocabWeekStart)
-                            let currentY = HistoryDateHelper.calendar.component(.year, from: today)
-                            let startY = HistoryDateHelper.calendar.component(.year, from: selectedVocabWeekStart)
-                            let startM = HistoryDateHelper.calendar.component(.month, from: selectedVocabWeekStart)
-                            let startD = HistoryDateHelper.calendar.component(.day, from: selectedVocabWeekStart)
-                            let endM = HistoryDateHelper.calendar.component(.month, from: weekEnd)
-                            let endD = HistoryDateHelper.calendar.component(.day, from: weekEnd)
-                            let prefix = startY != currentY ? "\(startY)年 " : ""
-
-                            PeriodNavigatorRow(
-                                title: "\(prefix)\(startM)月\(startD)日 - \(endM)月\(endD)日",
-                                onPrev: { selectedVocabWeekStart = HistoryDateHelper.addDays(-7, to: selectedVocabWeekStart) },
-                                onNext: { selectedVocabWeekStart = HistoryDateHelper.addDays(7, to: selectedVocabWeekStart) }
-                            )
-                            VocabPeriodBreakdownContent(
-                                totals: weekTotals,
-                                subtitle: "本周 \(weekTotals.activeDays) 天 · \(weekTotals.total) 次复习 · 收藏 \(weekCollectedCount) 词"
-                            )
-                        }
-                        .padding(.horizontal, 16)
-                        .tag(1)
-
-                        // Month
-                        VStack(spacing: 10) {
-                            PeriodNavigatorRow(
-                                title: "\(vocabYear) 年 \(vocabMonth) 月",
-                                onPrev: {
-                                    let shifted = HistoryDateHelper.shiftYearMonth(year: vocabYear, month: vocabMonth, delta: -1)
-                                    vocabYear = shifted.0
-                                    vocabMonth = shifted.1
-                                },
-                                onNext: {
-                                    let shifted = HistoryDateHelper.shiftYearMonth(year: vocabYear, month: vocabMonth, delta: 1)
-                                    vocabYear = shifted.0
-                                    vocabMonth = shifted.1
-                                }
-                            )
-                            VocabPeriodBreakdownContent(
-                                totals: vocabMonthTotals,
-                                subtitle: "本月 \(vocabMonthTotals.activeDays) 天 · \(vocabMonthTotals.total) 次复习 · 收藏 \(vocabMonthCollectedCount) 词"
-                            )
-                        }
-                        .padding(.horizontal, 16)
-                        .tag(2)
-
-                        // Year
-                        VStack(spacing: 10) {
-                            PeriodNavigatorRow(
-                                title: "\(vocabListYear) 年",
-                                onPrev: { vocabListYear -= 1 },
-                                onNext: { vocabListYear += 1 }
-                            )
-                            VocabPeriodBreakdownContent(
-                                totals: vocabYearTotals,
-                                subtitle: "全年 \(vocabYearTotals.activeDays) 天 · \(vocabYearTotals.total) 次复习 · 收藏 \(vocabYearCollectedCount) 词"
-                            )
-                        }
-                        .padding(.horizontal, 16)
-                        .tag(3)
-                    }
-                    .tabViewStyle(.page(indexDisplayMode: .never))
-                    .frame(height: 132)
-                }
-                .padding(.vertical, 14)
-            }
-            .padding(.horizontal, 16)
-
-            // Card 3+: Scrollable Vocab records
-            ScrollView {
-                LazyVStack(spacing: 4) {
-                    switch vocabPeriod {
-                    case 0:
-                        if allVocabDatesDesc.isEmpty {
-                            EmptyHistoryCard(systemImage: "rectangle.stack", message: "暂无单词收藏与复习记录")
-                        } else {
-                            ForEach(Array(allVocabDatesDesc.enumerated()), id: \.element) { idx, dateKey in
-                                let log = vocabLogsByDate[dateKey]
-                                let collectedWords = vocabCollectedByDate[dateKey] ?? []
-                                DailyVocabRecordCard(
-                                    index: idx,
-                                    count: allVocabDatesDesc.count,
-                                    dateKey: dateKey,
-                                    reviewLog: log,
-                                    collectedWords: collectedWords,
-                                    maxTotal: maxVocabDayTotal,
-                                    expanded: expandedVocabDates.contains(dateKey),
-                                    isHighlighted: dateKey == selectedDayKey,
-                                    onToggle: {
-                                        if let parsed = HistoryDateHelper.parseDateKey(dateKey) {
-                                            selectedVocabDate = parsed
-                                        }
-                                        if !collectedWords.isEmpty {
-                                            withAnimation(AppMotion.panelSpring) {
-                                                if expandedVocabDates.contains(dateKey) {
-                                                    expandedVocabDates.remove(dateKey)
-                                                } else {
-                                                    expandedVocabDates.insert(dateKey)
-                                                }
+                switch vocabPeriod {
+                case 0:
+                    if allVocabDatesDesc.isEmpty {
+                        EmptyHistoryCard(systemImage: "rectangle.stack", message: "暂无单词收藏与复习记录")
+                    } else {
+                        ForEach(Array(allVocabDatesDesc.enumerated()), id: \.element) { idx, dateKey in
+                            let log = vocabLogsByDate[dateKey]
+                            let collectedWords = vocabCollectedByDate[dateKey] ?? []
+                            DailyVocabRecordCard(
+                                index: idx,
+                                count: allVocabDatesDesc.count,
+                                dateKey: dateKey,
+                                reviewLog: log,
+                                collectedWords: collectedWords,
+                                maxTotal: maxVocabDayTotal,
+                                expanded: expandedVocabDates.contains(dateKey),
+                                isHighlighted: dateKey == selectedDayKey,
+                                onToggle: {
+                                    if let parsed = HistoryDateHelper.parseDateKey(dateKey) {
+                                        selectedVocabDate = parsed
+                                    }
+                                    if !collectedWords.isEmpty {
+                                        withAnimation(AppMotion.panelSpring) {
+                                            if expandedVocabDates.contains(dateKey) {
+                                                _ = expandedVocabDates.remove(dateKey)
+                                            } else {
+                                                _ = expandedVocabDates.insert(dateKey)
                                             }
                                         }
                                     }
-                                )
-                            }
+                                }
+                            )
                         }
+                    }
 
-                    case 1:
-                        ForEach(Array(weekDayTriples.enumerated()), id: \.offset) { idx, triple in
-                            let date = triple.0
-                            let log = triple.1
-                            let collectedCount = triple.2
-                            let m = HistoryDateHelper.calendar.component(.month, from: date)
-                            let d = HistoryDateHelper.calendar.component(.day, from: date)
-                            let label = "\(HistoryDateHelper.weekdayShortName(for: date)) · \(m)月\(d)日"
-                            let u = log?.unknownCount ?? 0
-                            let f = log?.fuzzyCount ?? 0
-                            let k = log?.knownCount ?? 0
-                            let reviewTotal = u + f + k
-                            let sub: String? = (reviewTotal > 0 && collectedCount > 0)
-                                ? "\(reviewTotal)次 · 藏\(collectedCount)词"
-                                : (collectedCount > 0 ? "藏 \(collectedCount) 词" : nil)
+                case 1:
+                    ForEach(Array(weekDayTriples.enumerated()), id: \.offset) { idx, triple in
+                        let date = triple.0
+                        let log = triple.1
+                        let collectedCount = triple.2
+                        let m = HistoryDateHelper.calendar.component(.month, from: date)
+                        let d = HistoryDateHelper.calendar.component(.day, from: date)
+                        let label = "\(HistoryDateHelper.weekdayShortName(for: date)) · \(m)月\(d)日"
+                        let u = log?.unknownCount ?? 0
+                        let f = log?.fuzzyCount ?? 0
+                        let k = log?.knownCount ?? 0
+                        let reviewTotal = u + f + k
+                        let sub: String? = (reviewTotal > 0 && collectedCount > 0)
+                            ? "\(reviewTotal)次 · 藏\(collectedCount)词"
+                            : (collectedCount > 0 ? "藏 \(collectedCount) 词" : nil)
 
+                        VocabPeriodRowCard(
+                            index: idx,
+                            count: weekDayTriples.count,
+                            title: label,
+                            subtitle: sub,
+                            unknown: u,
+                            fuzzy: f,
+                            known: k,
+                            maxReference: maxWeekDayTotal,
+                            emptyText: collectedCount > 0 ? "收藏 \(collectedCount) 词" : "无记录",
+                            onClick: {
+                                selectedVocabDate = date
+                                withAnimation(AppMotion.tabSpring) {
+                                    vocabPeriod = 0
+                                }
+                            }
+                        )
+                    }
+
+                case 2:
+                    if vocabMonthDatesDesc.isEmpty {
+                        EmptyHistoryCard(systemImage: "rectangle.stack", message: "本月暂无单词收藏与复习记录")
+                    } else {
+                        ForEach(Array(vocabMonthDatesDesc.enumerated()), id: \.element) { idx, dateKey in
+                            let log = vocabLogsByDate[dateKey]
+                            let collectedWords = vocabCollectedByDate[dateKey] ?? []
+                            DailyVocabRecordCard(
+                                index: idx,
+                                count: vocabMonthDatesDesc.count,
+                                dateKey: dateKey,
+                                reviewLog: log,
+                                collectedWords: collectedWords,
+                                maxTotal: maxMonthDayTotal,
+                                expanded: expandedVocabDates.contains(dateKey),
+                                isHighlighted: false,
+                                onToggle: {
+                                    if let parsed = HistoryDateHelper.parseDateKey(dateKey) {
+                                        selectedVocabDate = parsed
+                                    }
+                                    if !collectedWords.isEmpty {
+                                        withAnimation(AppMotion.panelSpring) {
+                                            if expandedVocabDates.contains(dateKey) {
+                                                _ = expandedVocabDates.remove(dateKey)
+                                            } else {
+                                                _ = expandedVocabDates.insert(dateKey)
+                                            }
+                                        }
+                                    }
+                                }
+                            )
+                        }
+                    }
+
+                default:
+                    if activeVocabMonths.isEmpty {
+                        EmptyHistoryCard(systemImage: "rectangle.stack", message: "\(vocabListYear) 年暂无闪卡复习记录")
+                    } else {
+                        ForEach(Array(activeVocabMonths.enumerated()), id: \.element.0) { idx, pair in
+                            let month = pair.0
+                            let mTotals = pair.1
                             VocabPeriodRowCard(
                                 index: idx,
-                                count: weekDayTriples.count,
-                                title: label,
-                                subtitle: sub,
-                                unknown: u,
-                                fuzzy: f,
-                                known: k,
-                                maxReference: maxWeekDayTotal,
-                                emptyText: collectedCount > 0 ? "收藏 \(collectedCount) 词" : "无记录",
+                                count: activeVocabMonths.count,
+                                title: "\(month) 月",
+                                subtitle: "\(mTotals.activeDays) 天 · \(mTotals.total) 次",
+                                unknown: mTotals.unknown,
+                                fuzzy: mTotals.fuzzy,
+                                known: mTotals.known,
+                                maxReference: maxVocabMonthTotal,
+                                emptyText: "无复习",
                                 onClick: {
-                                    selectedVocabDate = date
+                                    vocabYear = vocabListYear
+                                    vocabMonth = month
                                     withAnimation(AppMotion.tabSpring) {
-                                        vocabPeriod = 0
+                                        vocabPeriod = 2
                                     }
                                 }
                             )
                         }
+                    }
+                }
+            }
+            .padding(.horizontal, 16)
+            .padding(.bottom, 16)
+        }
+        .onScrollGeometryChange(for: CGFloat.self) { geo in
+            geo.contentOffset.y + geo.contentInsets.top
+        } action: { _, newOffset in
+            if abs(vocabScrollOffset - newOffset) > 0.5 {
+                vocabScrollOffset = newOffset
+            }
+        }
+        .onChange(of: vocabPeriod) { _, _ in
+            withAnimation(AppMotion.panelSpring) {
+                vocabScrollOffset = 0
+            }
+        }
+    }
 
-                    case 2:
-                        if vocabMonthDatesDesc.isEmpty {
-                            EmptyHistoryCard(systemImage: "rectangle.stack", message: "本月暂无单词收藏与复习记录")
-                        } else {
-                            ForEach(Array(vocabMonthDatesDesc.enumerated()), id: \.element) { idx, dateKey in
-                                let log = vocabLogsByDate[dateKey]
-                                let collectedWords = vocabCollectedByDate[dateKey] ?? []
-                                DailyVocabRecordCard(
-                                    index: idx,
-                                    count: vocabMonthDatesDesc.count,
-                                    dateKey: dateKey,
-                                    reviewLog: log,
-                                    collectedWords: collectedWords,
-                                    maxTotal: maxMonthDayTotal,
-                                    expanded: expandedVocabDates.contains(dateKey),
-                                    isHighlighted: false,
-                                    onToggle: {
-                                        if let parsed = HistoryDateHelper.parseDateKey(dateKey) {
-                                            selectedVocabDate = parsed
-                                        }
-                                        if !collectedWords.isEmpty {
-                                            withAnimation(AppMotion.panelSpring) {
-                                                if expandedVocabDates.contains(dateKey) {
-                                                    expandedVocabDates.remove(dateKey)
-                                                } else {
-                                                    expandedVocabDates.insert(dateKey)
-                                                }
-                                            }
-                                        }
-                                    }
-                                )
+    @ViewBuilder
+    private func vocabHistoryFloatingHeader(vp: CGFloat) -> some View {
+        let cornerR = 20.0 - 6.0 * vp
+        let card1VertPad = 15.0 - 7.0 * vp
+        let card1StatsH = 44.0 - 22.0 * vp
+        let card1ExpandAlpha = max(0.0, 1.0 - Double(vp / 0.55))
+        let card1CompactAlpha = max(0.0, Double((vp - 0.45) / 0.55))
+        let extraRatio = min(1.0, vp / 0.62)
+        let card1ExtraH = max(0.0, (1.0 - extraRatio) * 38.0)
+        let card1ExtraAlpha = max(0.0, 1.0 - Double(min(1.0, vp / 0.52)))
+
+        let card2VertPad = 14.0 - 7.0 * vp
+        let pillRatio = min(1.0, vp / 0.58)
+        let pillHeight = max(0.0, (1.0 - pillRatio) * 32.0)
+        let pillGap = max(0.0, (1.0 - pillRatio) * 10.0)
+        let pillAlpha = max(0.0, 1.0 - Double(min(1.0, vp / 0.48)))
+
+        let breakdownRatio = min(1.0, vp / 0.72)
+        let breakdownH = max(0.0, (1.0 - breakdownRatio) * 76.0)
+        let breakdownGap = max(0.0, (1.0 - breakdownRatio) * 10.0)
+        let breakdownAlpha = max(0.0, 1.0 - Double(min(1.0, vp / 0.58)))
+
+        VStack(spacing: 8 - 2 * vp) {
+                // Card 1: Overall Vocab Summary + Tri-color mastery bar
+                GlassCard(cornerRadius: cornerR) {
+                    VStack(spacing: 0) {
+                        ZStack {
+                            if card1ExpandAlpha > 0.01 {
+                                HStack(spacing: 0) {
+                                    HistorySummaryStatItem(label: "生词总量", value: "\(db.vocabList.count) 词", systemImage: "character.book.closed.fill", iconColor: palette.accent)
+                                    HistoryStatDivider()
+                                    HistorySummaryStatItem(label: "累计复习", value: "\(allVocabReviewTotals.total) 次", systemImage: "rectangle.stack.fill", iconColor: .orange)
+                                    HistoryStatDivider()
+                                    HistorySummaryStatItem(label: "已认识", value: "\(vocabPoolCounts.known) 词", systemImage: "checkmark.seal.fill", iconColor: .green)
+                                }
+                                .opacity(card1ExpandAlpha)
+                            }
+                            if card1CompactAlpha > 0.01 {
+                                HStack(spacing: 10) {
+                                    CompactInlineStat(label: "生词", value: "\(db.vocabList.count) 词")
+                                    HistoryStatDivider(height: 14)
+                                    CompactInlineStat(label: "复习", value: "\(allVocabReviewTotals.total) 次")
+                                    HistoryStatDivider(height: 14)
+                                    CompactInlineStat(label: "已认识", value: "\(vocabPoolCounts.known) 词")
+                                }
+                                .opacity(card1CompactAlpha)
                             }
                         }
+                        .frame(height: card1StatsH)
+                        .clipped()
 
-                    default:
-                        if activeVocabMonths.isEmpty {
-                            EmptyHistoryCard(systemImage: "rectangle.stack", message: "\(vocabListYear) 年暂无闪卡复习记录")
-                        } else {
-                            ForEach(Array(activeVocabMonths.enumerated()), id: \.element.0) { idx, pair in
-                                let month = pair.0
-                                let mTotals = pair.1
-                                VocabPeriodRowCard(
-                                    index: idx,
-                                    count: activeVocabMonths.count,
-                                    title: "\(month) 月",
-                                    subtitle: "\(mTotals.activeDays) 天 · \(mTotals.total) 次",
-                                    unknown: mTotals.unknown,
-                                    fuzzy: mTotals.fuzzy,
-                                    known: mTotals.known,
-                                    maxReference: maxVocabMonthTotal,
-                                    emptyText: "无复习",
-                                    onClick: {
-                                        vocabYear = vocabListYear
-                                        vocabMonth = month
-                                        withAnimation(AppMotion.tabSpring) {
-                                            vocabPeriod = 2
-                                        }
-                                    }
+                        if !db.vocabList.isEmpty && card1ExtraH > 0.5 {
+                            VStack(spacing: 8) {
+                                Spacer().frame(height: 2)
+                                TriColorVocabBar(
+                                    unknown: vocabPoolCounts.unknown,
+                                    fuzzy: vocabPoolCounts.fuzzy,
+                                    known: vocabPoolCounts.known,
+                                    height: 5
                                 )
+                                HStack(spacing: 16) {
+                                    MiniOptionBadge(text: "不认识 \(vocabPoolCounts.unknown)", dotColor: .red)
+                                    MiniOptionBadge(text: "模糊 \(vocabPoolCounts.fuzzy)", dotColor: .orange)
+                                    MiniOptionBadge(text: "已认识 \(vocabPoolCounts.known)", dotColor: palette.accent)
+                                }
+                            }
+                            .frame(height: card1ExtraH)
+                            .clipped()
+                            .opacity(card1ExtraAlpha)
+                        }
+                    }
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, card1VertPad)
+                }
+
+                // Card 2: Swipeable Vocab Period Card (按日 / 按周 / 按月 / 按年)
+                GlassCard(cornerRadius: cornerR) {
+                    VStack(spacing: 0) {
+                        if pillHeight > 0.5 {
+                            GlassSegmentedControl(
+                                titles: vocabPeriodOptions,
+                                selection: $vocabPeriod,
+                                compact: true
+                            )
+                            .padding(.horizontal, 16)
+                            .frame(height: pillHeight)
+                            .clipped()
+                            .opacity(pillAlpha)
+
+                            Spacer().frame(height: pillGap)
+                        }
+
+                        GlassHorizontalPager(selection: $vocabPeriod, pageCount: 4, fillHeight: false) { page in
+                            switch page {
+                            case 0:
+                                VStack(spacing: 0) {
+                                    let isToday = HistoryDateHelper.dateKey(for: selectedVocabDate) == HistoryDateHelper.dateKey(for: today)
+                                    let m = HistoryDateHelper.calendar.component(.month, from: selectedVocabDate)
+                                    let d = HistoryDateHelper.calendar.component(.day, from: selectedVocabDate)
+                                    let y = HistoryDateHelper.calendar.component(.year, from: selectedVocabDate)
+                                    let baseTitle = isToday
+                                        ? "今天 · \(m)月\(d)日"
+                                        : "\(y)年\(m)月\(d)日 · \(HistoryDateHelper.weekdayShortName(for: selectedVocabDate))"
+                                    let dayTitle = vp > 0.55 ? "\(baseTitle) · \(selectedDayTotals.total)次" : baseTitle
+
+                                    PeriodNavigatorRow(
+                                        title: dayTitle,
+                                        onPrev: { selectedVocabDate = HistoryDateHelper.addDays(-1, to: selectedVocabDate) },
+                                        onNext: { selectedVocabDate = HistoryDateHelper.addDays(1, to: selectedVocabDate) }
+                                    )
+                                    if breakdownH > 0.5 {
+                                        Spacer().frame(height: breakdownGap)
+                                        VocabPeriodBreakdownContent(
+                                            totals: selectedDayTotals,
+                                            subtitle: "当日 \(selectedDayTotals.total) 次闪卡 · 新增收藏 \(selectedDayCollectedCount) 词"
+                                        )
+                                        .frame(height: breakdownH)
+                                        .clipped()
+                                        .opacity(breakdownAlpha)
+                                    }
+                                }
+                                .padding(.horizontal, 16)
+
+                            case 1:
+                                VStack(spacing: 0) {
+                                    let weekEnd = HistoryDateHelper.addDays(6, to: selectedVocabWeekStart)
+                                    let currentY = HistoryDateHelper.calendar.component(.year, from: today)
+                                    let startY = HistoryDateHelper.calendar.component(.year, from: selectedVocabWeekStart)
+                                    let startM = HistoryDateHelper.calendar.component(.month, from: selectedVocabWeekStart)
+                                    let startD = HistoryDateHelper.calendar.component(.day, from: selectedVocabWeekStart)
+                                    let endM = HistoryDateHelper.calendar.component(.month, from: weekEnd)
+                                    let endD = HistoryDateHelper.calendar.component(.day, from: weekEnd)
+                                    let prefix = startY != currentY ? "\(startY)年 " : ""
+                                    let baseTitle = "\(prefix)\(startM)月\(startD)日 - \(endM)月\(endD)日"
+                                    let weekTitle = vp > 0.55 ? "\(baseTitle) · \(weekTotals.total)次" : baseTitle
+
+                                    PeriodNavigatorRow(
+                                        title: weekTitle,
+                                        onPrev: { selectedVocabWeekStart = HistoryDateHelper.addDays(-7, to: selectedVocabWeekStart) },
+                                        onNext: { selectedVocabWeekStart = HistoryDateHelper.addDays(7, to: selectedVocabWeekStart) }
+                                    )
+                                    if breakdownH > 0.5 {
+                                        Spacer().frame(height: breakdownGap)
+                                        VocabPeriodBreakdownContent(
+                                            totals: weekTotals,
+                                            subtitle: "本周 \(weekTotals.activeDays) 天 · \(weekTotals.total) 次复习 · 收藏 \(weekCollectedCount) 词"
+                                        )
+                                        .frame(height: breakdownH)
+                                        .clipped()
+                                        .opacity(breakdownAlpha)
+                                    }
+                                }
+                                .padding(.horizontal, 16)
+
+                            case 2:
+                                VStack(spacing: 0) {
+                                    let title = vp > 0.55
+                                        ? "\(vocabYear)年\(vocabMonth)月 · \(vocabMonthTotals.total)次"
+                                        : "\(vocabYear) 年 \(vocabMonth) 月"
+                                    PeriodNavigatorRow(
+                                        title: title,
+                                        onPrev: {
+                                            let shifted = HistoryDateHelper.shiftYearMonth(year: vocabYear, month: vocabMonth, delta: -1)
+                                            vocabYear = shifted.0
+                                            vocabMonth = shifted.1
+                                        },
+                                        onNext: {
+                                            let shifted = HistoryDateHelper.shiftYearMonth(year: vocabYear, month: vocabMonth, delta: 1)
+                                            vocabYear = shifted.0
+                                            vocabMonth = shifted.1
+                                        }
+                                    )
+                                    if breakdownH > 0.5 {
+                                        Spacer().frame(height: breakdownGap)
+                                        VocabPeriodBreakdownContent(
+                                            totals: vocabMonthTotals,
+                                            subtitle: "本月 \(vocabMonthTotals.activeDays) 天 · \(vocabMonthTotals.total) 次复习 · 收藏 \(vocabMonthCollectedCount) 词"
+                                        )
+                                        .frame(height: breakdownH)
+                                        .clipped()
+                                        .opacity(breakdownAlpha)
+                                    }
+                                }
+                                .padding(.horizontal, 16)
+
+                            default:
+                                VStack(spacing: 0) {
+                                    let title = vp > 0.55
+                                        ? "\(vocabListYear)年 · \(vocabYearTotals.total)次"
+                                        : "\(vocabListYear) 年"
+                                    PeriodNavigatorRow(
+                                        title: title,
+                                        onPrev: { vocabListYear -= 1 },
+                                        onNext: { vocabListYear += 1 }
+                                    )
+                                    if breakdownH > 0.5 {
+                                        Spacer().frame(height: breakdownGap)
+                                        VocabPeriodBreakdownContent(
+                                            totals: vocabYearTotals,
+                                            subtitle: "全年 \(vocabYearTotals.activeDays) 天 · \(vocabYearTotals.total) 次复习 · 收藏 \(vocabYearCollectedCount) 词"
+                                        )
+                                        .frame(height: breakdownH)
+                                        .clipped()
+                                        .opacity(breakdownAlpha)
+                                    }
+                                }
+                                .padding(.horizontal, 16)
                             }
                         }
                     }
+                    .padding(.vertical, card2VertPad)
                 }
-                .padding(.horizontal, 16)
-                .padding(.top, 2)
-                .padding(.bottom, 24)
             }
-        }
-        .padding(.top, 4)
+            .padding(.horizontal, 16)
+            .padding(.top, 8 - 4 * vp)
+            .padding(.bottom, 6)
+            .background {
+                if vp > 0.02 {
+                    LinearGradient(
+                        colors: [
+                            palette.backgroundBase.opacity(0.75 * Double(min(1.0, vp * 1.4))),
+                            Color.clear
+                        ],
+                        startPoint: .top,
+                        endPoint: .bottom
+                    )
+                }
+            }
     }
 }
 
 // MARK: - History Subcomponents
 
 private struct HistoryStatDivider: View {
+    var height: CGFloat = 28
+
     var body: some View {
         Rectangle()
             .fill(Color.secondary.opacity(0.25))
-            .frame(width: 0.75, height: 28)
+            .frame(width: 0.75, height: height)
+    }
+}
+
+private struct CompactInlineStat: View {
+    let label: String
+    let value: String
+
+    var body: some View {
+        HStack(spacing: 4) {
+            Text(label)
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+            Text(value)
+                .font(.caption.bold())
+                .lineLimit(1)
+        }
     }
 }
 
 private struct HistorySummaryStatItem: View {
     let label: String
     let value: String
+    var systemImage: String? = nil
+    var iconColor: Color? = nil
+
+    @Environment(\.appPalette) private var palette
 
     var body: some View {
         VStack(spacing: 3) {
             Text(value)
                 .font(.headline.bold())
+                .monospacedDigit()
                 .lineLimit(1)
                 .minimumScaleFactor(0.8)
-            Text(label)
-                .font(.caption2)
-                .foregroundStyle(.secondary)
-                .lineLimit(1)
-        }
-        .frame(maxWidth: .infinity)
-    }
-}
-
-private struct PeriodPillRow: View {
-    let options: [String]
-    let selectedIndex: Int
-    var onSelect: (Int) -> Void
-
-    @Environment(\.appPalette) private var palette
-
-    var body: some View {
-        HStack(spacing: 8) {
-            ForEach(0..<options.count, id: \.self) { idx in
-                let selected = idx == selectedIndex
-                Button {
-                    onSelect(idx)
-                } label: {
-                    Text(options[idx])
-                        .font(.caption.weight(selected ? .semibold : .medium))
-                        .foregroundStyle(selected ? palette.accent : .secondary)
-                        .padding(.horizontal, 14)
-                        .padding(.vertical, 6)
-                        .background(selected ? palette.accent.opacity(0.16) : Color.secondary.opacity(0.10))
-                        .clipShape(Capsule())
+            HStack(spacing: 4) {
+                if let systemImage {
+                    Image(systemName: systemImage)
+                        .font(.system(size: 10, weight: .semibold))
+                        .foregroundStyle(iconColor ?? palette.accent)
                 }
-                .buttonStyle(.plain)
+                Text(label)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
             }
         }
         .frame(maxWidth: .infinity)
@@ -910,30 +1121,29 @@ private struct PeriodNavigatorRow: View {
 
     var body: some View {
         HStack {
-            Button(action: onPrev) {
-                Image(systemName: "chevron.left")
-                    .font(.subheadline.weight(.semibold))
-                    .frame(width: 34, height: 34)
-                    .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
+            GlassCircleIconButton(
+                systemImage: "chevron.left",
+                size: 30,
+                iconFont: .caption.weight(.semibold),
+                action: onPrev
+            )
 
             Spacer()
 
             Text(title)
-                .font(.headline.bold())
+                .font(.subheadline.bold())
+                .monospacedDigit()
                 .lineLimit(1)
                 .minimumScaleFactor(0.8)
 
             Spacer()
 
-            Button(action: onNext) {
-                Image(systemName: "chevron.right")
-                    .font(.subheadline.weight(.semibold))
-                    .frame(width: 34, height: 34)
-                    .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
+            GlassCircleIconButton(
+                systemImage: "chevron.right",
+                size: 30,
+                iconFont: .caption.weight(.semibold),
+                action: onNext
+            )
         }
     }
 }
@@ -949,6 +1159,7 @@ private struct MiniOptionBadge: View {
                 .frame(width: 6, height: 6)
             Text(text)
                 .font(.caption2)
+                .monospacedDigit()
                 .foregroundStyle(.secondary)
         }
     }
@@ -958,7 +1169,7 @@ private struct TriColorVocabBar: View {
     let unknown: Int
     let fuzzy: Int
     let known: Int
-    var height: CGFloat = 5
+    var height: CGFloat = 5.5
     var fillFraction: Double = 1.0
 
     @Environment(\.appPalette) private var palette
@@ -969,28 +1180,29 @@ private struct TriColorVocabBar: View {
         GeometryReader { geo in
             ZStack(alignment: .leading) {
                 Capsule()
-                    .fill(Color.secondary.opacity(0.16))
+                    .fill(Color.secondary.opacity(0.14))
                 if total > 0 && clampedFill > 0 {
-                    let targetW = geo.size.width * clampedFill
-                    HStack(spacing: 0) {
+                    let activeParts = (unknown > 0 ? 1 : 0) + (fuzzy > 0 ? 1 : 0) + (known > 0 ? 1 : 0)
+                    let gapSpace = CGFloat(max(0, activeParts - 1)) * 2.0
+                    let targetW = max(height, geo.size.width * clampedFill - gapSpace)
+                    HStack(spacing: 2) {
                         if unknown > 0 {
-                            Rectangle()
+                            Capsule()
                                 .fill(Color.red)
-                                .frame(width: targetW * (Double(unknown) / Double(total)))
+                                .frame(width: max(height * 0.7, targetW * (Double(unknown) / Double(total))))
                         }
                         if fuzzy > 0 {
-                            Rectangle()
+                            Capsule()
                                 .fill(Color.orange)
-                                .frame(width: targetW * (Double(fuzzy) / Double(total)))
+                                .frame(width: max(height * 0.7, targetW * (Double(fuzzy) / Double(total))))
                         }
                         if known > 0 {
-                            Rectangle()
+                            Capsule()
                                 .fill(palette.accent)
-                                .frame(width: targetW * (Double(known) / Double(total)))
+                                .frame(width: max(height * 0.7, targetW * (Double(known) / Double(total))))
                         }
                     }
-                    .frame(width: targetW, height: height)
-                    .clipShape(Capsule())
+                    .frame(height: height)
                 }
             }
         }
@@ -1018,6 +1230,7 @@ private struct VocabPeriodBreakdownContent: View {
             )
             Text(subtitle)
                 .font(.caption2)
+                .monospacedDigit()
                 .foregroundStyle(.secondary)
                 .lineLimit(1)
         }
@@ -1033,6 +1246,7 @@ private struct ColoredStatItem: View {
         VStack(spacing: 3) {
             Text(value)
                 .font(.headline.bold())
+                .monospacedDigit()
                 .lineLimit(1)
             HStack(spacing: 4) {
                 Circle()
@@ -1066,13 +1280,14 @@ private struct DailyBookRecordCard: View {
         GlassGroupedCard(
             index: index,
             count: count,
-            outerRadius: 18,
-            innerRadius: 6,
+            outerRadius: 20,
+            innerRadius: 8,
             tintColor: expanded ? palette.accent.opacity(0.06) : nil
         ) {
             VStack(alignment: .leading, spacing: 0) {
                 Button(action: onToggle) {
-                    HStack {
+                    HStack(spacing: 10) {
+                        AppleIconBadge(systemImage: "calendar", size: 28, cornerRadius: 8)
                         Text(HistoryDateHelper.formatDateHeader(dateKey))
                             .font(.subheadline.bold())
                             .foregroundStyle(.primary)
@@ -1084,13 +1299,13 @@ private struct DailyBookRecordCard: View {
                                 textColor: palette.accent
                             )
                             Image(systemName: "chevron.down")
-                                .font(.caption.bold())
+                                .font(.caption2.bold())
                                 .foregroundStyle(.secondary)
                                 .rotationEffect(.degrees(expanded ? 180 : 0))
                         }
                     }
-                    .padding(.horizontal, 16)
-                    .padding(.vertical, 14)
+                    .padding(.horizontal, 15)
+                    .padding(.vertical, 13)
                     .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
@@ -1098,8 +1313,10 @@ private struct DailyBookRecordCard: View {
                 if expanded {
                     VStack(alignment: .leading, spacing: 8) {
                         Divider()
+                            .opacity(0.45)
                         Text("共读 \(totalUnits) 句 · 查词 \(totalLookups) 次")
                             .font(.caption2)
+                            .monospacedDigit()
                             .foregroundStyle(.secondary)
 
                         ForEach(dayLogs) { log in
@@ -1107,10 +1324,8 @@ private struct DailyBookRecordCard: View {
                             let pct = book.map { min(100, max(0, Int(computeBookProgress($0) * 100.0))) }
                             VStack(alignment: .leading, spacing: 6) {
                                 HStack {
-                                    HStack(spacing: 6) {
-                                        Image(systemName: "book")
-                                            .font(.caption)
-                                            .foregroundStyle(palette.accent)
+                                    HStack(spacing: 7) {
+                                        AppleIconBadge(systemImage: "book.closed.fill", size: 22, cornerRadius: 6)
                                         Text(log.bookTitle)
                                             .font(.subheadline.weight(.medium))
                                             .lineLimit(1)
@@ -1118,7 +1333,8 @@ private struct DailyBookRecordCard: View {
                                     Spacer()
                                     if let pct {
                                         Text("总进度 \(pct)%")
-                                            .font(.caption2.weight(.medium))
+                                            .font(.caption2.weight(.semibold))
+                                            .monospacedDigit()
                                             .foregroundStyle(palette.accent)
                                     }
                                 }
@@ -1126,19 +1342,24 @@ private struct DailyBookRecordCard: View {
                                     Spacer()
                                     Text("\(log.unitsRead) 句 · \(log.lookupsCount) 词 · ")
                                         .font(.caption2)
+                                        .monospacedDigit()
                                         .foregroundStyle(.secondary)
                                     Text(formatDuration(log.readingSeconds))
                                         .font(.caption2.weight(.semibold))
+                                        .monospacedDigit()
                                         .foregroundStyle(palette.accent)
                                 }
                             }
                             .padding(.horizontal, 12)
                             .padding(.vertical, 10)
-                            .background(Color.secondary.opacity(0.08))
-                            .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                            .background(Color.secondary.opacity(0.06), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                                    .strokeBorder(Color.white.opacity(palette.isLight ? 0.35 : 0.10), lineWidth: 0.5)
+                            )
                         }
                     }
-                    .padding(.horizontal, 16)
+                    .padding(.horizontal, 15)
                     .padding(.bottom, 14)
                     .transition(AppMotion.panelTransition)
                 }
@@ -1171,9 +1392,9 @@ private struct DailyVocabRecordCard: View {
         GlassGroupedCard(
             index: index,
             count: count,
-            outerRadius: 18,
-            innerRadius: 6,
-            tintColor: isHighlighted ? palette.accent.opacity(0.12) : (expanded ? palette.accent.opacity(0.06) : nil)
+            outerRadius: 20,
+            innerRadius: 8,
+            tintColor: isHighlighted ? palette.accent.opacity(0.11) : (expanded ? palette.accent.opacity(0.05) : nil)
         ) {
             VStack(alignment: .leading, spacing: 0) {
                 Button(action: onToggle) {
@@ -1190,6 +1411,7 @@ private struct DailyVocabRecordCard: View {
                                     MiniOptionBadge(text: "\(k)", dotColor: palette.accent)
                                     Text("\(total)次")
                                         .font(.caption2.weight(.semibold))
+                                        .monospacedDigit()
                                         .foregroundStyle(palette.accent)
                                 }
                                 if !collectedWords.isEmpty {
@@ -1199,7 +1421,7 @@ private struct DailyVocabRecordCard: View {
                                         textColor: palette.accent
                                     )
                                     Image(systemName: "chevron.down")
-                                        .font(.caption.bold())
+                                        .font(.caption2.bold())
                                         .foregroundStyle(.secondary)
                                         .rotationEffect(.degrees(expanded ? 180 : 0))
                                 }
@@ -1211,13 +1433,13 @@ private struct DailyVocabRecordCard: View {
                                 unknown: u,
                                 fuzzy: f,
                                 known: k,
-                                height: 5,
+                                height: 5.5,
                                 fillFraction: fillFraction
                             )
                         }
                     }
-                    .padding(.horizontal, 16)
-                    .padding(.vertical, 14)
+                    .padding(.horizontal, 15)
+                    .padding(.vertical, 13)
                     .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
@@ -1225,21 +1447,25 @@ private struct DailyVocabRecordCard: View {
                 if expanded && !collectedWords.isEmpty {
                     VStack(alignment: .leading, spacing: 8) {
                         Divider()
+                            .opacity(0.45)
                         Text("当日收藏单词 (\(collectedWords.count))")
                             .font(.caption2)
                             .foregroundStyle(.secondary)
-                        HistoryFlowLayout(horizontalSpacing: 8, verticalSpacing: 8) {
+                        HistoryFlowLayout(horizontalSpacing: 7, verticalSpacing: 7) {
                             ForEach(collectedWords) { item in
                                 Text(item.word)
                                     .font(.caption.weight(.medium))
                                     .padding(.horizontal, 11)
-                                    .padding(.vertical, 6)
-                                    .background(Color.secondary.opacity(0.12))
-                                    .clipShape(Capsule())
+                                    .padding(.vertical, 5.5)
+                                    .background(.ultraThinMaterial, in: Capsule())
+                                    .overlay(
+                                        Capsule()
+                                            .strokeBorder(Color.white.opacity(palette.isLight ? 0.55 : 0.16), lineWidth: 0.55)
+                                    )
                             }
                         }
                     }
-                    .padding(.horizontal, 16)
+                    .padding(.horizontal, 15)
                     .padding(.bottom, 14)
                     .transition(AppMotion.panelTransition)
                 }
@@ -1268,7 +1494,7 @@ private struct VocabPeriodRowCard: View {
         let fillFraction = total > 0 ? Double(total) / Double(max(1, maxReference)) : 0
 
         Button(action: onClick) {
-            GlassGroupedCard(index: index, count: count, outerRadius: 18, innerRadius: 6) {
+            GlassGroupedCard(index: index, count: count, outerRadius: 20, innerRadius: 8) {
                 VStack(spacing: 8) {
                     HStack {
                         Text(title)
@@ -1282,6 +1508,7 @@ private struct VocabPeriodRowCard: View {
                                 MiniOptionBadge(text: "\(known)", dotColor: palette.accent)
                                 Text(subtitle ?? "\(total) 次")
                                     .font(.caption.weight(.semibold))
+                                    .monospacedDigit()
                                     .foregroundStyle(palette.accent)
                             }
                         } else {
@@ -1294,12 +1521,12 @@ private struct VocabPeriodRowCard: View {
                         unknown: unknown,
                         fuzzy: fuzzy,
                         known: known,
-                        height: 5,
+                        height: 5.5,
                         fillFraction: fillFraction
                     )
                 }
-                .padding(.horizontal, 16)
-                .padding(.vertical, 14)
+                .padding(.horizontal, 15)
+                .padding(.vertical, 13)
             }
         }
         .buttonStyle(GlassPressButtonStyle())

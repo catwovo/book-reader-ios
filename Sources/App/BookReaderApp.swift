@@ -23,6 +23,7 @@ private struct RootContentView: View {
     @Environment(SettingsStore.self) private var settingsStore
     @Environment(\.colorScheme) private var systemScheme
 
+    @State private var selectedTab = 0
     @State private var activeBook: BookItem?
     @State private var parsedBook: ParsedBook?
     @State private var jumpChapter: Int?
@@ -35,6 +36,13 @@ private struct RootContentView: View {
     private var palette: AppThemePalette {
         AppThemePalette.resolve(mode: settingsStore.settings.themeMode, systemScheme: systemScheme)
     }
+
+    private let rootTabs: [LiquidGlassTabItem] = [
+        LiquidGlassTabItem(id: 0, title: "书架", systemImage: "books.vertical", selectedImage: "books.vertical.fill"),
+        LiquidGlassTabItem(id: 1, title: "笔记", systemImage: "bookmark", selectedImage: "bookmark.fill"),
+        LiquidGlassTabItem(id: 2, title: "统计", systemImage: "chart.bar", selectedImage: "chart.bar.fill"),
+        LiquidGlassTabItem(id: 3, title: "设置", systemImage: "gearshape", selectedImage: "gearshape.fill")
+    ]
 
     var body: some View {
         ZStack {
@@ -56,30 +64,37 @@ private struct RootContentView: View {
                 .id(book.id)
                 .transition(AppMotion.bookTransition)
             } else {
-                TabView {
-                    Tab("书架", systemImage: "books.vertical") {
-                        LibraryView { book in
-                            openBook(book, chapter: nil, unit: nil)
-                        }
+                ZStack {
+                    LibraryView { book in
+                        openBook(book, chapter: nil, unit: nil)
                     }
+                    .opacity(selectedTab == 0 ? 1 : 0)
+                    .allowsHitTesting(selectedTab == 0)
+                    .zIndex(selectedTab == 0 ? 1 : 0)
 
-                    Tab("笔记", systemImage: "bookmark") {
-                        NotesAndVocabView { book, chap, unit in
-                            openBook(book, chapter: chap, unit: unit)
-                        }
+                    NotesAndVocabView { book, chap, unit in
+                        openBook(book, chapter: chap, unit: unit)
                     }
+                    .opacity(selectedTab == 1 ? 1 : 0)
+                    .allowsHitTesting(selectedTab == 1)
+                    .zIndex(selectedTab == 1 ? 1 : 0)
 
-                    Tab("统计", systemImage: "chart.bar") {
-                        ReadingHistoryView()
-                    }
+                    ReadingHistoryView()
+                        .opacity(selectedTab == 2 ? 1 : 0)
+                        .allowsHitTesting(selectedTab == 2)
+                        .zIndex(selectedTab == 2 ? 1 : 0)
 
-                    Tab("设置", systemImage: "gearshape") {
-                        SettingsView { book in
-                            openBook(book, chapter: nil, unit: nil)
-                        }
+                    SettingsView { book in
+                        openBook(book, chapter: nil, unit: nil)
                     }
+                    .opacity(selectedTab == 3 ? 1 : 0)
+                    .allowsHitTesting(selectedTab == 3)
+                    .zIndex(selectedTab == 3 ? 1 : 0)
                 }
-                .tint(palette.accent)
+                .animation(AppMotion.tabSpring, value: selectedTab)
+                .safeAreaInset(edge: .bottom, spacing: 0) {
+                    LiquidGlassTabBar(items: rootTabs, selectedTab: $selectedTab)
+                }
             }
 
             if isOpeningBook {

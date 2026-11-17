@@ -231,50 +231,72 @@ struct GlassPressButtonStyle: ButtonStyle {
 
 /// Apple Liquid-Glass inspired surface container
 struct GlassCard<Content: View>: View {
-    var cornerRadius: CGFloat = 20
+    var cornerRadius: CGFloat = 22
     var tintColor: Color? = nil
+    var customFill: Color? = nil
     @Environment(\.appPalette) private var palette
     @ViewBuilder var content: () -> Content
 
     var body: some View {
+        let shape = RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
         content()
             .background {
                 ZStack {
-                    RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-                        .fill(.ultraThinMaterial)
-                    if let tintColor {
-                        RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-                            .fill(tintColor.opacity(0.68))
-                    } else if palette.mode != .dynamic {
-                        RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-                            .fill(palette.surfaceTint.opacity(palette.isLight ? 0.45 : 0.35))
+                    if let customFill {
+                        shape.fill(customFill)
+                        shape.fill(
+                            LinearGradient(
+                                colors: [
+                                    .white.opacity(customFill.relativeLuminance > 0.44 ? 0.24 : 0.07),
+                                    .clear
+                                ],
+                                startPoint: .top,
+                                endPoint: .center
+                            )
+                        )
+                    } else {
+                        shape.fill(.regularMaterial)
+                        if let tintColor {
+                            shape.fill(tintColor)
+                        } else if palette.mode != .dynamic {
+                            shape.fill(palette.surfaceTint.opacity(palette.isLight ? 0.34 : 0.26))
+                        }
+                        shape.fill(
+                            LinearGradient(
+                                colors: [
+                                    .white.opacity(palette.isLight ? 0.30 : 0.09),
+                                    .clear
+                                ],
+                                startPoint: .top,
+                                endPoint: .center
+                            )
+                        )
                     }
                 }
             }
             .overlay {
-                RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-                    .strokeBorder(
-                        LinearGradient(
-                            colors: [
-                                .white.opacity(palette.isLight ? 0.55 : 0.28),
-                                .white.opacity(palette.isLight ? 0.16 : 0.08),
-                                .white.opacity(0.03)
-                            ],
-                            startPoint: .topLeading,
-                            endPoint: .bottomTrailing
-                        ),
-                        lineWidth: 0.8
-                    )
+                shape.strokeBorder(
+                    LinearGradient(
+                        colors: [
+                            .white.opacity(customFill != nil ? 0.28 : (palette.isLight ? 0.68 : 0.24)),
+                            .white.opacity(palette.isLight ? 0.14 : 0.07),
+                            .white.opacity(0.03)
+                        ],
+                        startPoint: .topLeading,
+                        endPoint: .bottomTrailing
+                    ),
+                    lineWidth: 0.6
+                )
             }
-            .shadow(color: .black.opacity(palette.isLight ? 0.06 : 0.22), radius: 12, x: 0, y: 5)
+            .shadow(color: .black.opacity(palette.isLight ? 0.048 : 0.20), radius: 14, x: 0, y: 6)
     }
 }
 
 struct GlassGroupedCard<Content: View>: View {
     let index: Int
     let count: Int
-    var outerRadius: CGFloat = 20
-    var innerRadius: CGFloat = 6
+    var outerRadius: CGFloat = 22
+    var innerRadius: CGFloat = 8
     var tintColor: Color? = nil
     @Environment(\.appPalette) private var palette
     @ViewBuilder var content: () -> Content
@@ -295,11 +317,70 @@ struct GlassGroupedCard<Content: View>: View {
         content()
             .background {
                 ZStack {
-                    shape.fill(.ultraThinMaterial)
+                    shape.fill(.regularMaterial)
                     if let tintColor {
-                        shape.fill(tintColor.opacity(0.62))
+                        shape.fill(tintColor)
                     } else if palette.mode != .dynamic {
-                        shape.fill(palette.surfaceTint.opacity(palette.isLight ? 0.42 : 0.32))
+                        shape.fill(palette.surfaceTint.opacity(palette.isLight ? 0.30 : 0.24))
+                    }
+                    shape.fill(
+                        LinearGradient(
+                            colors: [
+                                .white.opacity(palette.isLight ? 0.24 : 0.07),
+                                .clear
+                            ],
+                            startPoint: .top,
+                            endPoint: .center
+                        )
+                    )
+                }
+            }
+            .overlay {
+                shape.strokeBorder(
+                    LinearGradient(
+                        colors: [
+                            .white.opacity(palette.isLight ? 0.60 : 0.22),
+                            .white.opacity(0.06)
+                        ],
+                        startPoint: .topLeading,
+                        endPoint: .bottomTrailing
+                    ),
+                    lineWidth: 0.55
+                )
+            }
+            .shadow(color: .black.opacity(palette.isLight ? 0.025 : 0.14), radius: 6, x: 0, y: 2)
+    }
+}
+
+struct AppleIconBadge: View {
+    let systemImage: String
+    var color: Color? = nil
+    var size: CGFloat = 32
+    var cornerRadius: CGFloat = 9
+    var filled: Bool = false
+
+    @Environment(\.appPalette) private var palette
+
+    var body: some View {
+        let baseColor = color ?? palette.accent
+        let shape = RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+        Image(systemName: systemImage)
+            .font(.system(size: size * 0.45, weight: .semibold))
+            .foregroundStyle(filled ? Color.white : baseColor)
+            .frame(width: size, height: size)
+            .background {
+                if filled {
+                    shape.fill(
+                        LinearGradient(
+                            colors: [baseColor, baseColor.opacity(0.80)],
+                            startPoint: .top,
+                            endPoint: .bottom
+                        )
+                    )
+                } else {
+                    ZStack {
+                        shape.fill(.ultraThinMaterial)
+                        shape.fill(baseColor.opacity(palette.isLight ? 0.13 : 0.22))
                     }
                 }
             }
@@ -307,13 +388,13 @@ struct GlassGroupedCard<Content: View>: View {
                 shape.strokeBorder(
                     LinearGradient(
                         colors: [
-                            .white.opacity(palette.isLight ? 0.50 : 0.24),
-                            .white.opacity(0.07)
+                            .white.opacity(filled ? 0.45 : (palette.isLight ? 0.65 : 0.24)),
+                            .white.opacity(0.05)
                         ],
                         startPoint: .topLeading,
                         endPoint: .bottomTrailing
                     ),
-                    lineWidth: 0.75
+                    lineWidth: 0.55
                 )
             }
     }
@@ -336,12 +417,7 @@ struct CollapsibleGlassSection<Content: View>: View {
                     }
                 } label: {
                     HStack(spacing: 12) {
-                        Image(systemName: systemImage)
-                            .font(.title3)
-                            .foregroundStyle(palette.accent)
-                            .frame(width: 34, height: 34)
-                            .background(palette.accent.opacity(0.14))
-                            .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+                        AppleIconBadge(systemImage: systemImage, size: 34, cornerRadius: 10, filled: true)
 
                         VStack(alignment: .leading, spacing: 2) {
                             Text(title)
@@ -511,8 +587,371 @@ struct MinimalTagPill: View {
             .foregroundStyle(textColor)
             .padding(.horizontal, 8)
             .padding(.vertical, 3)
-            .background((tintColor ?? Color.secondary.opacity(0.14)))
-            .clipShape(Capsule())
+            .background {
+                ZStack {
+                    Capsule().fill(.ultraThinMaterial)
+                    Capsule().fill((tintColor ?? Color.secondary.opacity(0.14)))
+                }
+            }
+            .overlay {
+                Capsule().strokeBorder(.white.opacity(0.28), lineWidth: 0.6)
+            }
+    }
+}
+
+// MARK: - Apple Liquid Glass Interactive Controls
+
+struct GlassSegmentedControl<Option: Hashable>: View {
+    let options: [(value: Option, title: String)]
+    @Binding var selection: Option
+    var compact: Bool = false
+
+    @Namespace private var glassNamespace
+    @Environment(\.appPalette) private var palette
+
+    var body: some View {
+        HStack(spacing: 2) {
+            ForEach(options, id: \.value) { item in
+                let isSelected = selection == item.value
+                Button {
+                    if selection != item.value {
+                        withAnimation(AppMotion.tabSpring) {
+                            selection = item.value
+                        }
+                    }
+                } label: {
+                    Text(item.title)
+                        .font(compact ? .caption.weight(isSelected ? .semibold : .medium) : .subheadline.weight(isSelected ? .semibold : .medium))
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.85)
+                        .foregroundStyle(isSelected ? palette.accent : .secondary)
+                        .frame(maxWidth: .infinity)
+                        .padding(.horizontal, compact ? 9 : 12)
+                        .padding(.vertical, compact ? 5 : 7)
+                        .background {
+                            if isSelected {
+                                Capsule()
+                                    .fill(.regularMaterial)
+                                    .overlay {
+                                        Capsule().fill(
+                                            LinearGradient(
+                                                colors: [
+                                                    .white.opacity(palette.isLight ? 0.62 : 0.24),
+                                                    palette.accent.opacity(palette.isLight ? 0.12 : 0.22)
+                                                ],
+                                                startPoint: .top,
+                                                endPoint: .bottom
+                                            )
+                                        )
+                                    }
+                                    .overlay {
+                                        Capsule().strokeBorder(
+                                            LinearGradient(
+                                                colors: [
+                                                    .white.opacity(palette.isLight ? 0.85 : 0.38),
+                                                    palette.accent.opacity(0.32)
+                                                ],
+                                                startPoint: .topLeading,
+                                                endPoint: .bottomTrailing
+                                            ),
+                                            lineWidth: 0.85
+                                        )
+                                    }
+                                    .shadow(color: .black.opacity(palette.isLight ? 0.08 : 0.24), radius: 5, x: 0, y: 2)
+                                    .matchedGeometryEffect(id: "glassSegmentIndicator", in: glassNamespace)
+                            }
+                        }
+                        .contentShape(Capsule())
+                }
+                .buttonStyle(.plain)
+            }
+        }
+        .padding(3)
+        .background {
+            ZStack {
+                Capsule().fill(.ultraThinMaterial)
+                Capsule().fill(palette.surfaceTint.opacity(palette.isLight ? 0.26 : 0.30))
+            }
+        }
+        .overlay {
+            Capsule().strokeBorder(
+                LinearGradient(
+                    colors: [
+                        .white.opacity(palette.isLight ? 0.60 : 0.24),
+                        .white.opacity(0.06)
+                    ],
+                    startPoint: .topLeading,
+                    endPoint: .bottomTrailing
+                ),
+                lineWidth: 0.8
+            )
+        }
+        .shadow(color: .black.opacity(palette.isLight ? 0.05 : 0.18), radius: 6, x: 0, y: 2)
+    }
+}
+
+extension GlassSegmentedControl where Option == Int {
+    init(titles: [String], selection: Binding<Int>, compact: Bool = false) {
+        self.options = titles.enumerated().map { ($0.offset, $0.element) }
+        self._selection = selection
+        self.compact = compact
+    }
+}
+
+struct GlassCircleIconButton: View {
+    let systemImage: String
+    var size: CGFloat = 34
+    var iconFont: Font = .subheadline.weight(.semibold)
+    var isActive: Bool = false
+    var tintColor: Color? = nil
+    var action: () -> Void
+
+    @Environment(\.appPalette) private var palette
+
+    var body: some View {
+        let activeTint = tintColor ?? palette.accent
+        Button(action: action) {
+            Image(systemName: systemImage)
+                .font(iconFont)
+                .foregroundStyle(isActive ? activeTint : .primary)
+                .frame(width: size, height: size)
+                .background {
+                    ZStack {
+                        Circle().fill(.ultraThinMaterial)
+                        if isActive {
+                            Circle().fill(activeTint.opacity(palette.isLight ? 0.16 : 0.24))
+                        } else if palette.mode != .dynamic {
+                            Circle().fill(palette.surfaceTint.opacity(palette.isLight ? 0.32 : 0.26))
+                        }
+                    }
+                }
+                .overlay {
+                    Circle().strokeBorder(
+                        LinearGradient(
+                            colors: [
+                                .white.opacity(palette.isLight ? 0.68 : 0.28),
+                                (isActive ? activeTint.opacity(0.35) : .white.opacity(0.08))
+                            ],
+                            startPoint: .topLeading,
+                            endPoint: .bottomTrailing
+                        ),
+                        lineWidth: 0.85
+                    )
+                }
+                .shadow(color: .black.opacity(palette.isLight ? 0.06 : 0.20), radius: 6, x: 0, y: 2)
+        }
+        .buttonStyle(GlassPressButtonStyle())
+    }
+}
+
+struct GlassCapsuleChip: View {
+    let title: String
+    var systemImage: String? = nil
+    var selected: Bool = false
+    var tintColor: Color? = nil
+    var action: () -> Void
+
+    @Environment(\.appPalette) private var palette
+
+    var body: some View {
+        let activeTint = tintColor ?? palette.accent
+        Button(action: action) {
+            HStack(spacing: 4) {
+                if let systemImage {
+                    Image(systemName: systemImage)
+                        .font(.caption2.weight(.semibold))
+                }
+                Text(title)
+                    .font(.caption.weight(selected ? .semibold : .medium))
+                    .lineLimit(1)
+            }
+            .foregroundStyle(selected ? activeTint : .primary)
+            .padding(.horizontal, 12)
+            .padding(.vertical, 6)
+            .background {
+                ZStack {
+                    Capsule().fill(selected ? .regularMaterial : .ultraThinMaterial)
+                    if selected {
+                        Capsule().fill(activeTint.opacity(palette.isLight ? 0.16 : 0.24))
+                    } else if palette.mode != .dynamic {
+                        Capsule().fill(palette.surfaceTint.opacity(palette.isLight ? 0.26 : 0.22))
+                    }
+                }
+            }
+            .overlay {
+                Capsule().strokeBorder(
+                    LinearGradient(
+                        colors: [
+                            .white.opacity(palette.isLight ? 0.65 : 0.28),
+                            selected ? activeTint.opacity(0.45) : .white.opacity(0.08)
+                        ],
+                        startPoint: .topLeading,
+                        endPoint: .bottomTrailing
+                    ),
+                    lineWidth: selected ? 0.95 : 0.75
+                )
+            }
+            .shadow(color: .black.opacity(palette.isLight ? (selected ? 0.07 : 0.04) : 0.18), radius: 5, x: 0, y: 2)
+        }
+        .buttonStyle(GlassPressButtonStyle())
+    }
+}
+
+struct GlassHorizontalPager<PageContent: View>: View {
+    @Binding var selection: Int
+    let pageCount: Int
+    var fillHeight: Bool = true
+    @ViewBuilder var pageContent: (Int) -> PageContent
+
+    @State private var scrollPage: Int? = 0
+
+    var body: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 0) {
+                ForEach(0..<pageCount, id: \.self) { idx in
+                    Group {
+                        if fillHeight {
+                            pageContent(idx)
+                                .containerRelativeFrame([.horizontal, .vertical])
+                        } else {
+                            pageContent(idx)
+                                .containerRelativeFrame(.horizontal)
+                        }
+                    }
+                    .id(idx)
+                }
+            }
+            .scrollTargetLayout()
+        }
+        .scrollTargetBehavior(.paging)
+        .scrollPosition(id: $scrollPage)
+        .onAppear {
+            scrollPage = selection
+        }
+        .onChange(of: selection) { _, newValue in
+            if scrollPage != newValue {
+                withAnimation(AppMotion.tabSpring) {
+                    scrollPage = newValue
+                }
+            }
+        }
+        .onChange(of: scrollPage) { _, newPage in
+            if let newPage, newPage != selection {
+                withAnimation(AppMotion.tabSpring) {
+                    selection = newPage
+                }
+            }
+        }
+    }
+}
+
+struct LiquidGlassTabItem: Identifiable {
+    let id: Int
+    let title: String
+    let systemImage: String
+    let selectedImage: String
+}
+
+struct LiquidGlassTabBar: View {
+    let items: [LiquidGlassTabItem]
+    @Binding var selectedTab: Int
+
+    @Namespace private var tabNamespace
+    @Environment(\.appPalette) private var palette
+
+    var body: some View {
+        HStack(spacing: 4) {
+            ForEach(items) { item in
+                let isSelected = selectedTab == item.id
+                Button {
+                    if selectedTab != item.id {
+                        withAnimation(AppMotion.tabSpring) {
+                            selectedTab = item.id
+                        }
+                    }
+                } label: {
+                    VStack(spacing: 3) {
+                        Image(systemName: isSelected ? item.selectedImage : item.systemImage)
+                            .font(.system(size: 18, weight: isSelected ? .semibold : .medium))
+                            .symbolEffect(.bounce.byLayer, value: isSelected)
+                        Text(item.title)
+                            .font(.system(size: 10.5, weight: isSelected ? .semibold : .medium))
+                            .lineLimit(1)
+                    }
+                    .foregroundStyle(isSelected ? palette.accent : .secondary)
+                    .frame(maxWidth: .infinity)
+                    .frame(height: 52)
+                    .background {
+                        if isSelected {
+                            Capsule()
+                                .fill(.regularMaterial)
+                                .overlay {
+                                    Capsule().fill(
+                                        LinearGradient(
+                                            colors: [
+                                                .white.opacity(palette.isLight ? 0.65 : 0.22),
+                                                palette.accent.opacity(palette.isLight ? 0.14 : 0.24)
+                                            ],
+                                            startPoint: .top,
+                                            endPoint: .bottom
+                                        )
+                                    )
+                                }
+                                .overlay {
+                                    Capsule().strokeBorder(
+                                        LinearGradient(
+                                            colors: [
+                                                .white.opacity(palette.isLight ? 0.85 : 0.42),
+                                                palette.accent.opacity(0.35)
+                                            ],
+                                            startPoint: .topLeading,
+                                            endPoint: .bottomTrailing
+                                        ),
+                                        lineWidth: 0.9
+                                    )
+                                }
+                                .shadow(color: palette.accent.opacity(palette.isLight ? 0.14 : 0.24), radius: 8, x: 0, y: 3)
+                                .matchedGeometryEffect(id: "liquidGlassTabPill", in: tabNamespace)
+                        }
+                    }
+                    .contentShape(Capsule())
+                }
+                .buttonStyle(GlassPressButtonStyle())
+            }
+        }
+        .padding(5)
+        .background {
+            ZStack {
+                Capsule().fill(.ultraThinMaterial)
+                Capsule().fill(
+                    LinearGradient(
+                        colors: [
+                            palette.surfaceTint.opacity(palette.isLight ? 0.42 : 0.48),
+                            palette.surfaceTint.opacity(palette.isLight ? 0.24 : 0.30)
+                        ],
+                        startPoint: .top,
+                        endPoint: .bottom
+                    )
+                )
+            }
+        }
+        .overlay {
+            Capsule().strokeBorder(
+                LinearGradient(
+                    colors: [
+                        .white.opacity(palette.isLight ? 0.78 : 0.32),
+                        .white.opacity(palette.isLight ? 0.22 : 0.08),
+                        .white.opacity(0.04)
+                    ],
+                    startPoint: .topLeading,
+                    endPoint: .bottomTrailing
+                ),
+                lineWidth: 1.0
+            )
+        }
+        .shadow(color: .black.opacity(palette.isLight ? 0.12 : 0.36), radius: 18, x: 0, y: 8)
+        .padding(.horizontal, 16)
+        .padding(.bottom, 6)
     }
 }
 

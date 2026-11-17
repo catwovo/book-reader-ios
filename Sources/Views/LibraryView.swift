@@ -40,6 +40,8 @@ struct LibraryView: View {
     @State private var heroPageIndex = 0
     @State private var collectionTab = 0 // 0 = 本地藏书, 1 = 在线书库
     @State private var expandedFolderIds: Set<Int64> = []
+    @State private var localScrollOffset: CGFloat = 0
+    @State private var opdsScrollOffset: CGFloat = 0
 
     // Import & Folder Modals
     @State private var showFileImporter = false
@@ -187,15 +189,49 @@ struct LibraryView: View {
             }
     }
 
+    private var expandedHeroHeight: CGFloat {
+        guard !recentBooks.isEmpty else { return 0 }
+        return recentBooks.count > 1 ? 198 : 178
+    }
+
+    private var compactHeroHeight: CGFloat {
+        recentBooks.isEmpty ? 0 : 70
+    }
+
+    private var heroCollapseProgress: CGFloat {
+        let maxCollapse = expandedHeroHeight - compactHeroHeight
+        guard maxCollapse > 1 else { return 0 }
+        let activeOffset = collectionTab == 0 ? localScrollOffset : opdsScrollOffset
+        return min(1.0, max(0.0, activeOffset / maxCollapse))
+    }
+
+    private var totalExpandedHeaderHeight: CGFloat {
+        expandedHeroHeight + 44
+    }
+
     @ViewBuilder
     private var mainShellView: some View {
-        ZStack {
+        ZStack(alignment: .top) {
             AmbientGlassBackdrop(themeMode: settingsStore.settings.themeMode)
+
+            collectionPager
 
             VStack(spacing: 0) {
                 heroContinueSection
                 sectionHeaderBar
-                collectionPager
+            }
+            .background {
+                if heroCollapseProgress > 0.02 {
+                    Rectangle()
+                        .fill(.ultraThinMaterial)
+                        .opacity(Double(min(1.0, heroCollapseProgress * 1.4)) * 0.78)
+                        .overlay(alignment: .bottom) {
+                            Rectangle()
+                                .fill(Color.white.opacity(palette.isLight ? 0.35 : 0.12))
+                                .frame(height: 0.5)
+                        }
+                        .ignoresSafeArea(edges: .top)
+                }
             }
         }
     }
@@ -203,23 +239,26 @@ struct LibraryView: View {
     @ViewBuilder
     private var heroContinueSection: some View {
         if !recentBooks.isEmpty {
-            VStack(spacing: 8) {
-                TabView(selection: $heroPageIndex) {
-                    ForEach(Array(recentBooks.enumerated()), id: \.element.id) { idx, book in
+            let p = heroCollapseProgress
+            let dotsOpacity = max(0.0, 1.0 - Double(p) * 2.0)
+            let dotsHeight = max(0.0, (1.0 - min(1.0, p / 0.65)) * 18.0)
+
+            VStack(spacing: max(0, 6.0 * (1.0 - min(1.0, p / 0.7)))) {
+                GlassHorizontalPager(selection: $heroPageIndex, pageCount: recentBooks.count, fillHeight: false) { idx in
+                    if idx < recentBooks.count {
+                        let book = recentBooks[idx]
                         HeroContinueCard(
                             book: book,
                             isCaching: BookCache.shared.cachingHints.contains(book.filePathHint),
+                            collapseProgress: p,
                             onOpen: { onOpenBook(book) },
                             onDelete: { deletingBook = book }
                         )
                         .padding(.horizontal, 16)
-                        .tag(idx)
                     }
                 }
-                .tabViewStyle(.page(indexDisplayMode: .never))
-                .frame(height: 174)
 
-                if recentBooks.count > 1 {
+                if recentBooks.count > 1 && dotsHeight > 0.5 {
                     MinimalPagerDots(
                         pageCount: recentBooks.count,
                         currentPage: min(heroPageIndex, recentBooks.count - 1),
@@ -229,9 +268,12 @@ struct LibraryView: View {
                             }
                         }
                     )
+                    .frame(height: dotsHeight)
+                    .clipped()
+                    .opacity(dotsOpacity)
                 }
             }
-            .padding(.top, 4)
+            .padding(.top, max(2, 4 * (1 - p)))
         }
     }
 
@@ -241,67 +283,72 @@ struct LibraryView: View {
             Text(collectionTab == 0 ? "藏书目录" : "OPDS 书源")
                 .font(.caption.weight(.semibold))
                 .foregroundStyle(.secondary)
+                .animation(.easeOut(duration: 0.2), value: collectionTab)
 
             Spacer()
 
-            if collectionTab == 0 {
-                HStack(spacing: 8) {
-                    if !expandedFolderIds.isEmpty {
-                        Button {
-                            withAnimation(AppMotion.panelSpring) {
-                                expandedFolderIds.removeAll()
-                            }
-                        } label: {
-                            Image(systemName: "chevron.up")
-                                .font(.caption.bold())
-                                .frame(width: 32, height: 32)
-                                .background(.ultraThinMaterial, in: Circle())
-                                .overlay(Circle().strokeBorder(.white.opacity(0.32), lineWidth: 0.7))
+            HStack(spacing: 8) {
+                if !expandedFolderIds.isEmpty {
+                    GlassCircleIconButton(
+                        systemImage: "chevron.up",
+                        size: 32,
+                        iconFont: .caption.bold()
+                    ) {
+                        withAnimation(AppMotion.panelSpring) {
+                            expandedFolderIds.removeAll()
                         }
-                        .buttonStyle(GlassPressButtonStyle())
                     }
+                    .transition(.scale(scale: 0.8).combined(with: .opacity))
+                }
 
-                    Button {
-                        newFolderName = ""
-                        showNewFolderAlert = true
-                    } label: {
-                        Image(systemName: "folder.badge.plus")
-                            .font(.subheadline)
-                            .frame(width: 32, height: 32)
-                            .background(palette.accent.opacity(0.15), in: Circle())
-                            .foregroundStyle(palette.accent)
-                    }
-                    .buttonStyle(GlassPressButtonStyle())
+                GlassCircleIconButton(
+                    systemImage: "folder.badge.plus",
+                    size: 32,
+                    iconFont: .subheadline,
+                    isActive: true
+                ) {
+                    newFolderName = ""
+                    showNewFolderAlert = true
+                }
 
-                    Button {
-                        importTargetFolderId = nil
-                        showFileImporter = true
-                    } label: {
-                        Image(systemName: "plus")
-                            .font(.subheadline.bold())
-                            .frame(width: 32, height: 32)
-                            .background(palette.accent.opacity(0.15), in: Circle())
-                            .foregroundStyle(palette.accent)
-                    }
-                    .buttonStyle(GlassPressButtonStyle())
+                GlassCircleIconButton(
+                    systemImage: "plus",
+                    size: 32,
+                    iconFont: .subheadline.bold(),
+                    isActive: true
+                ) {
+                    importTargetFolderId = nil
+                    showFileImporter = true
                 }
             }
+            .opacity(collectionTab == 0 ? 1 : 0)
+            .scaleEffect(collectionTab == 0 ? 1 : 0.9)
+            .allowsHitTesting(collectionTab == 0)
+            .animation(AppMotion.tabSpring, value: collectionTab)
         }
+        .frame(height: 36)
         .padding(.horizontal, 16)
-        .padding(.top, 8)
-        .padding(.bottom, 6)
+        .padding(.top, 4)
+        .padding(.bottom, 4)
     }
 
     @ViewBuilder
     private var collectionPager: some View {
-        TabView(selection: $collectionTab) {
-            localShelfView
-                .tag(0)
-
-            OpdsOnlineLibraryPane(onOpenBook: onOpenBook)
-                .tag(1)
+        GlassHorizontalPager(selection: $collectionTab, pageCount: 2) { page in
+            if page == 0 {
+                localShelfView
+            } else {
+                OpdsOnlineLibraryPane(
+                    topSpacerHeight: totalExpandedHeaderHeight,
+                    onScrollOffsetChange: { offset in
+                        if abs(opdsScrollOffset - offset) > 0.5 {
+                            opdsScrollOffset = offset
+                        }
+                    },
+                    onOpenBook: onOpenBook
+                )
+            }
         }
-        .tabViewStyle(.page(indexDisplayMode: .never))
     }
 
     @ToolbarContentBuilder
@@ -320,17 +367,12 @@ struct LibraryView: View {
             }
         }
         ToolbarItem(placement: .topBarTrailing) {
-            Picker("书库", selection: Binding(
-                get: { collectionTab },
-                set: { next in
-                    withAnimation(AppMotion.tabSpring) { collectionTab = next }
-                }
-            )) {
-                Text("本地藏书").tag(0)
-                Text("在线书库").tag(1)
-            }
-            .pickerStyle(.segmented)
-            .frame(width: 174)
+            GlassSegmentedControl(
+                titles: ["本地藏书", "在线书库"],
+                selection: $collectionTab,
+                compact: true
+            )
+            .frame(width: 172)
         }
     }
 
@@ -340,35 +382,31 @@ struct LibraryView: View {
     private var localShelfView: some View {
         if db.books.isEmpty && db.folders.isEmpty {
             VStack(spacing: 14) {
+                Color.clear.frame(height: totalExpandedHeaderHeight)
                 Spacer()
                 Image(systemName: "books.vertical")
                     .font(.system(size: 42))
                     .foregroundStyle(palette.accent)
                     .padding(18)
-                    .background(palette.accent.opacity(0.12), in: Circle())
+                    .background(.ultraThinMaterial, in: Circle())
+                    .overlay(Circle().strokeBorder(.white.opacity(0.35), lineWidth: 0.8))
                 Text("本地书架还是空的")
                     .font(.headline)
                 Text("支持 EPUB · TXT · PDF · MOBI · AZW3\n向左滑动即可直接从「在线书库」下载阅读")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .multilineTextAlignment(.center)
-                Button {
+                GlassCapsuleChip(title: "导入本地图书", systemImage: "plus", selected: true) {
                     importTargetFolderId = nil
                     showFileImporter = true
-                } label: {
-                    Label("导入本地图书", systemImage: "plus")
-                        .font(.subheadline.weight(.semibold))
-                        .padding(.horizontal, 18)
-                        .padding(.vertical, 10)
-                        .background(palette.accent, in: Capsule())
-                        .foregroundStyle(.white)
                 }
-                .buttonStyle(GlassPressButtonStyle())
                 Spacer()
             }
             .padding(24)
+            .onAppear { localScrollOffset = 0 }
         } else if db.folders.isEmpty && rootShelfBooks.isEmpty {
             VStack(spacing: 10) {
+                Color.clear.frame(height: totalExpandedHeaderHeight)
                 Spacer()
                 Text("当前全部 \(db.books.count) 本藏书均已展示在上方「最近阅读」\n可点击右上「新建文件夹」分类整理，或向左滑动浏览「在线书库」")
                     .font(.caption)
@@ -377,9 +415,12 @@ struct LibraryView: View {
                 Spacer()
             }
             .padding(24)
+            .onAppear { localScrollOffset = 0 }
         } else {
             ScrollView {
                 LazyVStack(spacing: 10) {
+                    Color.clear.frame(height: totalExpandedHeaderHeight)
+
                     // Folders (non-sticky, unified expand/collapse animation, actions in "..." menu)
                     ForEach(Array(db.folders.enumerated()), id: \.element.id) { idx, folder in
                         let folderBooks = folderBooksMap[folder.id] ?? []
@@ -465,7 +506,14 @@ struct LibraryView: View {
                     }
                 }
                 .padding(.horizontal, 16)
-                .padding(.vertical, 6)
+                .padding(.bottom, 12)
+            }
+            .onScrollGeometryChange(for: CGFloat.self) { geo in
+                geo.contentOffset.y + geo.contentInsets.top
+            } action: { _, newOffset in
+                if abs(localScrollOffset - newOffset) > 0.5 {
+                    localScrollOffset = newOffset
+                }
             }
         }
     }
@@ -565,90 +613,171 @@ struct LibraryView: View {
 private struct HeroContinueCard: View {
     let book: BookItem
     let isCaching: Bool
+    var collapseProgress: CGFloat = 0
     var onOpen: () -> Void
     var onDelete: () -> Void
 
     @Environment(\.appPalette) private var palette
 
     var body: some View {
+        let p = min(1.0, max(0.0, collapseProgress))
+        let topRatio = min(1.0, p / 0.55)
+        let topHeight = max(0.0, (1.0 - topRatio) * 26.0)
+        let topAlpha = max(0.0, 1.0 - Double(topRatio))
+        let gapScale = max(0.0, 1.0 - min(1.0, p / 0.65))
+        let ctaHeight = gapScale * 36.0
+        let ctaAlpha = max(0.0, 1.0 - Double(min(1.0, p / 0.55)))
+        let coverW = 50.0 - 16.0 * p
+        let coverH = 68.0 - 22.0 * p
+        let cardPad = 14.0 - 4.0 * p
+        let cornerR = 24.0 - 6.0 * p
+        let compactPlayAlpha = max(0.0, Double((p - 0.35) / 0.65))
+
         let progress = computeBookProgress(book)
-        GlassCard(cornerRadius: 24, tintColor: palette.accent.opacity(0.08)) {
-            VStack(alignment: .leading, spacing: 10) {
-                // Top bar
-                HStack {
-                    MinimalTagPill(
-                        text: book.readingSeconds > 0 ? "最近阅读" : "开始阅读",
-                        tintColor: palette.accent.opacity(0.14),
-                        textColor: palette.accent
-                    )
-                    Spacer()
-                    if isCaching {
-                        ProgressView()
-                            .controlSize(.mini)
-                        Text("解析中")
-                            .font(.caption2)
-                            .foregroundStyle(palette.accent)
-                    } else {
-                        Text("\(Int(progress * 100))%")
-                            .font(.caption.weight(.semibold))
-                            .foregroundStyle(palette.accent)
-                    }
-                    if book.filePathHint != "sample://art_of_slow_reading" {
-                        Button(action: onDelete) {
-                            Image(systemName: "trash")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                                .frame(width: 26, height: 26)
+        GlassCard(cornerRadius: cornerR, tintColor: palette.accent.opacity(0.06)) {
+            VStack(alignment: .leading, spacing: 0) {
+                // Top bar (collapses smoothly)
+                if topHeight > 0.5 {
+                    HStack(spacing: 6) {
+                        HStack(spacing: 5) {
+                            Image(systemName: book.readingSeconds > 0 ? "book.fill" : "sparkles")
+                                .font(.system(size: 10, weight: .semibold))
+                            Text(book.readingSeconds > 0 ? "最近阅读" : "开始阅读")
+                                .font(.caption2.weight(.semibold))
                         }
-                        .buttonStyle(.plain)
-                    }
-                }
+                        .foregroundStyle(palette.accent)
+                        .padding(.horizontal, 9)
+                        .padding(.vertical, 3.5)
+                        .background(palette.accent.opacity(0.12), in: Capsule())
 
-                // Cover + metadata
-                Button(action: onOpen) {
-                    HStack(spacing: 13) {
-                        BookCoverArtwork(book: book, compact: false)
-                            .frame(width: 50, height: 68)
-                            .shadow(color: .black.opacity(0.14), radius: 4, x: 0, y: 2)
-
-                        VStack(alignment: .leading, spacing: 5) {
-                            Text(book.title)
-                                .font(.headline)
-                                .foregroundStyle(.primary)
-                                .lineLimit(2)
-                                .multilineTextAlignment(.leading)
-
-                            HStack(spacing: 5) {
-                                Image(systemName: "clock")
-                                    .font(.caption2)
-                                Text(book.readingSeconds > 0 ? "已读 \(formatDuration(book.readingSeconds))" : "尚未开始")
-                                    .font(.caption)
+                        Spacer()
+                        if isCaching {
+                            ProgressView()
+                                .controlSize(.mini)
+                            Text("解析中")
+                                .font(.caption2)
+                                .foregroundStyle(palette.accent)
+                        } else {
+                            Text("\(Int(progress * 100))%")
+                                .font(.caption.weight(.semibold))
+                                .monospacedDigit()
+                                .foregroundStyle(palette.accent)
+                        }
+                        if book.filePathHint != "sample://art_of_slow_reading" {
+                            Button(action: onDelete) {
+                                Image(systemName: "trash")
+                                    .font(.caption2.weight(.semibold))
+                                    .foregroundStyle(.secondary)
+                                    .frame(width: 26, height: 26)
+                                    .background(Color.secondary.opacity(0.10), in: Circle())
                             }
-                            .foregroundStyle(.secondary)
-
-                            SmoothLinearProgressBar(progress: progress, height: 4.5)
+                            .buttonStyle(GlassPressButtonStyle())
+                            .disabled(topAlpha < 0.3)
                         }
                     }
-                    .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
+                    .frame(height: topHeight)
+                    .clipped()
+                    .opacity(topAlpha)
 
-                // CTA Pill
-                Button(action: onOpen) {
-                    HStack(spacing: 5) {
-                        Image(systemName: "play.fill")
-                            .font(.caption)
-                        Text(book.readingSeconds > 0 ? "继续阅读" : "立即阅读")
-                            .font(.subheadline.weight(.semibold))
-                    }
-                    .frame(maxWidth: .infinity)
-                    .frame(height: 36)
-                    .background(palette.accent, in: Capsule())
-                    .foregroundStyle(.white)
+                    Spacer().frame(height: 8 * gapScale)
                 }
-                .buttonStyle(GlassPressButtonStyle())
+
+                // Cover + metadata + compact play button
+                HStack(spacing: 12 - 2 * p) {
+                    Button(action: onOpen) {
+                        HStack(spacing: 13 - 2 * p) {
+                            BookCoverArtwork(book: book, compact: p > 0.5)
+                                .frame(width: coverW, height: coverH)
+                                .shadow(color: .black.opacity(0.14), radius: 4 - 2 * p, x: 0, y: 2)
+
+                            VStack(alignment: .leading, spacing: 5 - 1.5 * p) {
+                                Text(book.title)
+                                    .font(p > 0.5 ? .subheadline.weight(.bold) : .headline)
+                                    .foregroundStyle(.primary)
+                                    .lineLimit(p > 0.5 ? 1 : 2)
+                                    .multilineTextAlignment(.leading)
+
+                                HStack(spacing: 5) {
+                                    Image(systemName: "clock")
+                                        .font(.caption2)
+                                    if p > 0.5 {
+                                        Text(book.readingSeconds > 0
+                                             ? "\(Int(progress * 100))% · 已读 \(formatDuration(book.readingSeconds))"
+                                             : "\(Int(progress * 100))% · 尚未开始")
+                                            .font(.caption)
+                                            .lineLimit(1)
+                                    } else {
+                                        Text(book.readingSeconds > 0 ? "已读 \(formatDuration(book.readingSeconds))" : "尚未开始")
+                                            .font(.caption)
+                                            .lineLimit(1)
+                                    }
+                                }
+                                .foregroundStyle(.secondary)
+
+                                SmoothLinearProgressBar(progress: progress, height: 4.5 - 0.8 * p)
+                            }
+                        }
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+
+                    if compactPlayAlpha > 0.02 {
+                        Button(action: onOpen) {
+                            Image(systemName: "play.fill")
+                                .font(.caption.bold())
+                                .foregroundStyle(.white)
+                                .frame(width: 34, height: 34)
+                                .background {
+                                    ZStack {
+                                        Circle().fill(palette.accent)
+                                        Circle().strokeBorder(.white.opacity(0.42), lineWidth: 0.8)
+                                    }
+                                }
+                                .shadow(color: palette.accent.opacity(0.28), radius: 6, x: 0, y: 2)
+                        }
+                        .buttonStyle(GlassPressButtonStyle())
+                        .scaleEffect(0.75 + 0.25 * compactPlayAlpha)
+                        .opacity(compactPlayAlpha)
+                    }
+                }
+
+                // CTA Pill (collapses smoothly)
+                if ctaHeight > 0.5 {
+                    Spacer().frame(height: 8 * gapScale)
+
+                    Button(action: onOpen) {
+                        HStack(spacing: 5) {
+                            Image(systemName: "play.fill")
+                                .font(.caption)
+                            Text(book.readingSeconds > 0 ? "继续阅读" : "立即阅读")
+                                .font(.subheadline.weight(.semibold))
+                        }
+                        .frame(maxWidth: .infinity)
+                        .frame(height: 36)
+                        .background {
+                            ZStack {
+                                Capsule().fill(palette.accent)
+                                Capsule().fill(
+                                    LinearGradient(
+                                        colors: [.white.opacity(0.24), .clear],
+                                        startPoint: .top,
+                                        endPoint: .bottom
+                                    )
+                                )
+                            }
+                        }
+                        .overlay {
+                            Capsule().strokeBorder(.white.opacity(0.35), lineWidth: 0.7)
+                        }
+                        .foregroundStyle(.white)
+                    }
+                    .buttonStyle(GlassPressButtonStyle())
+                    .frame(height: ctaHeight)
+                    .clipped()
+                    .opacity(ctaAlpha)
+                }
             }
-            .padding(14)
+            .padding(cardPad)
         }
     }
 }
@@ -673,12 +802,12 @@ private struct FolderHeaderGlassCard: View {
         let content = HStack(spacing: 12) {
             Button(action: onToggleExpand) {
                 HStack(spacing: 12) {
-                    Image(systemName: isExpanded ? "folder.fill" : "folder")
-                        .font(.title3)
-                        .foregroundStyle(palette.accent)
-                        .frame(width: 38, height: 38)
-                        .background(palette.accent.opacity(isExpanded ? 0.18 : 0.11))
-                        .clipShape(RoundedRectangle(cornerRadius: 11, style: .continuous))
+                    AppleIconBadge(
+                        systemImage: isExpanded ? "folder.fill" : "folder",
+                        size: 38,
+                        cornerRadius: 11,
+                        filled: isExpanded
+                    )
 
                     VStack(alignment: .leading, spacing: 2) {
                         Text(folder.name)
@@ -920,6 +1049,8 @@ struct OpdsOnlineLibraryPane: View {
     @Environment(SettingsStore.self) private var settingsStore
     @Environment(\.appPalette) private var palette
 
+    var topSpacerHeight: CGFloat = 0
+    var onScrollOffsetChange: (CGFloat) -> Void = { _ in }
     var onOpenBook: (BookItem) -> Void
 
     @State private var navStack: [OpdsNavNode] = []
@@ -961,10 +1092,132 @@ struct OpdsOnlineLibraryPane: View {
         return nil
     }
 
-    var body: some View {
+    @ViewBuilder
+    private var opdsControlsHeader: some View {
         VStack(spacing: 8) {
+            // Source selector bar
+            HStack(spacing: 6) {
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 6) {
+                        ForEach(settingsStore.opdsSources) { src in
+                            let selected = src.id == currentSource?.id
+                            GlassCapsuleChip(title: src.name, selected: selected) {
+                                if settingsStore.selectedOpdsSourceId != src.id {
+                                    settingsStore.selectOpdsSource(src.id)
+                                }
+                            }
+                        }
+                    }
+                    .padding(.vertical, 2)
+                }
+
+                if searchTemplate != nil {
+                    GlassCircleIconButton(
+                        systemImage: showSearchBar ? "xmark" : "magnifyingglass",
+                        size: 30,
+                        iconFont: .caption.bold(),
+                        isActive: showSearchBar
+                    ) {
+                        withAnimation(AppMotion.panelSpring) {
+                            showSearchBar.toggle()
+                        }
+                    }
+                }
+
+                GlassCircleIconButton(
+                    systemImage: "pencil",
+                    size: 30,
+                    iconFont: .caption.bold()
+                ) {
+                    editingSource = currentSource
+                    showEditDialog = true
+                }
+
+                GlassCircleIconButton(
+                    systemImage: "plus",
+                    size: 30,
+                    iconFont: .caption.bold(),
+                    isActive: true
+                ) {
+                    editingSource = nil
+                    showEditDialog = true
+                }
+            }
+            .padding(.horizontal, 16)
+
+            // Search bar
+            if showSearchBar, let tpl = searchTemplate {
+                HStack(spacing: 8) {
+                    TextField("输入书名或作者搜索...", text: $searchQuery)
+                        .textFieldStyle(.plain)
+                        .submitLabel(.search)
+                        .onSubmit {
+                            executeSearch(template: tpl)
+                        }
+                    Button {
+                        executeSearch(template: tpl)
+                    } label: {
+                        Image(systemName: "magnifyingglass")
+                            .foregroundStyle(palette.accent)
+                    }
+                }
+                .padding(.horizontal, 12)
+                .padding(.vertical, 9)
+                .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+                .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).strokeBorder(.white.opacity(0.28), lineWidth: 0.7))
+                .padding(.horizontal, 16)
+                .transition(AppMotion.panelTransition)
+            }
+
+            // Breadcrumbs
+            if navStack.count > 1 {
+                HStack(spacing: 8) {
+                    GlassCapsuleChip(title: "返回", systemImage: "chevron.left", selected: true) {
+                        if navStack.count > 1 { navStack.removeLast() }
+                    }
+
+                    Text(currentNode?.title ?? "")
+                        .font(.caption.weight(.semibold))
+                        .lineLimit(1)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+
+                    if navStack.count > 2 {
+                        Button("首页") {
+                            if let first = navStack.first { navStack = [first] }
+                        }
+                        .font(.caption)
+                    }
+                }
+                .padding(.horizontal, 16)
+            }
+
+            // Banner
+            if let bannerMsg {
+                HStack {
+                    Text(bannerMsg)
+                        .font(.caption)
+                        .foregroundStyle(bannerIsError ? .red : palette.accent)
+                    Spacer()
+                    Button {
+                        self.bannerMsg = nil
+                    } label: {
+                        Image(systemName: "xmark")
+                            .font(.caption2)
+                    }
+                }
+                .padding(.horizontal, 12)
+                .padding(.vertical, 8)
+                .background((bannerIsError ? Color.red : palette.accent).opacity(0.12), in: RoundedRectangle(cornerRadius: 10))
+                .padding(.horizontal, 16)
+            }
+        }
+    }
+
+    var body: some View {
+        Group {
             if settingsStore.opdsSources.isEmpty {
                 VStack(spacing: 12) {
+                    Color.clear.frame(height: topSpacerHeight)
                     Spacer()
                     Image(systemName: "globe")
                         .font(.system(size: 36))
@@ -975,18 +1228,10 @@ struct OpdsOnlineLibraryPane: View {
                         .font(.caption)
                         .foregroundStyle(.secondary)
                         .multilineTextAlignment(.center)
-                    Button {
+                    GlassCapsuleChip(title: "添加自定义书源", systemImage: "plus", selected: true) {
                         editingSource = nil
                         showEditDialog = true
-                    } label: {
-                        Label("添加自定义书源", systemImage: "plus")
-                            .font(.subheadline.weight(.semibold))
-                            .padding(.horizontal, 16)
-                            .padding(.vertical, 9)
-                            .background(palette.accent, in: Capsule())
-                            .foregroundStyle(.white)
                     }
-                    .buttonStyle(GlassPressButtonStyle())
                     Button("恢复默认中英文书源") {
                         settingsStore.restoreDefaultOpdsSources()
                     }
@@ -994,186 +1239,53 @@ struct OpdsOnlineLibraryPane: View {
                     Spacer()
                 }
                 .padding(24)
-            } else {
-                // Source selector bar
-                HStack(spacing: 6) {
-                    ScrollView(.horizontal, showsIndicators: false) {
-                        HStack(spacing: 6) {
-                            ForEach(settingsStore.opdsSources) { src in
-                                let selected = src.id == currentSource?.id
-                                Button {
-                                    if settingsStore.selectedOpdsSourceId != src.id {
-                                        settingsStore.selectOpdsSource(src.id)
-                                    }
-                                } label: {
-                                    Text(src.name)
-                                        .font(.caption.weight(selected ? .semibold : .medium))
-                                        .lineLimit(1)
-                                        .padding(.horizontal, 11)
-                                        .padding(.vertical, 6)
-                                        .background(selected ? palette.accent.opacity(0.18) : Color.secondary.opacity(0.10), in: Capsule())
-                                        .foregroundStyle(selected ? palette.accent : .primary)
-                                        .overlay(
-                                            Capsule().strokeBorder(selected ? palette.accent.opacity(0.55) : Color.clear, lineWidth: 0.8)
-                                        )
-                                }
-                                .buttonStyle(.plain)
-                            }
-                        }
-                    }
+            } else if isLoading || errorMsg != nil || entries.isEmpty {
+                VStack(spacing: 8) {
+                    Color.clear.frame(height: topSpacerHeight)
+                    opdsControlsHeader
 
-                    if searchTemplate != nil {
-                        Button {
-                            withAnimation(AppMotion.panelSpring) {
-                                showSearchBar.toggle()
-                            }
-                        } label: {
-                            Image(systemName: showSearchBar ? "xmark" : "magnifyingglass")
-                                .font(.caption.bold())
-                                .frame(width: 30, height: 30)
-                                .background(.ultraThinMaterial, in: Circle())
-                        }
-                        .buttonStyle(.plain)
-                    }
-
-                    Button {
-                        editingSource = currentSource
-                        showEditDialog = true
-                    } label: {
-                        Image(systemName: "pencil")
-                            .font(.caption.bold())
-                            .frame(width: 30, height: 30)
-                            .background(.ultraThinMaterial, in: Circle())
-                    }
-                    .buttonStyle(.plain)
-
-                    Button {
-                        editingSource = nil
-                        showEditDialog = true
-                    } label: {
-                        Image(systemName: "plus")
-                            .font(.caption.bold())
-                            .frame(width: 30, height: 30)
-                            .background(palette.accent.opacity(0.15), in: Circle())
-                            .foregroundStyle(palette.accent)
-                    }
-                    .buttonStyle(.plain)
-                }
-                .padding(.horizontal, 16)
-
-                // Search bar
-                if showSearchBar, let tpl = searchTemplate {
-                    HStack(spacing: 8) {
-                        TextField("输入书名或作者搜索...", text: $searchQuery)
-                            .textFieldStyle(.plain)
-                            .submitLabel(.search)
-                            .onSubmit {
-                                executeSearch(template: tpl)
-                            }
-                        Button {
-                            executeSearch(template: tpl)
-                        } label: {
-                            Image(systemName: "magnifyingglass")
-                                .foregroundStyle(palette.accent)
-                        }
-                    }
-                    .padding(.horizontal, 12)
-                    .padding(.vertical, 9)
-                    .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-                    .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).strokeBorder(.white.opacity(0.28), lineWidth: 0.7))
-                    .padding(.horizontal, 16)
-                    .transition(AppMotion.panelTransition)
-                }
-
-                // Breadcrumbs
-                if navStack.count > 1 {
-                    HStack(spacing: 8) {
-                        Button {
-                            if navStack.count > 1 { navStack.removeLast() }
-                        } label: {
-                            Label("返回", systemImage: "chevron.left")
-                                .font(.caption.weight(.semibold))
-                                .padding(.horizontal, 10)
-                                .padding(.vertical, 5)
-                                .background(palette.accent.opacity(0.14), in: Capsule())
-                                .foregroundStyle(palette.accent)
-                        }
-                        .buttonStyle(.plain)
-
-                        Text(currentNode?.title ?? "")
-                            .font(.caption.weight(.semibold))
-                            .lineLimit(1)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-
-                        if navStack.count > 2 {
-                            Button("首页") {
-                                if let first = navStack.first { navStack = [first] }
-                            }
-                            .font(.caption)
-                        }
-                    }
-                    .padding(.horizontal, 16)
-                }
-
-                // Banner
-                if let bannerMsg {
-                    HStack {
-                        Text(bannerMsg)
-                            .font(.caption)
-                            .foregroundStyle(bannerIsError ? .red : palette.accent)
+                    if isLoading {
                         Spacer()
-                        Button {
-                            self.bannerMsg = nil
-                        } label: {
-                            Image(systemName: "xmark")
-                                .font(.caption2)
+                        ProgressView("正在加载在线书目...")
+                            .font(.caption)
+                        Spacer()
+                    } else if let errorMsg {
+                        Spacer()
+                        VStack(spacing: 10) {
+                            Text(errorMsg)
+                                .font(.caption)
+                                .foregroundStyle(.red)
+                                .multilineTextAlignment(.center)
+                            HStack(spacing: 10) {
+                                GlassCapsuleChip(title: "修改书源") {
+                                    editingSource = currentSource
+                                    showEditDialog = true
+                                }
+                                GlassCapsuleChip(title: "重试", selected: true) {
+                                    loadCurrentNode()
+                                }
+                            }
                         }
+                        .padding(24)
+                        Spacer()
+                    } else {
+                        Spacer()
+                        VStack(spacing: 8) {
+                            Text("当前目录没有可显示条目")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                            GlassCapsuleChip(title: "刷新") { loadCurrentNode() }
+                        }
+                        Spacer()
                     }
-                    .padding(.horizontal, 12)
-                    .padding(.vertical, 8)
-                    .background((bannerIsError ? Color.red : palette.accent).opacity(0.12), in: RoundedRectangle(cornerRadius: 10))
-                    .padding(.horizontal, 16)
                 }
+            } else {
+                ScrollView {
+                    LazyVStack(spacing: 8) {
+                        Color.clear.frame(height: topSpacerHeight)
 
-                // Content area
-                if isLoading {
-                    Spacer()
-                    ProgressView("正在加载在线书目...")
-                        .font(.caption)
-                    Spacer()
-                } else if let errorMsg {
-                    Spacer()
-                    VStack(spacing: 10) {
-                        Text(errorMsg)
-                            .font(.caption)
-                            .foregroundStyle(.red)
-                            .multilineTextAlignment(.center)
-                        HStack(spacing: 10) {
-                            Button("修改书源") {
-                                editingSource = currentSource
-                                showEditDialog = true
-                            }
-                            .buttonStyle(.bordered)
-                            Button("重试") {
-                                loadCurrentNode()
-                            }
-                            .buttonStyle(.borderedProminent)
-                        }
-                    }
-                    .padding(24)
-                    Spacer()
-                } else if entries.isEmpty {
-                    Spacer()
-                    VStack(spacing: 8) {
-                        Text("当前目录没有可显示条目")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                        Button("刷新") { loadCurrentNode() }
-                            .buttonStyle(.bordered)
-                    }
-                    Spacer()
-                } else {
-                    ScrollView {
+                        opdsControlsHeader
+
                         LazyVStack(spacing: 4) {
                             ForEach(Array(entries.enumerated()), id: \.element.id) { idx, entry in
                                 opdsEntryRow(entry: entry, index: idx, count: entries.count)
@@ -1192,25 +1304,35 @@ struct OpdsOnlineLibraryPane: View {
                                     }
                                     .frame(maxWidth: .infinity)
                                     .padding(.vertical, 10)
+                                    .background(.ultraThinMaterial, in: Capsule())
+                                    .overlay(Capsule().strokeBorder(.white.opacity(0.32), lineWidth: 0.7))
                                 }
-                                .buttonStyle(.bordered)
+                                .buttonStyle(GlassPressButtonStyle())
                                 .disabled(isLoadingMore)
                                 .padding(.top, 6)
                             }
                         }
                         .padding(.horizontal, 16)
-                        .padding(.vertical, 4)
+                        .padding(.bottom, 12)
                     }
+                }
+                .onScrollGeometryChange(for: CGFloat.self) { geo in
+                    geo.contentOffset.y + geo.contentInsets.top
+                } action: { _, newOffset in
+                    onScrollOffsetChange(newOffset)
                 }
             }
         }
         .onChange(of: currentSource?.id) { _, _ in
+            onScrollOffsetChange(0)
             resetNavigationForCurrentSource()
         }
         .onChange(of: currentSource?.url) { _, _ in
+            onScrollOffsetChange(0)
             resetNavigationForCurrentSource()
         }
         .onChange(of: currentNode?.url) { _, _ in
+            onScrollOffsetChange(0)
             loadCurrentNode()
         }
         .onAppear {
@@ -1266,9 +1388,7 @@ struct OpdsOnlineLibraryPane: View {
             } label: {
                 GlassGroupedCard(index: index, count: count) {
                     HStack(spacing: 10) {
-                        Image(systemName: "folder.fill")
-                            .foregroundStyle(palette.accent)
-                            .font(.subheadline)
+                        AppleIconBadge(systemImage: "folder.fill", size: 32, cornerRadius: 9)
                         VStack(alignment: .leading, spacing: 2) {
                             Text(entry.title)
                                 .font(.subheadline.weight(.semibold))
@@ -1327,31 +1447,15 @@ struct OpdsOnlineLibraryPane: View {
                         .buttonStyle(.plain)
 
                         if let existingBook {
-                            Button {
+                            GlassCapsuleChip(title: "阅读", systemImage: "play.fill", selected: true) {
                                 onOpenBook(existingBook)
-                            } label: {
-                                Label("阅读", systemImage: "play.fill")
-                                    .font(.caption.weight(.semibold))
-                                    .padding(.horizontal, 11)
-                                    .padding(.vertical, 6)
-                                    .background(palette.accent.opacity(0.16), in: Capsule())
-                                    .foregroundStyle(palette.accent)
                             }
-                            .buttonStyle(.plain)
                         } else if isDownloading {
                             ProgressView().controlSize(.small)
                         } else if let preferredAcq {
-                            Button {
+                            GlassCapsuleChip(title: "下载", systemImage: "arrow.down.circle", selected: true) {
                                 startDownload(entry: entry, acquisition: preferredAcq)
-                            } label: {
-                                Label("下载", systemImage: "arrow.down.circle")
-                                    .font(.caption.weight(.semibold))
-                                    .padding(.horizontal, 11)
-                                    .padding(.vertical, 6)
-                                    .background(palette.accent.opacity(0.16), in: Capsule())
-                                    .foregroundStyle(palette.accent)
                             }
-                            .buttonStyle(.plain)
                             .disabled(downloadingEntryId != nil)
                         }
                     }

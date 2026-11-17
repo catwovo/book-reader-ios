@@ -147,19 +147,24 @@ struct SettingsView: View {
                                             }
                                             .padding(.horizontal, 10)
                                             .padding(.vertical, 8)
-                                            .background(
-                                                selected
-                                                    ? palette.accent.opacity(0.18)
-                                                    : palette.nestedTint.opacity(0.55)
-                                            )
+                                            .background {
+                                                ZStack {
+                                                    Capsule().fill(selected ? .regularMaterial : .ultraThinMaterial)
+                                                    if selected {
+                                                        Capsule().fill(palette.accent.opacity(palette.isLight ? 0.16 : 0.24))
+                                                    } else {
+                                                        Capsule().fill(palette.nestedTint.opacity(0.32))
+                                                    }
+                                                }
+                                            }
                                             .foregroundStyle(selected ? palette.accent : .primary)
-                                            .clipShape(Capsule())
-                                            .overlay(
+                                            .overlay {
                                                 Capsule().strokeBorder(
-                                                    selected ? palette.accent.opacity(0.55) : Color.clear,
-                                                    lineWidth: 1
+                                                    selected ? palette.accent.opacity(0.55) : .white.opacity(palette.isLight ? 0.50 : 0.18),
+                                                    lineWidth: selected ? 1.0 : 0.7
                                                 )
-                                            )
+                                            }
+                                            .shadow(color: .black.opacity(palette.isLight ? 0.04 : 0.16), radius: 4, x: 0, y: 1.5)
                                         }
                                         .buttonStyle(GlassPressButtonStyle())
                                     }
@@ -531,35 +536,23 @@ struct SettingsView: View {
                                     Text("整句翻译引擎")
                                         .font(.subheadline.weight(.semibold))
 
-                                    let engineOptions: [(String, String)] = [
-                                        ("auto", "智能"),
-                                        ("ai", "AI"),
-                                        ("online", "在线"),
-                                        ("apple", "离线")
-                                    ]
-                                    HStack(spacing: 4) {
-                                        ForEach(engineOptions, id: \.0) { code, label in
-                                            let current = store.settings.sentenceTranslateEngine == "offline" ? "apple" : store.settings.sentenceTranslateEngine
-                                            let selected = current == code
-                                            Button {
-                                                withAnimation(AppMotion.panelSpring) {
-                                                    store.settings.sentenceTranslateEngine = code
-                                                }
-                                            } label: {
-                                                Text(label)
-                                                    .font(.caption.weight(selected ? .semibold : .medium))
-                                                    .frame(maxWidth: .infinity)
-                                                    .padding(.vertical, 7)
-                                                    .background(selected ? palette.accent : Color.clear)
-                                                    .foregroundStyle(selected ? .white : .primary)
-                                                    .clipShape(Capsule())
-                                            }
-                                            .buttonStyle(.plain)
-                                        }
-                                    }
-                                    .padding(4)
-                                    .background(palette.nestedTint.opacity(0.6))
-                                    .clipShape(Capsule())
+                                    GlassSegmentedControl(
+                                        options: [
+                                            ("auto", "智能"),
+                                            ("ai", "AI"),
+                                            ("online", "在线"),
+                                            ("apple", "离线")
+                                        ],
+                                        selection: Binding(
+                                            get: {
+                                                store.settings.sentenceTranslateEngine == "offline"
+                                                    ? "apple"
+                                                    : store.settings.sentenceTranslateEngine
+                                            },
+                                            set: { store.settings.sentenceTranslateEngine = $0 }
+                                        ),
+                                        compact: true
+                                    )
 
                                     Text(engineDescription(store.settings.sentenceTranslateEngine))
                                         .font(.caption)
@@ -792,8 +785,21 @@ struct SettingsView: View {
                     .padding(.vertical, 12)
                 }
             }
-            .navigationTitle("设置")
+            .navigationBarTitleDisplayMode(.inline)
             .toolbarBackground(.ultraThinMaterial, for: .navigationBar)
+            .toolbar {
+                ToolbarItem(placement: .topBarLeading) {
+                    HStack(spacing: 8) {
+                        Text("设置")
+                            .font(.title2.bold())
+                        MinimalTagPill(
+                            text: store.settings.themeMode.displayName,
+                            tintColor: palette.accent.opacity(0.14),
+                            textColor: palette.accent
+                        )
+                    }
+                }
+            }
 #if canImport(Translation)
             .translationTask(appleBridge.configuration) { session in
                 await appleBridge.handleSession(session)
@@ -889,12 +895,12 @@ struct SettingsView: View {
                 }
             } label: {
                 HStack(spacing: 12) {
-                    Image(systemName: systemImage)
-                        .font(.title3)
-                        .foregroundStyle(palette.accent)
-                        .frame(width: 34, height: 34)
-                        .background(palette.accent.opacity(0.14))
-                        .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+                    AppleIconBadge(
+                        systemImage: systemImage,
+                        size: 34,
+                        cornerRadius: 10,
+                        filled: expanded.wrappedValue
+                    )
 
                     VStack(alignment: .leading, spacing: 2) {
                         Text(title)

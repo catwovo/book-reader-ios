@@ -58,8 +58,11 @@ struct ReaderView: View {
     @State private var wordAiCache: [String: String] = [:]
     @State private var wordDefExpanded = false
 
-    // Token cache
+    // Token & segmentation cache
     @State private var tokenCache: [String: [TextToken]] = [:]
+    @State private var units: [ReadingUnit] = []
+    @State private var unitsCache: [String: [ReadingUnit]] = [:]
+    @State private var unitsCacheKey: String = ""
 
     // Sheets
     @State private var showTocSheet = false
@@ -78,16 +81,6 @@ struct ReaderView: View {
     @State private var pendingDeltaUnits: Int = 0
 
     private var settings: ReaderSettings { settingsStore.settings }
-
-    private var units: [ReadingUnit] {
-        guard chapterIndex >= 0, chapterIndex < parsedBook.chapters.count else { return [] }
-        return BookParser.segmentChapter(
-            parsedBook.chapters[chapterIndex],
-            mode: settings.stepMode,
-            fontSize: settings.fontSize,
-            maxWidth: Double(Swift.max(240, stageWidth - 36))
-        )
-    }
 
     private var safeIndex: Int {
         units.isEmpty ? 0 : Swift.min(Swift.max(0, unitIndex), units.count - 1)
@@ -226,6 +219,8 @@ struct ReaderView: View {
             if parsedBook.isImageOnlyPdf && parsedBook.pageCount > 0 {
                 pdfData = try? BookParser.loadRawData(for: book)
             }
+            rebuildUnitsIfNeeded()
+            resolvePendingUnitAdjustments()
             db.recordReadingLog(bookId: book.id, bookTitle: book.title, deltaSeconds: 0, unitsDelta: 0, lookupsDelta: 0)
             pretokenizeAround(index: safeIndex)
         }
@@ -245,8 +240,24 @@ struct ReaderView: View {
         .onChange(of: settings.stepHapticLevel) { _, _ in syncFeedbackConfig() }
         .onChange(of: settings.stepHapticMode) { _, _ in syncFeedbackConfig() }
         .onChange(of: chapterIndex) { _, _ in
+            rebuildUnitsIfNeeded()
             resolvePendingUnitAdjustments()
             pretokenizeAround(index: safeIndex)
+        }
+        .onChange(of: settings.stepMode) { _, _ in
+            rebuildUnitsIfNeeded()
+            resolvePendingUnitAdjustments()
+            pretokenizeAround(index: safeIndex)
+        }
+        .onChange(of: settings.fontSize) { _, _ in
+            rebuildUnitsIfNeeded()
+            resolvePendingUnitAdjustments()
+        }
+        .onChange(of: stageWidth) { _, _ in
+            if settings.stepMode != .sentence {
+                rebuildUnitsIfNeeded()
+                resolvePendingUnitAdjustments()
+            }
         }
         .onChange(of: safeIndex) { _, idx in
             pretokenizeAround(index: idx)
@@ -359,13 +370,12 @@ struct ReaderView: View {
                                     let dist = abs(unit.index - safeIndex)
                                     let isFocus = dist == 0
                                     let targetAlpha = isFocus ? 1.0 : Swift.max(0.08, 0.34 * pow(0.60, Double(dist - 1)))
-                                    let focusFill = customFocusBg ?? palette.accent.opacity(0.14)
+                                    let focusFill = customFocusBg ?? palette.accent.opacity(0.11)
 
                                     TokenizedUnitTextView(
                                         tokens: tokensFor(unit.text),
                                         fontSize: settings.fontSize,
                                         lineSpacing: Swift.max(3, lineGap),
-                                        isFocus: isFocus,
                                         underlineEnabled: settings.underlineLookedUpWords,
                                         lookedUpMap: lookedUpMap,
                                         selectedWord: wordCard?.word,
@@ -375,35 +385,37 @@ struct ReaderView: View {
                                             lookupWord(rawToken: token, unit: unit)
                                         }
                                     )
-                                    .padding(.horizontal, isFocus ? 14 : 8)
-                                    .padding(.vertical, isFocus ? 10 : 4)
+                                    .padding(.horizontal, 14)
+                                    .padding(.vertical, 9)
                                     .frame(maxWidth: .infinity, alignment: .leading)
                                     .background {
                                         if isFocus {
-                                            RoundedRectangle(cornerRadius: 16, style: .continuous)
-                                                .fill(.ultraThinMaterial)
+                                            RoundedRectangle(cornerRadius: 18, style: .continuous)
+                                                .fill(.regularMaterial)
                                                 .overlay(
-                                                    RoundedRectangle(cornerRadius: 16, style: .continuous)
+                                                    RoundedRectangle(cornerRadius: 18, style: .continuous)
                                                         .fill(focusFill)
                                                 )
                                                 .overlay(alignment: .leading) {
                                                     Capsule()
                                                         .fill(palette.accent.opacity(0.85))
                                                         .frame(width: 3.5)
-                                                        .padding(.vertical, 9)
-                                                        .padding(.leading, 5)
+                                                        .padding(.vertical, 10)
+                                                        .padding(.leading, 6)
                                                 }
                                                 .overlay(
-                                                    RoundedRectangle(cornerRadius: 16, style: .continuous)
+                                                    RoundedRectangle(cornerRadius: 18, style: .continuous)
                                                         .strokeBorder(
-                                                            customFocusBg != nil ? focusTextColor.opacity(0.15) : palette.accent.opacity(0.28),
-                                                            lineWidth: 0.75
+                                                            customFocusBg != nil ? focusTextColor.opacity(0.14) : Color.white.opacity(palette.isLight ? 0.65 : 0.22),
+                                                            lineWidth: 0.6
                                                         )
                                                 )
+                                                .shadow(color: .black.opacity(palette.isLight ? 0.04 : 0.16), radius: 8, x: 0, y: 3)
+                                                .transition(.opacity)
                                         }
                                     }
                                     .opacity(targetAlpha)
-                                    .scaleEffect(isFocus ? 1.0 : 0.99, anchor: .leading)
+                                    .animation(.easeOut(duration: 0.18), value: isFocus)
                                     .id(unit.index)
                                 }
 
@@ -660,8 +672,8 @@ struct ReaderView: View {
         let hasNoteText = !(currentNote?.noteText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?? true)
         let isErrorSrc = sentenceSource.contains("失败") || sentenceSource.contains("未就绪")
 
-        return GlassCard(cornerRadius: 20, tintColor: customSentenceCardBg) {
-            VStack(alignment: .leading, spacing: 8) {
+        return GlassCard(cornerRadius: 22, customFill: customSentenceCardBg) {
+            VStack(alignment: .leading, spacing: 10) {
                 if translatingSentence {
                     HStack(spacing: 8) {
                         ProgressView().controlSize(.small)
@@ -669,18 +681,21 @@ struct ReaderView: View {
                             .font(.caption)
                             .foregroundStyle(sentenceCardSecondaryColor)
                     }
-                    .padding(.horizontal, 10)
-                    .padding(.vertical, 8)
+                    .padding(.horizontal, 11)
+                    .padding(.vertical, 9)
                     .frame(maxWidth: .infinity, alignment: .leading)
-                    .background(sentenceCardTextColor.opacity(0.06), in: RoundedRectangle(cornerRadius: 10))
+                    .background(sentenceCardTextColor.opacity(0.05), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
                 } else {
                     Text(sentenceTranslation.isEmpty ? "已关闭自动翻译" : sentenceTranslation)
                         .font(.subheadline)
-                        .lineSpacing(4)
+                        .lineSpacing(4.5)
                         .foregroundStyle(sentenceCardTextColor)
                         .textSelection(.enabled)
                         .frame(maxWidth: .infinity, alignment: .leading)
                 }
+
+                Divider()
+                    .opacity(0.45)
 
                 // Controls row
                 HStack(spacing: 6) {
@@ -690,14 +705,14 @@ struct ReaderView: View {
                                 await loadSentenceTranslation(forceRefresh: true, ignoreAutoSetting: true)
                             }
                         } label: {
-                            Text("点击翻译")
+                            Label("点击翻译", systemImage: "translate")
                                 .font(.caption2.weight(.semibold))
                                 .padding(.horizontal, 10)
-                                .padding(.vertical, 4)
-                                .background(palette.accent.opacity(0.16), in: Capsule())
+                                .padding(.vertical, 5)
+                                .background(palette.accent.opacity(0.14), in: Capsule())
                                 .foregroundStyle(palette.accent)
                         }
-                        .buttonStyle(.plain)
+                        .buttonStyle(GlassPressButtonStyle())
                     } else if !translatingSentence && !sentenceTranslation.isEmpty && !sentenceSource.isEmpty {
                         MinimalTagPill(
                             text: sentenceSource,
@@ -714,12 +729,12 @@ struct ReaderView: View {
                         } label: {
                             Label("AI 精讲", systemImage: "sparkles")
                                 .font(.caption2.weight(.semibold))
-                                .padding(.horizontal, 8)
-                                .padding(.vertical, 4)
+                                .padding(.horizontal, 9)
+                                .padding(.vertical, 5)
                                 .background(palette.accent.opacity(0.14), in: Capsule())
                                 .foregroundStyle(palette.accent)
                         }
-                        .buttonStyle(.plain)
+                        .buttonStyle(GlassPressButtonStyle())
                     }
 
                     if !sentenceTranslation.isEmpty && !translatingSentence && !targetSentence.isEmpty {
@@ -732,9 +747,9 @@ struct ReaderView: View {
                                 .font(.caption.weight(.semibold))
                                 .foregroundStyle(sentenceCardSecondaryColor)
                                 .frame(width: 28, height: 28)
-                                .contentShape(Rectangle())
+                                .background(sentenceCardTextColor.opacity(0.06), in: Circle())
                         }
-                        .buttonStyle(.plain)
+                        .buttonStyle(GlassPressButtonStyle())
                     }
 
                     // Bookmark star
@@ -742,12 +757,12 @@ struct ReaderView: View {
                         toggleSentenceBookmark()
                     } label: {
                         Image(systemName: isStarred ? "star.fill" : "star")
-                            .font(.subheadline)
+                            .font(.caption.weight(.semibold))
                             .foregroundStyle(isStarred ? palette.accent : sentenceCardSecondaryColor)
                             .frame(width: 28, height: 28)
-                            .contentShape(Rectangle())
+                            .background((isStarred ? palette.accent.opacity(0.15) : sentenceCardTextColor.opacity(0.06)), in: Circle())
                     }
-                    .buttonStyle(.plain)
+                    .buttonStyle(GlassPressButtonStyle())
 
                     // Edit note button
                     Button {
@@ -757,12 +772,12 @@ struct ReaderView: View {
                         }
                     } label: {
                         Image(systemName: "square.and.pencil")
-                            .font(.subheadline)
+                            .font(.caption.weight(.semibold))
                             .foregroundStyle(hasNoteText ? palette.accent : sentenceCardSecondaryColor)
                             .frame(width: 28, height: 28)
-                            .contentShape(Rectangle())
+                            .background((hasNoteText ? palette.accent.opacity(0.15) : sentenceCardTextColor.opacity(0.06)), in: Circle())
                     }
-                    .buttonStyle(.plain)
+                    .buttonStyle(GlassPressButtonStyle())
                 }
 
                 // Inline saved note
@@ -771,18 +786,24 @@ struct ReaderView: View {
                         noteDraft = saved.noteText
                         showNoteSheet = true
                     } label: {
-                        Text("笔记：\(saved.noteText)")
-                            .font(.caption)
-                            .foregroundStyle(sentenceCardTextColor)
-                            .lineLimit(3)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .padding(.horizontal, 11)
-                            .padding(.vertical, 8)
-                            .background(palette.accent.opacity(0.12), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-                            .overlay(
-                                RoundedRectangle(cornerRadius: 12, style: .continuous)
-                                    .strokeBorder(palette.accent.opacity(0.20), lineWidth: 0.6)
-                            )
+                        HStack(alignment: .top, spacing: 8) {
+                            Image(systemName: "note.text")
+                                .font(.caption)
+                                .foregroundStyle(palette.accent)
+                                .padding(.top, 2)
+                            Text(saved.noteText)
+                                .font(.caption)
+                                .foregroundStyle(sentenceCardTextColor)
+                                .lineLimit(3)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                        }
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 9)
+                        .background(palette.accent.opacity(0.10), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                                .strokeBorder(palette.accent.opacity(0.18), lineWidth: 0.55)
+                        )
                     }
                     .buttonStyle(.plain)
                     .transition(AppMotion.panelTransition)
@@ -791,8 +812,9 @@ struct ReaderView: View {
                 // Inline Sentence AI Analysis
                 if sentenceAiLoading || !sentenceAiResult.isEmpty {
                     VStack(alignment: .leading, spacing: 6) {
-                        HStack {
-                            Label("AI 上下文解析", systemImage: "sparkles")
+                        HStack(spacing: 6) {
+                            AppleIconBadge(systemImage: "sparkles", size: 20, cornerRadius: 6)
+                            Text("AI 上下文解析")
                                 .font(.caption2.weight(.semibold))
                                 .foregroundStyle(palette.accent)
                             Spacer()
@@ -818,18 +840,18 @@ struct ReaderView: View {
                                 .textSelection(.enabled)
                         }
                     }
-                    .padding(11)
+                    .padding(12)
                     .frame(maxWidth: .infinity, alignment: .leading)
-                    .background(sentenceCardTextColor.opacity(0.06), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+                    .background(sentenceCardTextColor.opacity(0.05), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
                     .overlay(
-                        RoundedRectangle(cornerRadius: 12, style: .continuous)
-                            .strokeBorder(sentenceCardTextColor.opacity(0.08), lineWidth: 0.6)
+                        RoundedRectangle(cornerRadius: 14, style: .continuous)
+                            .strokeBorder(sentenceCardTextColor.opacity(0.08), lineWidth: 0.55)
                     )
                     .transition(AppMotion.panelTransition)
                 }
             }
-            .padding(.horizontal, 15)
-            .padding(.vertical, 12)
+            .padding(.horizontal, 16)
+            .padding(.vertical, 13)
         }
     }
 
@@ -840,8 +862,8 @@ struct ReaderView: View {
             .replacingOccurrences(of: "\n\n+", with: "\n", options: .regularExpression)
             .trimmingCharacters(in: .whitespacesAndNewlines)
 
-        return GlassCard(cornerRadius: 20, tintColor: customWordCardBg) {
-            VStack(alignment: .leading, spacing: 8) {
+        return GlassCard(cornerRadius: 22, customFill: customWordCardBg) {
+            VStack(alignment: .leading, spacing: 9) {
                 HStack(spacing: 8) {
                     Text(card.word)
                         .font(.title3.bold())
@@ -859,16 +881,17 @@ struct ReaderView: View {
                         speech.speak(card.word)
                     } label: {
                         Image(systemName: "speaker.wave.2.fill")
-                            .font(.caption)
+                            .font(.caption.weight(.semibold))
                             .foregroundStyle(palette.accent)
-                            .frame(width: 26, height: 26)
+                            .frame(width: 28, height: 28)
+                            .background(palette.accent.opacity(0.12), in: Circle())
                     }
-                    .buttonStyle(.plain)
+                    .buttonStyle(GlassPressButtonStyle())
 
                     if card.isSaved {
                         MinimalTagPill(
                             text: "×\(card.lookupCount)",
-                            tintColor: palette.accent.opacity(0.16),
+                            tintColor: palette.accent.opacity(0.14),
                             textColor: palette.accent
                         )
                     }
@@ -883,20 +906,21 @@ struct ReaderView: View {
                                 .font(.caption.weight(.semibold))
                                 .foregroundStyle(palette.accent)
                                 .frame(width: 28, height: 28)
+                                .background(palette.accent.opacity(0.12), in: Circle())
                         }
-                        .buttonStyle(.plain)
+                        .buttonStyle(GlassPressButtonStyle())
                     }
 
                     Button {
                         toggleWordBookmark(card)
                     } label: {
                         Image(systemName: card.isSaved ? "star.fill" : "star")
-                            .font(.subheadline)
+                            .font(.caption.weight(.semibold))
                             .foregroundStyle(card.isSaved ? palette.accent : wordCardSecondaryColor)
-                            .frame(width: 30, height: 30)
-                            .contentShape(Rectangle())
+                            .frame(width: 28, height: 28)
+                            .background((card.isSaved ? palette.accent.opacity(0.15) : wordCardTextColor.opacity(0.06)), in: Circle())
                     }
-                    .buttonStyle(.plain)
+                    .buttonStyle(GlassPressButtonStyle())
                 }
 
                 // Bilingual EN block
@@ -1188,6 +1212,33 @@ struct ReaderView: View {
         }
     }
 
+    private func rebuildUnitsIfNeeded() {
+        guard chapterIndex >= 0, chapterIndex < parsedBook.chapters.count else {
+            units = []
+            unitsCacheKey = ""
+            return
+        }
+        let widthBucket = settings.stepMode == .sentence ? 0 : Int((Double(Swift.max(240, stageWidth - 36)) / 8.0).rounded())
+        let key = "\(book.id)-\(chapterIndex)-\(settings.stepMode.rawValue)-\(Int(settings.fontSize))-\(widthBucket)"
+        guard key != unitsCacheKey else { return }
+        unitsCacheKey = key
+        if let hit = unitsCache[key] {
+            units = hit
+            return
+        }
+        let computed = BookParser.segmentChapter(
+            parsedBook.chapters[chapterIndex],
+            mode: settings.stepMode,
+            fontSize: settings.fontSize,
+            maxWidth: Double(Swift.max(240, stageWidth - 36))
+        )
+        if unitsCache.count > 12 {
+            unitsCache.removeAll()
+        }
+        unitsCache[key] = computed
+        units = computed
+    }
+
     private func resolvePendingUnitAdjustments() {
         guard !units.isEmpty else { return }
         if pendingJumpToEnd {
@@ -1223,9 +1274,7 @@ struct ReaderView: View {
 
         if safeIndex + 1 < units.count {
             let target = units[safeIndex + 1]
-            withAnimation(AppMotion.panelSpring) {
-                unitIndex = safeIndex + 1
-            }
+            unitIndex = safeIndex + 1
             feedbackPlayer.playStep(noteCount: estimateVisualLineCount(for: target.text))
             queueProgress(chapter: chapterIndex, index: safeIndex + 1, deltaUnits: 1)
         } else if chapterIndex + 1 < parsedBook.chapters.count {
@@ -1247,9 +1296,7 @@ struct ReaderView: View {
 
         if safeIndex > 0 {
             let target = units[safeIndex - 1]
-            withAnimation(AppMotion.panelSpring) {
-                unitIndex = safeIndex - 1
-            }
+            unitIndex = safeIndex - 1
             feedbackPlayer.playStep(noteCount: estimateVisualLineCount(for: target.text))
             queueProgress(chapter: chapterIndex, index: safeIndex - 1)
         } else if chapterIndex > 0 {
@@ -1749,11 +1796,11 @@ private struct ReaderTocAndNotesSheet: View {
     var body: some View {
         NavigationStack {
             VStack(spacing: 10) {
-                Picker("导航", selection: $tab) {
-                    Text("目录 (\(displayToc.count))").tag(0)
-                    Text("本书笔记 (\(bookNotes.count))").tag(1)
-                }
-                .pickerStyle(.segmented)
+                GlassSegmentedControl(
+                    titles: ["目录 (\(displayToc.count))", "本书笔记 (\(bookNotes.count))"],
+                    selection: $tab,
+                    compact: true
+                )
                 .padding(.horizontal, 16)
                 .padding(.top, 8)
 
@@ -2006,12 +2053,11 @@ private struct ReaderPreferencesSheet: View {
                         ) {
                             VStack(alignment: .leading, spacing: 6) {
                                 Text("推进模式").font(.caption).foregroundStyle(.secondary)
-                                Picker("推进模式", selection: $store.settings.stepMode) {
-                                    ForEach(StepMode.allCases, id: \.self) { m in
-                                        Text(m.displayName).tag(m)
-                                    }
-                                }
-                                .pickerStyle(.segmented)
+                                GlassSegmentedControl(
+                                    options: StepMode.allCases.map { ($0, $0.displayName) },
+                                    selection: $store.settings.stepMode,
+                                    compact: true
+                                )
                             }
 
                             Stepper("后续显示句/行数：+\(store.settings.visibleCount)", value: $store.settings.visibleCount, in: 1...8)
@@ -2071,55 +2117,45 @@ private struct ReaderPreferencesSheet: View {
                                     HStack(spacing: 8) {
                                         ForEach(StepSoundTrack.allCases, id: \.self) { track in
                                             let selected = store.settings.stepSoundTrack == track
-                                            Button {
+                                            GlassCapsuleChip(title: track.displayName, selected: selected) {
                                                 store.settings.stepSoundTrack = track
                                                 feedbackPlayer.playTrackPreview(track: track)
-                                            } label: {
-                                                Text(track.displayName)
-                                                    .font(.caption.weight(selected ? .semibold : .medium))
-                                                    .padding(.horizontal, 11)
-                                                    .padding(.vertical, 6)
-                                                    .background(selected ? palette.accent.opacity(0.18) : Color.secondary.opacity(0.10), in: Capsule())
-                                                    .foregroundStyle(selected ? palette.accent : .primary)
                                             }
-                                            .buttonStyle(.plain)
                                         }
                                     }
+                                    .padding(.vertical, 2)
                                 }
                             }
 
                             VStack(alignment: .leading, spacing: 6) {
                                 Text("翻句震动强度").font(.caption).foregroundStyle(.secondary)
-                                Picker("震动强度", selection: Binding(
-                                    get: { store.settings.stepHapticLevel },
-                                    set: { val in
-                                        store.settings.stepHapticLevel = val
-                                        feedbackPlayer.playHapticPreview(level: val, followLines: store.settings.stepHapticMode == .line)
-                                    }
-                                )) {
-                                    Text("关闭").tag(0)
-                                    Text("轻柔").tag(1)
-                                    Text("适中").tag(2)
-                                    Text("强烈").tag(3)
-                                }
-                                .pickerStyle(.segmented)
+                                GlassSegmentedControl(
+                                    titles: ["关闭", "轻柔", "适中", "强烈"],
+                                    selection: Binding(
+                                        get: { store.settings.stepHapticLevel },
+                                        set: { val in
+                                            store.settings.stepHapticLevel = val
+                                            feedbackPlayer.playHapticPreview(level: val, followLines: store.settings.stepHapticMode == .line)
+                                        }
+                                    ),
+                                    compact: true
+                                )
                             }
 
                             if store.settings.stepHapticLevel > 0 {
                                 VStack(alignment: .leading, spacing: 6) {
                                     Text("震动方式").font(.caption).foregroundStyle(.secondary)
-                                    Picker("震动方式", selection: Binding(
-                                        get: { store.settings.stepHapticMode },
-                                        set: { val in
-                                            store.settings.stepHapticMode = val
-                                            feedbackPlayer.playHapticPreview(level: store.settings.stepHapticLevel, followLines: val == .line)
-                                        }
-                                    )) {
-                                        ForEach(StepHapticMode.allCases, id: \.self) { mode in
-                                            Text(mode.displayName).tag(mode)
-                                        }
-                                    }
-                                    .pickerStyle(.segmented)
+                                    GlassSegmentedControl(
+                                        options: StepHapticMode.allCases.map { ($0, $0.displayName) },
+                                        selection: Binding(
+                                            get: { store.settings.stepHapticMode },
+                                            set: { val in
+                                                store.settings.stepHapticMode = val
+                                                feedbackPlayer.playHapticPreview(level: store.settings.stepHapticLevel, followLines: val == .line)
+                                            }
+                                        ),
+                                        compact: true
+                                    )
                                 }
                             }
 
@@ -2267,11 +2303,44 @@ private struct PdfOriginalPageView: UIViewRepresentable {
 
 // MARK: - Tokenized Text Flow
 
+private struct TokenAttachPrevKey: LayoutValueKey {
+    static let defaultValue: Bool = false
+}
+
+private struct TokenAttachNextKey: LayoutValueKey {
+    static let defaultValue: Bool = false
+}
+
+private enum ReaderPunctHelper {
+    static let closingSet: Set<Character> = [
+        ",", ".", "!", "?", ";", ":", ")", "]", "}", "”", "’", "%", "…", "—",
+        "，", "。", "、", "！", "？", "；", "：", "）", "】", "》", "」", "』"
+    ]
+    static let openingSet: Set<Character> = [
+        "(", "[", "{", "“", "‘", "$", "（", "【", "《", "「", "『"
+    ]
+    static let asciiClosingSet: Set<Character> = [",", ".", "!", "?", ";", ":", ")", "]", "}"]
+
+    static func attachesToPrevious(_ text: String) -> Bool {
+        guard let first = text.first else { return false }
+        return closingSet.contains(first)
+    }
+
+    static func attachesToNext(_ text: String) -> Bool {
+        guard let last = text.last else { return false }
+        return openingSet.contains(last)
+    }
+
+    static func trailingSpacing(for text: String) -> CGFloat {
+        guard let last = text.last else { return 0 }
+        return asciiClosingSet.contains(last) ? 2.5 : 0
+    }
+}
+
 private struct TokenizedUnitTextView: View {
     let tokens: [TextToken]
     let fontSize: Double
     let lineSpacing: CGFloat
-    let isFocus: Bool
     let underlineEnabled: Bool
     let lookedUpMap: [String: Int]
     let selectedWord: String?
@@ -2280,7 +2349,7 @@ private struct TokenizedUnitTextView: View {
     var onWordTap: (String) -> Void
 
     var body: some View {
-        ReaderWordFlowLayout(horizontalSpacing: 2, verticalSpacing: lineSpacing) {
+        ReaderWordFlowLayout(horizontalSpacing: 0, verticalSpacing: lineSpacing) {
             ForEach(Array(tokens.enumerated()), id: \.offset) { _, token in
                 if token.isLookupable {
                     let clean: String = token.isCjk
@@ -2290,9 +2359,9 @@ private struct TokenizedUnitTextView: View {
                     let isSelected = !clean.isEmpty && selectedWord == clean
 
                     Text(token.text)
-                        .font(.system(size: fontSize, weight: isFocus ? .medium : .regular, design: .serif))
+                        .font(.system(size: fontSize, weight: .regular, design: .serif))
                         .foregroundStyle(isSelected ? .white : textColor)
-                        .padding(.horizontal, token.isCjk ? 1 : 2.5)
+                        .padding(.horizontal, token.isCjk ? 0.5 : 2.5)
                         .padding(.vertical, 1)
                         .background(isSelected ? accentColor : Color.clear, in: RoundedRectangle(cornerRadius: 4, style: .continuous))
                         .overlay(alignment: .bottom) {
@@ -2308,9 +2377,15 @@ private struct TokenizedUnitTextView: View {
                             onWordTap(token.text)
                         }
                 } else {
+                    let attachPrev = ReaderPunctHelper.attachesToPrevious(token.text)
+                    let attachNext = ReaderPunctHelper.attachesToNext(token.text)
                     Text(token.text)
-                        .font(.system(size: fontSize, weight: isFocus ? .medium : .regular, design: .serif))
+                        .font(.system(size: fontSize, weight: .regular, design: .serif))
                         .foregroundStyle(textColor)
+                        .padding(.vertical, 1)
+                        .padding(.trailing, ReaderPunctHelper.trailingSpacing(token.text))
+                        .layoutValue(key: TokenAttachPrevKey.self, value: attachPrev)
+                        .layoutValue(key: TokenAttachNextKey.self, value: attachNext)
                 }
             }
         }
@@ -2327,41 +2402,80 @@ private struct DashedUnderlineShape: Shape {
 }
 
 private struct ReaderWordFlowLayout: Layout {
-    var horizontalSpacing: CGFloat = 2
+    var horizontalSpacing: CGFloat = 0
     var verticalSpacing: CGFloat = 4
+
+    private struct TokenCluster {
+        let range: Range<Int>
+        let sizes: [CGSize]
+        let width: CGFloat
+        let height: CGFloat
+    }
+
+    private func buildClusters(subviews: Subviews) -> [TokenCluster] {
+        var result: [TokenCluster] = []
+        var i = 0
+        while i < subviews.count {
+            var end = i + 1
+            while end < subviews.count && subviews[end - 1][TokenAttachNextKey.self] && (end - i) < 3 {
+                end += 1
+            }
+            while end < subviews.count && subviews[end][TokenAttachPrevKey.self] && (end - i) < 4 {
+                end += 1
+            }
+            var sizes: [CGSize] = []
+            sizes.reserveCapacity(end - i)
+            var w: CGFloat = 0
+            var h: CGFloat = 0
+            for k in i..<end {
+                let s = subviews[k].sizeThatFits(.unspecified)
+                sizes.append(s)
+                w += s.width + (k > i ? horizontalSpacing : 0)
+                h = Swift.max(h, s.height)
+            }
+            result.append(TokenCluster(range: i..<end, sizes: sizes, width: w, height: h))
+            i = end
+        }
+        return result
+    }
 
     func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
         let maxWidth = proposal.width ?? 320
+        let clusters = buildClusters(subviews: subviews)
         var x: CGFloat = 0
         var y: CGFloat = 0
         var rowHeight: CGFloat = 0
-        for sub in subviews {
-            let size = sub.sizeThatFits(.unspecified)
-            if x + size.width > maxWidth && x > 0 {
+        for cluster in clusters {
+            if x + cluster.width > maxWidth && x > 0 {
                 x = 0
                 y += rowHeight + verticalSpacing
                 rowHeight = 0
             }
-            x += size.width + horizontalSpacing
-            rowHeight = Swift.max(rowHeight, size.height)
+            x += cluster.width + horizontalSpacing
+            rowHeight = Swift.max(rowHeight, cluster.height)
         }
         return CGSize(width: maxWidth, height: y + rowHeight)
     }
 
     func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        let clusters = buildClusters(subviews: subviews)
         var x = bounds.minX
         var y = bounds.minY
         var rowHeight: CGFloat = 0
-        for sub in subviews {
-            let size = sub.sizeThatFits(.unspecified)
-            if x + size.width > bounds.maxX && x > bounds.minX {
+        for cluster in clusters {
+            if x + cluster.width > bounds.maxX && x > bounds.minX {
                 x = bounds.minX
                 y += rowHeight + verticalSpacing
                 rowHeight = 0
             }
-            sub.place(at: CGPoint(x: x, y: y), proposal: ProposedViewSize(size))
-            x += size.width + horizontalSpacing
-            rowHeight = Swift.max(rowHeight, size.height)
+            var cx = x
+            for (offset, k) in cluster.range.enumerated() {
+                let size = cluster.sizes[offset]
+                subviews[k].place(at: CGPoint(x: cx, y: y), proposal: ProposedViewSize(size))
+                cx += size.width + horizontalSpacing
+            }
+            x += cluster.width + horizontalSpacing
+            rowHeight = Swift.max(rowHeight, cluster.height)
         }
     }
 }

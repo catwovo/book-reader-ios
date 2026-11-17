@@ -138,12 +138,13 @@ struct NotesAndVocabView: View {
                         .transition(AppMotion.panelTransition)
                     }
 
-                    TabView(selection: $segment) {
-                        notesPage.tag(0)
-                        vocabPage.tag(1)
-                        flashcardsPage.tag(2)
+                    GlassHorizontalPager(selection: $segment, pageCount: 3) { page in
+                        switch page {
+                        case 0: notesPage
+                        case 1: vocabPage
+                        default: flashcardsPage
+                        }
                     }
-                    .tabViewStyle(.page(indexDisplayMode: .never))
                     .onChange(of: segment) { _, _ in
                         flipped = false
                     }
@@ -153,36 +154,31 @@ struct NotesAndVocabView: View {
             .toolbarBackground(.ultraThinMaterial, for: .navigationBar)
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) {
-                    HStack(spacing: 6) {
+                    HStack(spacing: 8) {
                         Text("笔记")
                             .font(.title2.bold())
                         if canSearchCurrent || showSearch {
-                            Button {
+                            GlassCircleIconButton(
+                                systemImage: showSearch ? "xmark" : "magnifyingglass",
+                                size: 30,
+                                iconFont: .caption.bold(),
+                                isActive: showSearch
+                            ) {
                                 withAnimation(AppMotion.panelSpring) {
                                     showSearch.toggle()
                                     if !showSearch { searchQuery = "" }
                                 }
-                            } label: {
-                                Image(systemName: showSearch ? "xmark" : "magnifyingglass")
-                                    .font(.subheadline.weight(.semibold))
-                                    .foregroundStyle(showSearch ? palette.accent : .secondary)
                             }
                         }
                     }
                 }
                 ToolbarItem(placement: .topBarTrailing) {
-                    Picker("笔记视图", selection: Binding(
-                        get: { segment },
-                        set: { next in
-                            withAnimation(AppMotion.tabSpring) { segment = next }
-                        }
-                    )) {
-                        Text("句子").tag(0)
-                        Text("词汇").tag(1)
-                        Text("闪卡").tag(2)
-                    }
-                    .pickerStyle(.segmented)
-                    .frame(width: 174)
+                    GlassSegmentedControl(
+                        titles: ["句子", "词汇", "闪卡"],
+                        selection: $segment,
+                        compact: true
+                    )
+                    .frame(width: 184)
                 }
             }
             .sheet(item: $editingNote) { note in
@@ -388,47 +384,29 @@ struct NotesAndVocabView: View {
                     )
 
                     HStack(spacing: 10) {
-                        Button {
+                        flashActionButton(title: "不认识", tint: .red, prominent: false) {
                             db.updateVocabFamiliarity(id: card.id, familiarity: 0)
                             withAnimation(AppMotion.cardSpring) {
                                 flipped = false
                                 flashIndex = (safeIdx + 1) % deck.count
                             }
-                        } label: {
-                            Text("不认识")
-                                .font(.subheadline.weight(.medium))
-                                .frame(maxWidth: .infinity)
-                                .padding(.vertical, 11)
                         }
-                        .buttonStyle(.bordered)
 
-                        Button {
+                        flashActionButton(title: "模糊", tint: .orange, prominent: false) {
                             db.updateVocabFamiliarity(id: card.id, familiarity: 1)
                             withAnimation(AppMotion.cardSpring) {
                                 flipped = false
                                 flashIndex = (safeIdx + 1) % deck.count
                             }
-                        } label: {
-                            Text("模糊")
-                                .font(.subheadline.weight(.medium))
-                                .frame(maxWidth: .infinity)
-                                .padding(.vertical, 11)
                         }
-                        .buttonStyle(.bordered)
 
-                        Button {
+                        flashActionButton(title: "认识", tint: palette.accent, prominent: true) {
                             db.updateVocabFamiliarity(id: card.id, familiarity: 2)
                             withAnimation(AppMotion.cardSpring) {
                                 flipped = false
                                 flashIndex = safeIdx >= deck.count - 1 ? 0 : safeIdx
                             }
-                        } label: {
-                            Text("认识")
-                                .font(.subheadline.weight(.semibold))
-                                .frame(maxWidth: .infinity)
-                                .padding(.vertical, 11)
                         }
-                        .buttonStyle(.borderedProminent)
                     }
                 }
                 .padding(.horizontal, 20)
@@ -510,6 +488,49 @@ struct NotesAndVocabView: View {
         }
         .padding(32)
     }
+
+    @ViewBuilder
+    private func flashActionButton(
+        title: String,
+        tint: Color,
+        prominent: Bool,
+        action: @escaping () -> Void
+    ) -> some View {
+        Button(action: action) {
+            Text(title)
+                .font(.subheadline.weight(prominent ? .semibold : .medium))
+                .foregroundStyle(prominent ? .white : tint)
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 11)
+                .background {
+                    if prominent {
+                        ZStack {
+                            Capsule().fill(tint)
+                            Capsule().fill(
+                                LinearGradient(
+                                    colors: [.white.opacity(0.24), .clear],
+                                    startPoint: .top,
+                                    endPoint: .bottom
+                                )
+                            )
+                        }
+                    } else {
+                        ZStack {
+                            Capsule().fill(.ultraThinMaterial)
+                            Capsule().fill(tint.opacity(0.10))
+                        }
+                    }
+                }
+                .overlay {
+                    Capsule().strokeBorder(
+                        prominent ? .white.opacity(0.35) : tint.opacity(0.32),
+                        lineWidth: 0.85
+                    )
+                }
+                .shadow(color: .black.opacity(palette.isLight ? 0.06 : 0.18), radius: 6, x: 0, y: 2)
+        }
+        .buttonStyle(GlassPressButtonStyle())
+    }
 }
 
 // MARK: - Reusable Subviews
@@ -519,22 +540,8 @@ private struct FilterChipButton: View {
     let selected: Bool
     var action: () -> Void
 
-    @Environment(\.appPalette) private var palette
-
     var body: some View {
-        Button(action: action) {
-            Text(title)
-                .font(.caption.weight(selected ? .semibold : .medium))
-                .lineLimit(1)
-                .padding(.horizontal, 11)
-                .padding(.vertical, 6)
-                .background(selected ? palette.accent.opacity(0.18) : Color.secondary.opacity(0.11), in: Capsule())
-                .foregroundStyle(selected ? palette.accent : .primary)
-                .overlay(
-                    Capsule().strokeBorder(selected ? palette.accent.opacity(0.55) : Color.clear, lineWidth: 0.8)
-                )
-        }
-        .buttonStyle(.plain)
+        GlassCapsuleChip(title: title, selected: selected, action: action)
     }
 }
 
@@ -555,79 +562,114 @@ private struct NoteCardView: View {
     }
 
     var body: some View {
-        GlassCard(cornerRadius: 20) {
-            VStack(alignment: .leading, spacing: 10) {
-                HStack(spacing: 6) {
+        GlassCard(cornerRadius: 22) {
+            VStack(alignment: .leading, spacing: 11) {
+                HStack(spacing: 8) {
+                    AppleIconBadge(systemImage: "book.closed.fill", size: 26, cornerRadius: 7)
+
                     let pillText = note.chapterTitle.isEmpty
                         ? note.bookTitle
                         : "\(note.bookTitle) · \(note.chapterTitle)"
-                    MinimalTagPill(text: pillText)
+                    Text(pillText)
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+
                     Spacer()
+
                     if canJump {
                         Button(action: onJumpToBook) {
-                            Image(systemName: "book.pages")
-                                .font(.caption)
+                            Image(systemName: "arrow.up.forward.app")
+                                .font(.caption.weight(.semibold))
                                 .foregroundStyle(palette.accent)
                                 .frame(width: 28, height: 28)
+                                .background(palette.accent.opacity(0.12), in: Circle())
                         }
-                        .buttonStyle(.plain)
+                        .buttonStyle(GlassPressButtonStyle())
                     }
                     Button(action: onEdit) {
                         Image(systemName: "pencil")
-                            .font(.caption)
+                            .font(.caption.weight(.semibold))
                             .foregroundStyle(.secondary)
                             .frame(width: 28, height: 28)
+                            .background(Color.secondary.opacity(0.10), in: Circle())
                     }
-                    .buttonStyle(.plain)
+                    .buttonStyle(GlassPressButtonStyle())
                     Button(action: onDelete) {
                         Image(systemName: "trash")
-                            .font(.caption)
+                            .font(.caption.weight(.semibold))
                             .foregroundStyle(.secondary)
                             .frame(width: 28, height: 28)
+                            .background(Color.secondary.opacity(0.10), in: Circle())
                     }
-                    .buttonStyle(.plain)
+                    .buttonStyle(GlassPressButtonStyle())
                 }
 
-                // Quote block with left accent bar
-                HStack(spacing: 0) {
-                    Rectangle()
-                        .fill(palette.accent.opacity(0.62))
-                        .frame(width: 3)
+                // Quote block with Apple rounded vertical highlight capsule
+                HStack(alignment: .top, spacing: 10) {
+                    Capsule()
+                        .fill(palette.accent.opacity(0.75))
+                        .frame(width: 3.5)
+                        .padding(.vertical, 2)
+
                     VStack(alignment: .leading, spacing: 6) {
                         Text(note.sentenceText)
                             .font(.system(.subheadline, design: .serif))
+                            .lineSpacing(3)
                             .foregroundStyle(.primary)
                         if !note.sentenceTranslation.isEmpty {
                             Divider()
+                                .opacity(0.45)
                             Text(note.sentenceTranslation)
                                 .font(.caption)
+                                .lineSpacing(2)
                                 .foregroundStyle(.secondary)
                         }
                     }
-                    .padding(11)
                     .frame(maxWidth: .infinity, alignment: .leading)
                 }
-                .background(Color.secondary.opacity(0.08))
-                .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                .padding(12)
+                .background(Color.secondary.opacity(0.06), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 14, style: .continuous)
+                        .strokeBorder(Color.white.opacity(palette.isLight ? 0.45 : 0.10), lineWidth: 0.5)
+                )
 
                 if !note.noteText.isEmpty {
-                    Text(note.noteText)
-                        .font(.subheadline)
-                        .padding(.horizontal, 12)
-                        .padding(.vertical, 9)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .background(palette.accent.opacity(0.09))
-                        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                    HStack(alignment: .top, spacing: 8) {
+                        Image(systemName: "note.text")
+                            .font(.caption)
+                            .foregroundStyle(palette.accent)
+                            .padding(.top, 2)
+                        Text(note.noteText)
+                            .font(.subheadline)
+                            .lineSpacing(2)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 10)
+                    .background(palette.accent.opacity(0.09), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 14, style: .continuous)
+                            .strokeBorder(palette.accent.opacity(0.16), lineWidth: 0.55)
+                    )
                 }
 
                 HStack {
-                    Text(formattedDate)
+                    Label(formattedDate, systemImage: "clock")
                         .font(.caption2)
+                        .monospacedDigit()
                         .foregroundStyle(.secondary)
                     Spacer()
-                    Button(note.noteText.isEmpty ? "添加批注" : "编辑批注", action: onEdit)
-                        .font(.caption2.weight(.semibold))
-                        .foregroundStyle(palette.accent)
+                    Button(action: onEdit) {
+                        Text(note.noteText.isEmpty ? "添加批注" : "编辑批注")
+                            .font(.caption2.weight(.semibold))
+                            .foregroundStyle(palette.accent)
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 4)
+                            .background(palette.accent.opacity(0.12), in: Capsule())
+                    }
+                    .buttonStyle(GlassPressButtonStyle())
                 }
             }
             .padding(16)
@@ -656,71 +698,83 @@ private struct VocabCardView: View {
     }
 
     var body: some View {
-        GlassCard(cornerRadius: 20) {
-            VStack(alignment: .leading, spacing: 8) {
+        GlassCard(cornerRadius: 22) {
+            VStack(alignment: .leading, spacing: 10) {
                 HStack(alignment: .center, spacing: 8) {
                     Text(item.word)
-                        .font(.title3.bold())
-                    MinimalTagPill(
-                        text: isZh ? "中" : "EN",
-                        tintColor: (isZh ? Color.teal : palette.accent).opacity(0.14),
-                        textColor: isZh ? .teal : palette.accent
-                    )
+                        .font(.system(.title3, design: .serif).bold())
                     if !item.phonetic.isEmpty {
                         Text(item.phonetic)
                             .font(.caption)
                             .foregroundStyle(.secondary)
                             .lineLimit(1)
                     }
-                    MinimalTagPill(text: "×\(item.lookupCount)")
-                    if item.familiarity == 2 {
-                        MinimalTagPill(text: "已认识", tintColor: Color.green.opacity(0.14), textColor: .green)
-                    } else if item.familiarity == 1 {
-                        MinimalTagPill(text: "模糊", tintColor: Color.orange.opacity(0.14), textColor: .orange)
-                    }
-                    Spacer()
                     Button { onSpeak(item.word) } label: {
-                        Image(systemName: "speaker.wave.2")
-                            .font(.caption)
+                        Image(systemName: "speaker.wave.2.fill")
+                            .font(.caption.weight(.semibold))
                             .foregroundStyle(palette.accent)
+                            .frame(width: 26, height: 26)
+                            .background(palette.accent.opacity(0.12), in: Circle())
                     }
-                    .buttonStyle(.plain)
-                    Button(action: onDelete) {
-                        Image(systemName: "trash")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
+                    .buttonStyle(GlassPressButtonStyle())
+
+                    Spacer()
+
+                    HStack(spacing: 5) {
+                        if item.familiarity == 2 {
+                            vocabStatusBadge(text: "已认识", color: .green)
+                        } else if item.familiarity == 1 {
+                            vocabStatusBadge(text: "模糊", color: .orange)
+                        }
+                        MinimalTagPill(
+                            text: "\(isZh ? "中" : "EN") · ×\(item.lookupCount)",
+                            tintColor: (isZh ? Color.teal : palette.accent).opacity(0.12),
+                            textColor: isZh ? .teal : palette.accent
+                        )
+                        Button(action: onDelete) {
+                            Image(systemName: "trash")
+                                .font(.caption2.weight(.semibold))
+                                .foregroundStyle(.secondary)
+                                .frame(width: 26, height: 26)
+                                .background(Color.secondary.opacity(0.10), in: Circle())
+                        }
+                        .buttonStyle(GlassPressButtonStyle())
                     }
-                    .buttonStyle(.plain)
                 }
 
                 if !item.englishTranslation.isEmpty {
                     HStack(spacing: 8) {
                         Text("EN")
                             .font(.caption2.bold())
-                            .padding(.horizontal, 5)
-                            .padding(.vertical, 2)
-                            .background(Color.teal)
+                            .padding(.horizontal, 6)
+                            .padding(.vertical, 2.5)
+                            .background(Color.teal, in: RoundedRectangle(cornerRadius: 6, style: .continuous))
                             .foregroundStyle(.white)
-                            .clipShape(RoundedRectangle(cornerRadius: 5))
                         Text(item.englishTranslation)
                             .font(.subheadline.weight(.medium))
                             .frame(maxWidth: .infinity, alignment: .leading)
                         Button { onSpeak(item.englishTranslation) } label: {
-                            Image(systemName: "speaker.wave.2")
-                                .font(.caption)
+                            Image(systemName: "speaker.wave.2.fill")
+                                .font(.caption2)
                                 .foregroundStyle(.teal)
+                                .frame(width: 24, height: 24)
+                                .background(Color.teal.opacity(0.14), in: Circle())
                         }
-                        .buttonStyle(.plain)
+                        .buttonStyle(GlassPressButtonStyle())
                     }
-                    .padding(.horizontal, 10)
-                    .padding(.vertical, 6)
-                    .background(Color.teal.opacity(0.10))
-                    .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+                    .padding(.horizontal, 11)
+                    .padding(.vertical, 8)
+                    .background(Color.teal.opacity(0.08), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 14, style: .continuous)
+                            .strokeBorder(Color.teal.opacity(0.18), lineWidth: 0.55)
+                    )
                 }
 
                 VStack(alignment: .leading, spacing: 4) {
                     Text(formattedTrans)
                         .font(.subheadline)
+                        .lineSpacing(3)
                         .lineLimit((transExpanded || !canExpandTrans) ? nil : 4)
                     if canExpandTrans {
                         Button(transExpanded ? "收起" : "展开全部") {
@@ -740,13 +794,16 @@ private struct VocabCardView: View {
                                 contextExpanded.toggle()
                             }
                         } label: {
-                            HStack {
-                                Text("原文")
+                            HStack(spacing: 6) {
+                                Image(systemName: "quote.opening")
+                                    .font(.caption2.bold())
+                                    .foregroundStyle(palette.accent)
+                                Text("原文例句")
                                     .font(.caption.weight(.medium))
                                     .foregroundStyle(.secondary)
                                 Spacer()
                                 Text(contextExpanded ? "收起" : "展开")
-                                    .font(.caption2)
+                                    .font(.caption2.weight(.semibold))
                                     .foregroundStyle(palette.accent)
                                 Image(systemName: "chevron.down")
                                     .font(.caption2.bold())
@@ -760,9 +817,12 @@ private struct VocabCardView: View {
                         .buttonStyle(.plain)
 
                         if contextExpanded {
-                            VStack(alignment: .leading, spacing: 4) {
+                            VStack(alignment: .leading, spacing: 5) {
+                                Divider()
+                                    .opacity(0.45)
                                 Text("“\(item.contextSentence)”")
-                                    .font(.caption.italic())
+                                    .font(.system(.caption, design: .serif).italic())
+                                    .lineSpacing(2)
                                 if !item.contextTranslation.isEmpty {
                                     Text(item.contextTranslation)
                                         .font(.caption)
@@ -774,21 +834,44 @@ private struct VocabCardView: View {
                             .transition(AppMotion.panelTransition)
                         }
                     }
-                    .background(contextExpanded ? palette.accent.opacity(0.08) : Color.secondary.opacity(0.08))
-                    .overlay(alignment: .leading) {
-                        Rectangle()
-                            .fill(palette.accent.opacity(0.45))
-                            .frame(width: 3)
-                    }
-                    .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                    .background(
+                        (contextExpanded ? palette.accent.opacity(0.08) : Color.secondary.opacity(0.06)),
+                        in: RoundedRectangle(cornerRadius: 14, style: .continuous)
+                    )
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 14, style: .continuous)
+                            .strokeBorder(Color.white.opacity(palette.isLight ? 0.40 : 0.10), lineWidth: 0.5)
+                    )
                 }
 
                 if !item.bookTitle.isEmpty {
-                    MinimalTagPill(text: item.bookTitle)
+                    HStack(spacing: 5) {
+                        Image(systemName: "book.closed")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                        Text(item.bookTitle)
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                    }
                 }
             }
             .padding(16)
         }
+    }
+
+    private func vocabStatusBadge(text: String, color: Color) -> some View {
+        HStack(spacing: 4) {
+            Circle()
+                .fill(color)
+                .frame(width: 6, height: 6)
+            Text(text)
+                .font(.caption2.weight(.semibold))
+                .foregroundStyle(color)
+        }
+        .padding(.horizontal, 7)
+        .padding(.vertical, 3)
+        .background(color.opacity(0.12), in: Capsule())
     }
 }
 
@@ -801,94 +884,126 @@ private struct FlashcardDeckCard: View {
     @State private var sentenceExpanded = false
 
     var body: some View {
-        GlassCard(cornerRadius: 24, tintColor: flipped ? palette.accent.opacity(0.05) : nil) {
-            ScrollView {
-                VStack(spacing: 14) {
-                    MinimalTagPill(
-                        text: flipped ? "释义已展开 · 点击收起" : "点击卡片查看释义",
-                        tintColor: flipped ? palette.accent.opacity(0.14) : Color.secondary.opacity(0.12),
-                        textColor: flipped ? palette.accent : .secondary
-                    )
+        ZStack(alignment: .bottom) {
+            // Subtle Apple card-stack depth layer underneath
+            RoundedRectangle(cornerRadius: 24, style: .continuous)
+                .fill(.ultraThinMaterial)
+                .overlay(
+                    RoundedRectangle(cornerRadius: 24, style: .continuous)
+                        .strokeBorder(Color.white.opacity(palette.isLight ? 0.42 : 0.14), lineWidth: 0.5)
+                )
+                .padding(.horizontal, 12)
+                .offset(y: 7)
+                .opacity(0.65)
 
-                    Text(card.word)
-                        .font(.largeTitle.bold())
-                        .multilineTextAlignment(.center)
-                        .padding(.top, 8)
-
-                    HStack(spacing: 6) {
-                        if !card.phonetic.isEmpty {
-                            Text(card.phonetic)
-                                .font(.body)
-                                .foregroundStyle(.secondary)
-                        }
-                        Button { onSpeak(card.word) } label: {
-                            Image(systemName: "speaker.wave.2.fill")
-                                .foregroundStyle(palette.accent)
-                        }
-                    }
-
-                    if !card.contextSentence.isEmpty {
-                        VStack(spacing: 4) {
-                            Text("“\(card.contextSentence)”")
-                                .font(.caption.italic())
-                                .multilineTextAlignment(.center)
-                                .lineLimit(sentenceExpanded ? nil : 3)
-                            if card.contextSentence.count > 90 {
-                                Button(sentenceExpanded ? "收起原句" : "展开原句") {
-                                    withAnimation(AppMotion.panelSpring) {
-                                        sentenceExpanded.toggle()
-                                    }
-                                }
+            GlassCard(cornerRadius: 26, tintColor: flipped ? palette.accent.opacity(0.05) : nil) {
+                ScrollView {
+                    VStack(spacing: 15) {
+                        HStack(spacing: 5) {
+                            Image(systemName: flipped ? "sparkles" : "hand.tap")
                                 .font(.caption2.weight(.semibold))
-                                .foregroundStyle(palette.accent)
-                            }
+                            Text(flipped ? "释义已展开 · 点击收起" : "轻点卡片翻看释义")
+                                .font(.caption2.weight(.semibold))
                         }
-                        .padding(12)
-                        .frame(maxWidth: .infinity)
-                        .background(Color.secondary.opacity(0.08))
-                        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
-                    }
+                        .foregroundStyle(flipped ? palette.accent : .secondary)
+                        .padding(.horizontal, 11)
+                        .padding(.vertical, 4.5)
+                        .background((flipped ? palette.accent.opacity(0.12) : Color.secondary.opacity(0.10)), in: Capsule())
 
-                    if flipped {
-                        VStack(spacing: 10) {
-                            Divider()
-                            if !card.englishTranslation.isEmpty {
-                                HStack(spacing: 6) {
-                                    Text(card.englishTranslation)
-                                        .font(.headline)
-                                        .foregroundStyle(.teal)
-                                    Button { onSpeak(card.englishTranslation) } label: {
-                                        Image(systemName: "speaker.wave.2")
-                                            .font(.subheadline)
-                                            .foregroundStyle(.teal)
+                        Text(card.word)
+                            .font(.system(.largeTitle, design: .serif).bold())
+                            .multilineTextAlignment(.center)
+                            .padding(.top, 6)
+
+                        HStack(spacing: 8) {
+                            if !card.phonetic.isEmpty {
+                                Text(card.phonetic)
+                                    .font(.body)
+                                    .foregroundStyle(.secondary)
+                            }
+                            Button { onSpeak(card.word) } label: {
+                                Image(systemName: "speaker.wave.2.fill")
+                                    .font(.subheadline.weight(.semibold))
+                                    .foregroundStyle(palette.accent)
+                                    .frame(width: 32, height: 32)
+                                    .background(palette.accent.opacity(0.12), in: Circle())
+                            }
+                            .buttonStyle(GlassPressButtonStyle())
+                        }
+
+                        if !card.contextSentence.isEmpty {
+                            VStack(spacing: 5) {
+                                Text("“\(card.contextSentence)”")
+                                    .font(.system(.caption, design: .serif).italic())
+                                    .lineSpacing(2.5)
+                                    .multilineTextAlignment(.center)
+                                    .lineLimit(sentenceExpanded ? nil : 3)
+                                if card.contextSentence.count > 90 {
+                                    Button(sentenceExpanded ? "收起原句" : "展开原句") {
+                                        withAnimation(AppMotion.panelSpring) {
+                                            sentenceExpanded.toggle()
+                                        }
                                     }
+                                    .font(.caption2.weight(.semibold))
+                                    .foregroundStyle(palette.accent)
                                 }
                             }
-                            Text(card.translation.replacingOccurrences(of: #"\n{2,}"#, with: "\n", options: .regularExpression))
-                                .font(.headline)
-                                .multilineTextAlignment(.center)
-                            if !card.contextTranslation.isEmpty {
-                                Text(card.contextTranslation)
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
-                                    .multilineTextAlignment(.center)
-                            }
+                            .padding(13)
+                            .frame(maxWidth: .infinity)
+                            .background(Color.secondary.opacity(0.06), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 14, style: .continuous)
+                                    .strokeBorder(Color.white.opacity(palette.isLight ? 0.40 : 0.10), lineWidth: 0.5)
+                            )
                         }
-                        .padding(.top, 6)
-                        .transition(AppMotion.panelTransition)
+
+                        if flipped {
+                            VStack(spacing: 10) {
+                                Divider()
+                                    .opacity(0.5)
+                                if !card.englishTranslation.isEmpty {
+                                    HStack(spacing: 6) {
+                                        Text(card.englishTranslation)
+                                            .font(.headline)
+                                            .foregroundStyle(.teal)
+                                        Button { onSpeak(card.englishTranslation) } label: {
+                                            Image(systemName: "speaker.wave.2.fill")
+                                                .font(.caption)
+                                                .foregroundStyle(.teal)
+                                                .frame(width: 26, height: 26)
+                                                .background(Color.teal.opacity(0.14), in: Circle())
+                                        }
+                                        .buttonStyle(GlassPressButtonStyle())
+                                    }
+                                }
+                                Text(card.translation.replacingOccurrences(of: #"\n{2,}"#, with: "\n", options: .regularExpression))
+                                    .font(.headline)
+                                    .lineSpacing(3)
+                                    .multilineTextAlignment(.center)
+                                if !card.contextTranslation.isEmpty {
+                                    Text(card.contextTranslation)
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                        .multilineTextAlignment(.center)
+                                }
+                            }
+                            .padding(.top, 4)
+                            .transition(AppMotion.panelTransition)
+                        }
                     }
+                    .padding(24)
+                    .frame(maxWidth: .infinity, minHeight: 320)
+                    .contentShape(Rectangle())
                 }
-                .padding(24)
-                .frame(maxWidth: .infinity, minHeight: 320)
-                .contentShape(Rectangle())
+                .clipped()
             }
-            .clipped()
-        }
-        .onTapGesture {
-            withAnimation(AppMotion.panelSpring) {
-                flipped.toggle()
+            .onTapGesture {
+                withAnimation(AppMotion.panelSpring) {
+                    flipped.toggle()
+                }
             }
         }
+        .padding(.bottom, 8)
         .onChange(of: card.id) { _, _ in
             sentenceExpanded = false
         }
