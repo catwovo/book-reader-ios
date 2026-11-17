@@ -36,6 +36,21 @@ private var settingsBookContentTypes: [UTType] {
     return types
 }
 
+private struct AppIconOption: Identifiable {
+    let id: String
+    let title: String
+    let iconName: String? // nil = 默认 AppIcon
+    let previewAssetName: String
+}
+
+private let appIconOptions: [AppIconOption] = [
+    AppIconOption(id: "default", title: "暖橙喵阅", iconName: nil, previewAssetName: "IconPreviewDefault"),
+    AppIconOption(id: "night", title: "星夜蓝", iconName: "AppIconNight", previewAssetName: "IconPreviewNight"),
+    AppIconOption(id: "sage", title: "护眼青", iconName: "AppIconSage", previewAssetName: "IconPreviewSage"),
+    AppIconOption(id: "ink", title: "极简墨", iconName: "AppIconInk", previewAssetName: "IconPreviewInk"),
+    AppIconOption(id: "sakura", title: "绯樱粉", iconName: "AppIconSakura", previewAssetName: "IconPreviewSakura")
+]
+
 struct SettingsView: View {
     @Environment(DatabaseManager.self) private var db
     @Environment(SettingsStore.self) private var settingsStore
@@ -45,10 +60,14 @@ struct SettingsView: View {
     var onOpenBook: (BookItem) -> Void = { _ in }
 
     @State private var themeSectionExpanded = false
+    @State private var appIconSectionExpanded = false
     @State private var importSectionExpanded = false
     @State private var dictSectionExpanded = false
     @State private var aiSectionExpanded = false
     @State private var cacheSectionExpanded = false
+
+    @State private var currentAlternateIconName: String? = UIApplication.shared.alternateIconName
+    @State private var iconSwitchError: String? = nil
 
     // Local import
     @State private var showFileImporter = false
@@ -105,6 +124,8 @@ struct SettingsView: View {
             ? "已配置 · \(store.settings.aiModel)"
             : "兼容 OpenAI / DeepSeek / 阿里百炼"
 
+        let currentIconOption = appIconOptions.first { $0.iconName == currentAlternateIconName } ?? appIconOptions[0]
+
         NavigationStack {
             ZStack {
                 AmbientGlassBackdrop(themeMode: store.settings.themeMode)
@@ -112,7 +133,7 @@ struct SettingsView: View {
                 ScrollView {
                     VStack(spacing: 3) {
                         // 1. 外观主题（7 套配色方案 + 阅读器自定义联动重置）
-                        GlassGroupedCard(index: 0, count: 5, outerRadius: 22, innerRadius: 6) {
+                        GlassGroupedCard(index: 0, count: 6, outerRadius: 22, innerRadius: 6) {
                             settingsGroupSection(
                                 title: "外观主题",
                                 subtitle: "当前：\(store.settings.themeMode.displayName)",
@@ -176,8 +197,77 @@ struct SettingsView: View {
                             }
                         }
 
-                        // 2. 图书导入与网盘
-                        GlassGroupedCard(index: 1, count: 5, outerRadius: 22, innerRadius: 6) {
+                        // 2. 桌面图标
+                        GlassGroupedCard(index: 1, count: 6, outerRadius: 22, innerRadius: 6) {
+                            settingsGroupSection(
+                                title: "桌面图标",
+                                subtitle: "当前：\(currentIconOption.title)",
+                                systemImage: "app.badge",
+                                expanded: $appIconSectionExpanded
+                            ) {
+                                ScrollView(.horizontal, showsIndicators: false) {
+                                    HStack(spacing: 14) {
+                                        ForEach(appIconOptions) { option in
+                                            let isSelected = currentAlternateIconName == option.iconName
+                                            Button {
+                                                selectAppIcon(option)
+                                            } label: {
+                                                VStack(spacing: 6) {
+                                                    ZStack(alignment: .topTrailing) {
+                                                        Image(option.previewAssetName)
+                                                            .resizable()
+                                                            .scaledToFill()
+                                                            .frame(width: 58, height: 58)
+                                                            .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+                                                            .overlay {
+                                                                RoundedRectangle(cornerRadius: 14, style: .continuous)
+                                                                    .strokeBorder(
+                                                                        isSelected ? palette.accent : Color.white.opacity(palette.isLight ? 0.65 : 0.22),
+                                                                        lineWidth: isSelected ? 2.4 : 0.8
+                                                                    )
+                                                            }
+                                                            .shadow(
+                                                                color: isSelected ? palette.accent.opacity(0.32) : .black.opacity(0.14),
+                                                                radius: isSelected ? 8 : 4,
+                                                                x: 0,
+                                                                y: 2
+                                                            )
+
+                                                        if isSelected {
+                                                            Image(systemName: "checkmark.circle.fill")
+                                                                .font(.system(size: 16))
+                                                                .foregroundStyle(.white, palette.accent)
+                                                                .offset(x: 4, y: -4)
+                                                        }
+                                                    }
+
+                                                    Text(option.title)
+                                                        .font(.caption2.weight(isSelected ? .semibold : .medium))
+                                                        .foregroundStyle(isSelected ? palette.accent : .primary)
+                                                }
+                                                .padding(.vertical, 4)
+                                                .padding(.horizontal, 2)
+                                            }
+                                            .buttonStyle(GlassPressButtonStyle())
+                                        }
+                                    }
+                                    .padding(.horizontal, 2)
+                                }
+
+                                if let iconSwitchError {
+                                    Text(iconSwitchError)
+                                        .font(.caption)
+                                        .foregroundStyle(.red)
+                                } else {
+                                    Text("点击上方图标即可切换 iOS 桌面应用图标。")
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                }
+                            }
+                        }
+
+                        // 3. 图书导入与网盘
+                        GlassGroupedCard(index: 2, count: 6, outerRadius: 22, innerRadius: 6) {
                             settingsGroupSection(
                                 title: "图书导入与网盘",
                                 subtitle: "本地导入 · WebDAV · OPDS（\(store.opdsSources.count) 个）",
@@ -389,8 +479,8 @@ struct SettingsView: View {
                             }
                         }
 
-                        // 3. 词库与翻译引擎
-                        GlassGroupedCard(index: 2, count: 5, outerRadius: 22, innerRadius: 6) {
+                        // 4. 词库与翻译引擎
+                        GlassGroupedCard(index: 3, count: 6, outerRadius: 22, innerRadius: 6) {
                             settingsGroupSection(
                                 title: "词库与翻译引擎",
                                 subtitle: "整句：\(engineLabel) · 词库 · Apple 离线翻译",
@@ -636,8 +726,8 @@ struct SettingsView: View {
                             }
                         }
 
-                        // 4. 自定义 AI 接口
-                        GlassGroupedCard(index: 3, count: 5, outerRadius: 22, innerRadius: 6) {
+                        // 5. 自定义 AI 接口
+                        GlassGroupedCard(index: 4, count: 6, outerRadius: 22, innerRadius: 6) {
                             settingsGroupSection(
                                 title: "自定义 AI 接口",
                                 subtitle: aiSummary,
@@ -726,8 +816,8 @@ struct SettingsView: View {
                             }
                         }
 
-                        // 5. 缓存与存储管理
-                        GlassGroupedCard(index: 4, count: 5, outerRadius: 22, innerRadius: 6) {
+                        // 6. 缓存与存储管理
+                        GlassGroupedCard(index: 5, count: 6, outerRadius: 22, innerRadius: 6) {
                             settingsGroupSection(
                                 title: "缓存与存储管理",
                                 subtitle: "占用 \(formatSettingsCacheSize(cacheStats.totalBytes)) · 翻译缓存 \(translationCacheCount) 条",
@@ -786,7 +876,7 @@ struct SettingsView: View {
                 }
             }
             .navigationBarTitleDisplayMode(.inline)
-            .toolbarBackground(.ultraThinMaterial, for: .navigationBar)
+            .adaptiveGlassNavBar()
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) {
                     HStack(spacing: 8) {
@@ -974,6 +1064,26 @@ struct SettingsView: View {
     }
 
     // MARK: - Actions
+
+    private func selectAppIcon(_ option: AppIconOption) {
+        iconSwitchError = nil
+        guard UIApplication.shared.supportsAlternateIcons else {
+            iconSwitchError = "当前系统不支持更换应用图标"
+            return
+        }
+        guard currentAlternateIconName != option.iconName else { return }
+        UIApplication.shared.setAlternateIconName(option.iconName) { error in
+            DispatchQueue.main.async {
+                if let error {
+                    iconSwitchError = "切换图标失败：\(error.localizedDescription)"
+                } else {
+                    withAnimation(AppMotion.panelSpring) {
+                        currentAlternateIconName = UIApplication.shared.alternateIconName ?? option.iconName
+                    }
+                }
+            }
+        }
+    }
 
     private func importLocalBooks(_ urls: [URL]) {
         let docsDir = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first!
@@ -1406,7 +1516,7 @@ private struct WebDavBrowserSheet: View {
             }
             .navigationTitle(currentFolderTitle)
             .navigationBarTitleDisplayMode(.inline)
-            .toolbarBackground(.ultraThinMaterial, for: .navigationBar)
+            .adaptiveGlassNavBar()
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) {
                     Button {

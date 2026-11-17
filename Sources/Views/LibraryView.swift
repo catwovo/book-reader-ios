@@ -30,6 +30,22 @@ private var supportedBookContentTypes: [UTType] {
     return types
 }
 
+private enum LibraryActiveSheet: Identifiable {
+    case newFolder
+    case renameFolder(BookFolder)
+    case addBooksToFolder(BookFolder)
+    case moveBookToFolder(BookItem)
+
+    var id: String {
+        switch self {
+        case .newFolder: return "newFolder"
+        case .renameFolder(let f): return "rename_\(f.id)"
+        case .addBooksToFolder(let f): return "addBooks_\(f.id)"
+        case .moveBookToFolder(let b): return "moveBook_\(b.id)"
+        }
+    }
+}
+
 struct LibraryView: View {
     @Environment(DatabaseManager.self) private var db
     @Environment(SettingsStore.self) private var settingsStore
@@ -40,19 +56,13 @@ struct LibraryView: View {
     @State private var heroPageIndex = 0
     @State private var collectionTab = 0 // 0 = 本地藏书, 1 = 在线书库
     @State private var expandedFolderIds: Set<Int64> = []
-    @State private var localScrollOffset: CGFloat = 0
-    @State private var opdsScrollOffset: CGFloat = 0
+    @State private var isHeroCollapsed = false
 
     // Import & Folder Modals
     @State private var showFileImporter = false
     @State private var importTargetFolderId: Int64? = nil
-    @State private var showNewFolderAlert = false
-    @State private var newFolderName = ""
-    @State private var renamingFolder: BookFolder? = nil
-    @State private var renameFolderName = ""
+    @State private var activeSheet: LibraryActiveSheet? = nil
     @State private var deletingFolder: BookFolder? = nil
-    @State private var addBooksTargetFolder: BookFolder? = nil
-    @State private var movingBook: BookItem? = nil
     @State private var deletingBook: BookItem? = nil
 
     private var recentBooks: [BookItem] {
@@ -80,7 +90,7 @@ struct LibraryView: View {
     private func attachFolderAlerts<Content: View>(to content: Content) -> some View {
         content
             .navigationBarTitleDisplayMode(.inline)
-            .toolbarBackground(.ultraThinMaterial, for: .navigationBar)
+            .adaptiveGlassNavBar()
             .toolbar { libraryToolbar }
             .fileImporter(
                 isPresented: $showFileImporter,
@@ -89,30 +99,6 @@ struct LibraryView: View {
             ) { result in
                 if case .success(let urls) = result {
                     importPickedFiles(urls, targetFolderId: importTargetFolderId)
-                }
-            }
-            .sheet(isPresented: $showNewFolderAlert) {
-                GlassFolderInputSheet(
-                    title: "新建文件夹",
-                    subtitle: "输入名称，将藏书按主题或类型分类整理",
-                    systemImage: "folder.badge.plus",
-                    placeholder: "例如：英文原著、技术文档",
-                    confirmTitle: "创建",
-                    initialName: newFolderName
-                ) { trimmed in
-                    db.createFolder(name: trimmed)
-                }
-            }
-            .sheet(item: $renamingFolder) { target in
-                GlassFolderInputSheet(
-                    title: "重命名文件夹",
-                    subtitle: "修改文件夹「\(target.name)」的名称",
-                    systemImage: "folder.badge.gearshape",
-                    placeholder: "输入新的文件夹名称",
-                    confirmTitle: "保存",
-                    initialName: renameFolderName.isEmpty ? target.name : renameFolderName
-                ) { trimmed in
-                    db.renameFolder(id: target.id, name: trimmed)
                 }
             }
             .alert("删除文件夹", isPresented: Binding(
@@ -156,32 +142,59 @@ struct LibraryView: View {
                     Text("确定从书架移除《\(target.title)》吗？")
                 }
             }
-            .sheet(item: $addBooksTargetFolder) { folder in
-                AddBooksToFolderSheet(
-                    folder: folder,
-                    allBooks: db.books,
-                    folders: db.folders,
-                    onConfirm: { selectedIds in
-                        db.moveBooks(selectedIds, toFolder: folder.id)
-                        withAnimation(AppMotion.panelSpring) {
-                            _ = expandedFolderIds.insert(folder.id)
+            .sheet(item: $activeSheet) { sheet in
+                switch sheet {
+                case .newFolder:
+                    GlassFolderInputSheet(
+                        title: "新建文件夹",
+                        subtitle: "输入名称，将藏书按主题或类型分类整理",
+                        systemImage: "folder.badge.plus",
+                        placeholder: "例如：英文原著、技术文档",
+                        confirmTitle: "创建",
+                        initialName: ""
+                    ) { trimmed in
+                        db.createFolder(name: trimmed)
+                    }
+                case .renameFolder(let target):
+                    GlassFolderInputSheet(
+                        title: "重命名文件夹",
+                        subtitle: "修改文件夹「\(target.name)」的名称",
+                        systemImage: "folder.badge.gearshape",
+                        placeholder: "输入新的文件夹名称",
+                        confirmTitle: "保存",
+                        initialName: target.name
+                    ) { trimmed in
+                        db.renameFolder(id: target.id, name: trimmed)
+                    }
+                case .addBooksToFolder(let folder):
+                    AddBooksToFolderSheet(
+                        folder: folder,
+                        allBooks: db.books,
+                        folders: db.folders,
+                        onConfirm: { selectedIds in
+                            db.moveBooks(selectedIds, toFolder: folder.id)
+                            withAnimation(AppMotion.panelSpring) {
+                                _ = expandedFolderIds.insert(folder.id)
+                            }
                         }
-                    }
-                )
-            }
-            .sheet(item: $movingBook) { book in
-                MoveBookToFolderSheet(
-                    book: book,
-                    folders: db.folders,
-                    folderCounts: folderBooksMap.mapValues(\.count),
-                    onMove: { folderId in
-                        db.moveBook(book.id, toFolder: folderId)
-                    }
-                )
+                    )
+                case .moveBookToFolder(let book):
+                    MoveBookToFolderSheet(
+                        book: book,
+                        folders: db.folders,
+                        folderCounts: folderBooksMap.mapValues(\.count),
+                        onMove: { folderId in
+                            db.moveBook(book.id, toFolder: folderId)
+                        }
+                    )
+                }
             }
             .onChange(of: db.books.count) { _, _ in
                 if !recentBooks.isEmpty, heroPageIndex >= recentBooks.count {
                     heroPageIndex = max(0, recentBooks.count - 1)
+                }
+                if recentBooks.isEmpty {
+                    isHeroCollapsed = false
                 }
             }
             .onChange(of: db.folders.map(\.id)) { _, validIds in
@@ -189,49 +202,19 @@ struct LibraryView: View {
             }
     }
 
-    private var expandedHeroHeight: CGFloat {
-        guard !recentBooks.isEmpty else { return 0 }
-        return recentBooks.count > 1 ? 198 : 178
-    }
-
-    private var compactHeroHeight: CGFloat {
-        recentBooks.isEmpty ? 0 : 70
-    }
-
-    private var heroCollapseProgress: CGFloat {
-        let maxCollapse = expandedHeroHeight - compactHeroHeight
-        guard maxCollapse > 1 else { return 0 }
-        let activeOffset = collectionTab == 0 ? localScrollOffset : opdsScrollOffset
-        return min(1.0, max(0.0, activeOffset / maxCollapse))
-    }
-
-    private var totalExpandedHeaderHeight: CGFloat {
-        expandedHeroHeight + 44
-    }
-
     @ViewBuilder
     private var mainShellView: some View {
         ZStack(alignment: .top) {
             AmbientGlassBackdrop(themeMode: settingsStore.settings.themeMode)
 
-            collectionPager
-
             VStack(spacing: 0) {
-                heroContinueSection
-                sectionHeaderBar
-            }
-            .background {
-                if heroCollapseProgress > 0.02 {
-                    Rectangle()
-                        .fill(.ultraThinMaterial)
-                        .opacity(Double(min(1.0, heroCollapseProgress * 1.4)) * 0.78)
-                        .overlay(alignment: .bottom) {
-                            Rectangle()
-                                .fill(Color.white.opacity(palette.isLight ? 0.35 : 0.12))
-                                .frame(height: 0.5)
-                        }
-                        .ignoresSafeArea(edges: .top)
+                VStack(spacing: 0) {
+                    heroContinueSection
+                    sectionHeaderBar
                 }
+                .animation(AppMotion.panelSpring, value: isHeroCollapsed)
+
+                collectionPager
             }
         }
     }
@@ -239,11 +222,11 @@ struct LibraryView: View {
     @ViewBuilder
     private var heroContinueSection: some View {
         if !recentBooks.isEmpty {
-            let p = heroCollapseProgress
-            let dotsOpacity = max(0.0, 1.0 - Double(p) * 2.0)
-            let dotsHeight = max(0.0, (1.0 - min(1.0, p / 0.65)) * 18.0)
+            let p: CGFloat = isHeroCollapsed ? 1.0 : 0.0
+            let dotsOpacity = isHeroCollapsed ? 0.0 : 1.0
+            let dotsHeight: CGFloat = isHeroCollapsed ? 0.0 : 18.0
 
-            VStack(spacing: max(0, 6.0 * (1.0 - min(1.0, p / 0.7)))) {
+            VStack(spacing: isHeroCollapsed ? 0 : 6.0) {
                 GlassHorizontalPager(selection: $heroPageIndex, pageCount: recentBooks.count, fillHeight: false) { idx in
                     if idx < recentBooks.count {
                         let book = recentBooks[idx]
@@ -273,7 +256,17 @@ struct LibraryView: View {
                     .opacity(dotsOpacity)
                 }
             }
-            .padding(.top, max(2, 4 * (1 - p)))
+            .padding(.top, isHeroCollapsed ? 4 : 10)
+            .simultaneousGesture(
+                DragGesture(minimumDistance: 24)
+                    .onEnded { value in
+                        if abs(value.translation.height) > abs(value.translation.width) * 1.4 {
+                            withAnimation(AppMotion.panelSpring) {
+                                isHeroCollapsed = value.translation.height < 0
+                            }
+                        }
+                    }
+            )
         }
     }
 
@@ -284,6 +277,18 @@ struct LibraryView: View {
                 .font(.caption.weight(.semibold))
                 .foregroundStyle(.secondary)
                 .animation(.easeOut(duration: 0.2), value: collectionTab)
+
+            if !recentBooks.isEmpty {
+                GlassCircleIconButton(
+                    systemImage: isHeroCollapsed ? "chevron.down" : "chevron.up",
+                    size: 24,
+                    iconFont: .caption2.bold()
+                ) {
+                    withAnimation(AppMotion.panelSpring) {
+                        isHeroCollapsed.toggle()
+                    }
+                }
+            }
 
             Spacer()
 
@@ -307,8 +312,7 @@ struct LibraryView: View {
                     iconFont: .subheadline,
                     isActive: true
                 ) {
-                    newFolderName = ""
-                    showNewFolderAlert = true
+                    activeSheet = .newFolder
                 }
 
                 GlassCircleIconButton(
@@ -339,14 +343,23 @@ struct LibraryView: View {
                 localShelfView
             } else {
                 OpdsOnlineLibraryPane(
-                    topSpacerHeight: totalExpandedHeaderHeight,
                     onScrollOffsetChange: { offset in
-                        if abs(opdsScrollOffset - offset) > 0.5 {
-                            opdsScrollOffset = offset
-                        }
+                        handleScrollCollapse(offset)
                     },
                     onOpenBook: onOpenBook
                 )
+            }
+        }
+    }
+
+    private func handleScrollCollapse(_ offset: CGFloat) {
+        if offset > 28, !isHeroCollapsed {
+            withAnimation(AppMotion.panelSpring) {
+                isHeroCollapsed = true
+            }
+        } else if offset < -42, isHeroCollapsed {
+            withAnimation(AppMotion.panelSpring) {
+                isHeroCollapsed = false
             }
         }
     }
@@ -382,7 +395,6 @@ struct LibraryView: View {
     private var localShelfView: some View {
         if db.books.isEmpty && db.folders.isEmpty {
             VStack(spacing: 14) {
-                Color.clear.frame(height: totalExpandedHeaderHeight)
                 Spacer()
                 Image(systemName: "books.vertical")
                     .font(.system(size: 42))
@@ -403,10 +415,8 @@ struct LibraryView: View {
                 Spacer()
             }
             .padding(24)
-            .onAppear { localScrollOffset = 0 }
         } else if db.folders.isEmpty && rootShelfBooks.isEmpty {
             VStack(spacing: 10) {
-                Color.clear.frame(height: totalExpandedHeaderHeight)
                 Spacer()
                 Text("当前全部 \(db.books.count) 本藏书均已展示在上方「最近阅读」\n可点击右上「新建文件夹」分类整理，或向左滑动浏览「在线书库」")
                     .font(.caption)
@@ -415,11 +425,9 @@ struct LibraryView: View {
                 Spacer()
             }
             .padding(24)
-            .onAppear { localScrollOffset = 0 }
         } else {
             ScrollView {
                 LazyVStack(spacing: 10) {
-                    Color.clear.frame(height: totalExpandedHeaderHeight)
 
                     // Folders (non-sticky, unified expand/collapse animation, actions in "..." menu)
                     ForEach(Array(db.folders.enumerated()), id: \.element.id) { idx, folder in
@@ -450,11 +458,10 @@ struct LibraryView: View {
                                     showFileImporter = true
                                 },
                                 onAddExistingBooks: {
-                                    addBooksTargetFolder = folder
+                                    activeSheet = .addBooksToFolder(folder)
                                 },
                                 onRename: {
-                                    renameFolderName = folder.name
-                                    renamingFolder = folder
+                                    activeSheet = .renameFolder(folder)
                                 },
                                 onDeleteFolder: {
                                     deletingFolder = folder
@@ -506,14 +513,13 @@ struct LibraryView: View {
                     }
                 }
                 .padding(.horizontal, 16)
+                .padding(.top, 4)
                 .padding(.bottom, 12)
             }
             .onScrollGeometryChange(for: CGFloat.self) { geo in
                 geo.contentOffset.y + geo.contentInsets.top
             } action: { _, newOffset in
-                if abs(localScrollOffset - newOffset) > 0.5 {
-                    localScrollOffset = newOffset
-                }
+                handleScrollCollapse(newOffset)
             }
         }
     }
@@ -543,7 +549,7 @@ struct LibraryView: View {
                     }
                     if canMoveToFolder {
                         Button {
-                            movingBook = book
+                            activeSheet = .moveBookToFolder(book)
                         } label: {
                             Label(inFolder ? "移至其他文件夹" : "移入文件夹", systemImage: "folder")
                         }
@@ -746,7 +752,7 @@ private struct HeroContinueCard: View {
                     Spacer().frame(height: 8 * gapScale)
 
                     Button(action: onOpen) {
-                        HStack(spacing: 5) {
+                        let ctaLabel = HStack(spacing: 5) {
                             Image(systemName: "play.fill")
                                 .font(.caption)
                             Text(book.readingSeconds > 0 ? "继续阅读" : "立即阅读")
@@ -754,22 +760,48 @@ private struct HeroContinueCard: View {
                         }
                         .frame(maxWidth: .infinity)
                         .frame(height: 36)
-                        .background {
-                            ZStack {
-                                Capsule().fill(palette.accent)
-                                Capsule().fill(
-                                    LinearGradient(
-                                        colors: [.white.opacity(0.24), .clear],
-                                        startPoint: .top,
-                                        endPoint: .bottom
-                                    )
-                                )
-                            }
-                        }
-                        .overlay {
-                            Capsule().strokeBorder(.white.opacity(0.35), lineWidth: 0.7)
-                        }
                         .foregroundStyle(.white)
+
+                        #if compiler(>=6.2)
+                        if #available(iOS 26.0, *) {
+                            ctaLabel
+                                .glassEffect(.regular.tint(palette.accent.opacity(0.86)).interactive(), in: Capsule())
+                        } else {
+                            ctaLabel
+                                .background {
+                                    ZStack {
+                                        Capsule().fill(palette.accent)
+                                        Capsule().fill(
+                                            LinearGradient(
+                                                colors: [.white.opacity(0.24), .clear],
+                                                startPoint: .top,
+                                                endPoint: .bottom
+                                            )
+                                        )
+                                    }
+                                }
+                                .overlay {
+                                    Capsule().strokeBorder(.white.opacity(0.35), lineWidth: 0.7)
+                                }
+                        }
+                        #else
+                        ctaLabel
+                            .background {
+                                ZStack {
+                                    Capsule().fill(palette.accent)
+                                    Capsule().fill(
+                                        LinearGradient(
+                                            colors: [.white.opacity(0.24), .clear],
+                                            startPoint: .top,
+                                            endPoint: .bottom
+                                        )
+                                    )
+                                }
+                            }
+                            .overlay {
+                                Capsule().strokeBorder(.white.opacity(0.35), lineWidth: 0.7)
+                            }
+                        #endif
                     }
                     .buttonStyle(GlassPressButtonStyle())
                     .frame(height: ctaHeight)
@@ -1125,23 +1157,18 @@ private struct GlassFolderInputSheet: View {
             .padding(.horizontal, 14)
             .padding(.vertical, 13)
             .background {
-                ZStack {
-                    RoundedRectangle(cornerRadius: 16, style: .continuous)
-                        .fill(.ultraThinMaterial)
-                    RoundedRectangle(cornerRadius: 16, style: .continuous)
-                        .fill(palette.surfaceTint.opacity(palette.isLight ? 0.36 : 0.28))
-                }
+                RoundedRectangle(cornerRadius: 16, style: .continuous)
+                    .fill(Color.primary.opacity(palette.isLight ? 0.055 : 0.12))
             }
             .overlay {
                 RoundedRectangle(cornerRadius: 16, style: .continuous)
                     .strokeBorder(
                         isInputFocused
-                            ? palette.accent.opacity(0.65)
-                            : Color.white.opacity(palette.isLight ? 0.65 : 0.22),
-                        lineWidth: isInputFocused ? 1.2 : 0.7
+                            ? palette.accent.opacity(0.75)
+                            : Color.primary.opacity(palette.isLight ? 0.12 : 0.20),
+                        lineWidth: isInputFocused ? 1.3 : 0.75
                     )
             }
-            .shadow(color: .black.opacity(palette.isLight ? 0.04 : 0.18), radius: 8, x: 0, y: 3)
 
             HStack(spacing: 12) {
                 Button {
@@ -1152,33 +1179,55 @@ private struct GlassFolderInputSheet: View {
                         .foregroundStyle(.primary)
                         .frame(maxWidth: .infinity)
                         .padding(.vertical, 12)
-                        .background {
-                            ZStack {
-                                Capsule().fill(.ultraThinMaterial)
-                                Capsule().fill(
-                                    LinearGradient(
-                                        colors: [.white.opacity(palette.isLight ? 0.30 : 0.10), .clear],
-                                        startPoint: .top,
-                                        endPoint: .bottom
-                                    )
-                                )
-                            }
-                        }
-                        .overlay {
-                            Capsule()
-                                .strokeBorder(.white.opacity(palette.isLight ? 0.72 : 0.24), lineWidth: 0.75)
-                        }
+                        .appleLiquidGlassCapsule()
                 }
                 .buttonStyle(GlassPressButtonStyle())
 
                 Button {
                     submitIfValid()
                 } label: {
-                    Text(confirmTitle)
+                    let confirmLabel = Text(confirmTitle)
                         .font(.subheadline.weight(.semibold))
                         .foregroundStyle(.white)
                         .frame(maxWidth: .infinity)
                         .padding(.vertical, 12)
+
+                    #if compiler(>=6.2)
+                    if #available(iOS 26.0, *) {
+                        let baseGlass: Glass = .regular.tint(palette.accent.opacity(trimmedName.isEmpty ? 0.34 : 0.88))
+                        confirmLabel
+                            .glassEffect(
+                                trimmedName.isEmpty ? baseGlass : baseGlass.interactive(),
+                                in: Capsule()
+                            )
+                    } else {
+                        confirmLabel
+                            .background {
+                                Capsule()
+                                    .fill(
+                                        LinearGradient(
+                                            colors: [
+                                                palette.accent.opacity(trimmedName.isEmpty ? 0.35 : 0.96),
+                                                palette.accent.opacity(trimmedName.isEmpty ? 0.28 : 0.80)
+                                            ],
+                                            startPoint: .top,
+                                            endPoint: .bottom
+                                        )
+                                    )
+                            }
+                            .overlay {
+                                Capsule()
+                                    .strokeBorder(.white.opacity(trimmedName.isEmpty ? 0.15 : 0.42), lineWidth: 0.75)
+                            }
+                            .shadow(
+                                color: trimmedName.isEmpty ? .clear : palette.accent.opacity(0.28),
+                                radius: 10,
+                                x: 0,
+                                y: 4
+                            )
+                    }
+                    #else
+                    confirmLabel
                         .background {
                             Capsule()
                                 .fill(
@@ -1202,6 +1251,7 @@ private struct GlassFolderInputSheet: View {
                             x: 0,
                             y: 4
                         )
+                    #endif
                 }
                 .buttonStyle(GlassPressButtonStyle())
                 .disabled(trimmedName.isEmpty)
@@ -1211,30 +1261,10 @@ private struct GlassFolderInputSheet: View {
         .padding(.top, 24)
         .padding(.bottom, 18)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
-        .presentationDetents([.height(248)])
+        .presentationDetents([.height(276), .medium])
         .presentationCornerRadius(30)
         .presentationDragIndicator(.visible)
-        .presentationBackground {
-            ZStack {
-                Rectangle().fill(.regularMaterial)
-                if palette.mode != .dynamic {
-                    Rectangle().fill(palette.surfaceTint.opacity(palette.isLight ? 0.28 : 0.24))
-                }
-                LinearGradient(
-                    colors: [
-                        .white.opacity(palette.isLight ? 0.28 : 0.08),
-                        .clear
-                    ],
-                    startPoint: .top,
-                    endPoint: .center
-                )
-            }
-        }
-        .onAppear {
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.18) {
-                isInputFocused = true
-            }
-        }
+        .adaptiveGlassSheetBackground(palette: palette)
     }
 
     private func submitIfValid() {
@@ -1257,7 +1287,6 @@ struct OpdsOnlineLibraryPane: View {
     @Environment(SettingsStore.self) private var settingsStore
     @Environment(\.appPalette) private var palette
 
-    var topSpacerHeight: CGFloat = 0
     var onScrollOffsetChange: (CGFloat) -> Void = { _ in }
     var onOpenBook: (BookItem) -> Void
 
@@ -1425,7 +1454,6 @@ struct OpdsOnlineLibraryPane: View {
         Group {
             if settingsStore.opdsSources.isEmpty {
                 VStack(spacing: 12) {
-                    Color.clear.frame(height: topSpacerHeight)
                     Spacer()
                     Image(systemName: "globe")
                         .font(.system(size: 36))
@@ -1449,8 +1477,8 @@ struct OpdsOnlineLibraryPane: View {
                 .padding(24)
             } else if isLoading || errorMsg != nil || entries.isEmpty {
                 VStack(spacing: 8) {
-                    Color.clear.frame(height: topSpacerHeight)
                     opdsControlsHeader
+                        .padding(.top, 4)
 
                     if isLoading {
                         Spacer()
@@ -1490,9 +1518,8 @@ struct OpdsOnlineLibraryPane: View {
             } else {
                 ScrollView {
                     LazyVStack(spacing: 8) {
-                        Color.clear.frame(height: topSpacerHeight)
-
                         opdsControlsHeader
+                            .padding(.top, 4)
 
                         LazyVStack(spacing: 4) {
                             ForEach(Array(entries.enumerated()), id: \.element.id) { idx, entry in

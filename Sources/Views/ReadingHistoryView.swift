@@ -117,7 +117,7 @@ struct ReadingHistoryView: View {
     @State private var bookMonth: Int = HistoryDateHelper.calendar.component(.month, from: Date())
     @State private var bookListYear: Int = HistoryDateHelper.calendar.component(.year, from: Date())
     @State private var expandedBookDates: Set<String> = []
-    @State private var bookScrollOffset: CGFloat = 0
+    @State private var isBookHeaderCollapsed = false
 
     // Vocab state
     @State private var vocabPeriod = 0 // 0 = 按日, 1 = 按周, 2 = 按月, 3 = 按年
@@ -127,7 +127,7 @@ struct ReadingHistoryView: View {
     @State private var vocabMonth: Int = HistoryDateHelper.calendar.component(.month, from: Date())
     @State private var vocabListYear: Int = HistoryDateHelper.calendar.component(.year, from: Date())
     @State private var expandedVocabDates: Set<String> = []
-    @State private var vocabScrollOffset: CGFloat = 0
+    @State private var isVocabHeaderCollapsed = false
 
     private var today: Date {
         HistoryDateHelper.calendar.startOfDay(for: Date())
@@ -377,9 +377,22 @@ struct ReadingHistoryView: View {
 
                 VStack(spacing: 0) {
                     // Top bar
-                    HStack {
+                    HStack(spacing: 8) {
                         Text("阅读记录")
                             .font(.title2.bold())
+                        GlassCircleIconButton(
+                            systemImage: (category == 0 ? isBookHeaderCollapsed : isVocabHeaderCollapsed) ? "chevron.down" : "chevron.up",
+                            size: 26,
+                            iconFont: .caption2.bold()
+                        ) {
+                            withAnimation(AppMotion.panelSpring) {
+                                if category == 0 {
+                                    isBookHeaderCollapsed.toggle()
+                                } else {
+                                    isVocabHeaderCollapsed.toggle()
+                                }
+                            }
+                        }
                         Spacer()
                         GlassSegmentedControl(
                             titles: historyCategories,
@@ -389,12 +402,30 @@ struct ReadingHistoryView: View {
                         .frame(width: 148)
                     }
                     .padding(.horizontal, 16)
-                    .padding(.vertical, 10)
-                    .background(.ultraThinMaterial.opacity(0.65))
-                    .overlay(alignment: .bottom) {
+                    .padding(.top, 8)
+                    .padding(.bottom, 8)
+                    .background {
+                        #if compiler(>=6.2)
+                        if #available(iOS 26.0, *) {
+                            Color.clear
+                        } else {
+                            Rectangle()
+                                .fill(.ultraThinMaterial.opacity(0.65))
+                                .overlay(alignment: .bottom) {
+                                    Rectangle()
+                                        .fill(Color.white.opacity(palette.isLight ? 0.32 : 0.10))
+                                        .frame(height: 0.5)
+                                }
+                        }
+                        #else
                         Rectangle()
-                            .fill(Color.white.opacity(palette.isLight ? 0.32 : 0.10))
-                            .frame(height: 0.5)
+                            .fill(.ultraThinMaterial.opacity(0.65))
+                            .overlay(alignment: .bottom) {
+                                Rectangle()
+                                    .fill(Color.white.opacity(palette.isLight ? 0.32 : 0.10))
+                                    .frame(height: 0.5)
+                            }
+                        #endif
                     }
 
                     GlassHorizontalPager(selection: $category, pageCount: 2) { page in
@@ -413,18 +444,28 @@ struct ReadingHistoryView: View {
     // MARK: - Book History Page
 
     private var bookHistoryPage: some View {
-        let p = min(1.0, max(0.0, bookScrollOffset / 124.0))
-        return ZStack(alignment: .top) {
-            bookHistoryScrollList(topSpacer: 224)
+        let p: CGFloat = isBookHeaderCollapsed ? 1.0 : 0.0
+        return VStack(spacing: 0) {
             bookHistoryFloatingHeader(p: p)
+                .simultaneousGesture(
+                    DragGesture(minimumDistance: 24)
+                        .onEnded { value in
+                            if abs(value.translation.height) > abs(value.translation.width) * 1.4 {
+                                withAnimation(AppMotion.panelSpring) {
+                                    isBookHeaderCollapsed = value.translation.height < 0
+                                }
+                            }
+                        }
+                )
+            bookHistoryScrollList
         }
+        .animation(AppMotion.panelSpring, value: isBookHeaderCollapsed)
     }
 
     @ViewBuilder
-    private func bookHistoryScrollList(topSpacer: CGFloat) -> some View {
+    private var bookHistoryScrollList: some View {
         ScrollView {
             LazyVStack(spacing: 4) {
-                Color.clear.frame(height: topSpacer)
 
                 if bookPeriod == 0 {
                     if displayDays.isEmpty {
@@ -496,18 +537,20 @@ struct ReadingHistoryView: View {
                 }
             }
             .padding(.horizontal, 16)
+            .padding(.top, 4)
             .padding(.bottom, 16)
         }
         .onScrollGeometryChange(for: CGFloat.self) { geo in
             geo.contentOffset.y + geo.contentInsets.top
         } action: { _, newOffset in
-            if abs(bookScrollOffset - newOffset) > 0.5 {
-                bookScrollOffset = newOffset
-            }
-        }
-        .onChange(of: bookPeriod) { _, _ in
-            withAnimation(AppMotion.panelSpring) {
-                bookScrollOffset = 0
+            if newOffset > 28, !isBookHeaderCollapsed {
+                withAnimation(AppMotion.panelSpring) {
+                    isBookHeaderCollapsed = true
+                }
+            } else if newOffset < -42, isBookHeaderCollapsed {
+                withAnimation(AppMotion.panelSpring) {
+                    isBookHeaderCollapsed = false
+                }
             }
         }
     }
@@ -641,38 +684,35 @@ struct ReadingHistoryView: View {
                 }
             }
             .padding(.horizontal, 16)
-            .padding(.top, 8 - 4 * p)
-            .padding(.bottom, 6)
-            .background {
-                if p > 0.02 {
-                    LinearGradient(
-                        colors: [
-                            palette.backgroundBase.opacity(0.75 * Double(min(1.0, p * 1.4))),
-                            Color.clear
-                        ],
-                        startPoint: .top,
-                        endPoint: .bottom
-                    )
-                }
-            }
+            .padding(.top, isBookHeaderCollapsed ? 4 : 8)
+            .padding(.bottom, 8)
     }
 
     // MARK: - Vocab History Page
 
     private var vocabHistoryPage: some View {
-        let vp = min(1.0, max(0.0, vocabScrollOffset / 168.0))
-        let topSpacer: CGFloat = db.vocabList.isEmpty ? 256 : 298
-        return ZStack(alignment: .top) {
-            vocabHistoryScrollList(topSpacer: topSpacer)
+        let vp: CGFloat = isVocabHeaderCollapsed ? 1.0 : 0.0
+        return VStack(spacing: 0) {
             vocabHistoryFloatingHeader(vp: vp)
+                .simultaneousGesture(
+                    DragGesture(minimumDistance: 24)
+                        .onEnded { value in
+                            if abs(value.translation.height) > abs(value.translation.width) * 1.4 {
+                                withAnimation(AppMotion.panelSpring) {
+                                    isVocabHeaderCollapsed = value.translation.height < 0
+                                }
+                            }
+                        }
+                )
+            vocabHistoryScrollList
         }
+        .animation(AppMotion.panelSpring, value: isVocabHeaderCollapsed)
     }
 
     @ViewBuilder
-    private func vocabHistoryScrollList(topSpacer: CGFloat) -> some View {
+    private var vocabHistoryScrollList: some View {
         ScrollView {
             LazyVStack(spacing: 4) {
-                Color.clear.frame(height: topSpacer)
 
                 switch vocabPeriod {
                 case 0:
@@ -808,18 +848,20 @@ struct ReadingHistoryView: View {
                 }
             }
             .padding(.horizontal, 16)
+            .padding(.top, 4)
             .padding(.bottom, 16)
         }
         .onScrollGeometryChange(for: CGFloat.self) { geo in
             geo.contentOffset.y + geo.contentInsets.top
         } action: { _, newOffset in
-            if abs(vocabScrollOffset - newOffset) > 0.5 {
-                vocabScrollOffset = newOffset
-            }
-        }
-        .onChange(of: vocabPeriod) { _, _ in
-            withAnimation(AppMotion.panelSpring) {
-                vocabScrollOffset = 0
+            if newOffset > 28, !isVocabHeaderCollapsed {
+                withAnimation(AppMotion.panelSpring) {
+                    isVocabHeaderCollapsed = true
+                }
+            } else if newOffset < -42, isVocabHeaderCollapsed {
+                withAnimation(AppMotion.panelSpring) {
+                    isVocabHeaderCollapsed = false
+                }
             }
         }
     }
@@ -1038,20 +1080,8 @@ struct ReadingHistoryView: View {
                 }
             }
             .padding(.horizontal, 16)
-            .padding(.top, 8 - 4 * vp)
-            .padding(.bottom, 6)
-            .background {
-                if vp > 0.02 {
-                    LinearGradient(
-                        colors: [
-                            palette.backgroundBase.opacity(0.75 * Double(min(1.0, vp * 1.4))),
-                            Color.clear
-                        ],
-                        startPoint: .top,
-                        endPoint: .bottom
-                    )
-                }
-            }
+            .padding(.top, isVocabHeaderCollapsed ? 4 : 8)
+            .padding(.bottom, 8)
     }
 }
 

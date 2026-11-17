@@ -130,11 +130,10 @@ struct NotesAndVocabView: View {
                         }
                         .padding(.horizontal, 12)
                         .padding(.vertical, 9)
-                        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
-                        .overlay(RoundedRectangle(cornerRadius: 14, style: .continuous).strokeBorder(.white.opacity(0.28), lineWidth: 0.7))
+                        .appleLiquidGlassRect(cornerRadius: 14, interactive: true)
                         .padding(.horizontal, 16)
-                        .padding(.top, 6)
-                        .padding(.bottom, 4)
+                        .padding(.top, 8)
+                        .padding(.bottom, 6)
                         .transition(AppMotion.panelTransition)
                     }
 
@@ -151,7 +150,7 @@ struct NotesAndVocabView: View {
                 }
             }
             .navigationBarTitleDisplayMode(.inline)
-            .toolbarBackground(.ultraThinMaterial, for: .navigationBar)
+            .adaptiveGlassNavBar()
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) {
                     HStack(spacing: 8) {
@@ -244,7 +243,8 @@ struct NotesAndVocabView: View {
                         }
                     }
                     .padding(.horizontal, 16)
-                    .padding(.vertical, 8)
+                    .padding(.top, 10)
+                    .padding(.bottom, 6)
                 }
             }
 
@@ -289,7 +289,8 @@ struct NotesAndVocabView: View {
                         }
                     }
                     .padding(.horizontal, 16)
-                    .padding(.vertical, 10)
+                    .padding(.top, 8)
+                    .padding(.bottom, 20)
                 }
             }
         }
@@ -315,7 +316,8 @@ struct NotesAndVocabView: View {
                         }
                     }
                     .padding(.horizontal, 16)
-                    .padding(.vertical, 10)
+                    .padding(.top, 8)
+                    .padding(.bottom, 20)
                 }
             }
         }
@@ -360,7 +362,7 @@ struct NotesAndVocabView: View {
                 let card = deck[safeIdx]
                 let isZhCard = isChineseVocab(card)
 
-                VStack(spacing: 14) {
+                VStack(spacing: 12) {
                     VStack(spacing: 6) {
                         HStack {
                             Text("\(safeIdx + 1) / \(deck.count)")
@@ -377,42 +379,66 @@ struct NotesAndVocabView: View {
                         )
                     }
 
+                    Spacer(minLength: 4)
+
                     FlashcardDeckCard(
                         card: card,
                         flipped: $flipped,
                         onSpeak: { speech.speak($0) }
                     )
+                    .frame(maxWidth: .infinity, minHeight: 240, maxHeight: 365)
 
-                    HStack(spacing: 10) {
-                        flashActionButton(title: "不认识", tint: .red, prominent: false) {
-                            db.updateVocabFamiliarity(id: card.id, familiarity: 0)
-                            withAnimation(AppMotion.cardSpring) {
-                                flipped = false
-                                flashIndex = (safeIdx + 1) % deck.count
-                            }
-                        }
+                    Spacer(minLength: 4)
 
-                        flashActionButton(title: "模糊", tint: .orange, prominent: false) {
-                            db.updateVocabFamiliarity(id: card.id, familiarity: 1)
-                            withAnimation(AppMotion.cardSpring) {
-                                flipped = false
-                                flashIndex = (safeIdx + 1) % deck.count
-                            }
-                        }
-
-                        flashActionButton(title: "认识", tint: palette.accent, prominent: true) {
-                            db.updateVocabFamiliarity(id: card.id, familiarity: 2)
-                            withAnimation(AppMotion.cardSpring) {
-                                flipped = false
-                                flashIndex = safeIdx >= deck.count - 1 ? 0 : safeIdx
-                            }
-                        }
-                    }
+                    flashcardActionButtonsRow(safeIdx: safeIdx, deck: deck, card: card)
                 }
                 .padding(.horizontal, 20)
-                .padding(.vertical, 12)
+                .padding(.top, 10)
+                .padding(.bottom, 16)
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
             }
         }
+    }
+
+    @ViewBuilder
+    private func flashcardActionButtonsRow(safeIdx: Int, deck: [VocabItem], card: VocabItem) -> some View {
+        let row = HStack(spacing: 10) {
+            flashActionButton(title: "不认识", tint: .red, prominent: false) {
+                db.updateVocabFamiliarity(id: card.id, familiarity: 0)
+                withAnimation(AppMotion.cardSpring) {
+                    flipped = false
+                    flashIndex = (safeIdx + 1) % deck.count
+                }
+            }
+
+            flashActionButton(title: "模糊", tint: .orange, prominent: false) {
+                db.updateVocabFamiliarity(id: card.id, familiarity: 1)
+                withAnimation(AppMotion.cardSpring) {
+                    flipped = false
+                    flashIndex = (safeIdx + 1) % deck.count
+                }
+            }
+
+            flashActionButton(title: "认识", tint: palette.accent, prominent: true) {
+                db.updateVocabFamiliarity(id: card.id, familiarity: 2)
+                withAnimation(AppMotion.cardSpring) {
+                    flipped = false
+                    flashIndex = safeIdx >= deck.count - 1 ? 0 : safeIdx
+                }
+            }
+        }
+
+        #if compiler(>=6.2)
+        if #available(iOS 26.0, *) {
+            GlassEffectContainer(spacing: 10) {
+                row
+            }
+        } else {
+            row
+        }
+        #else
+        row
+        #endif
     }
 
     // MARK: - Shared Vocab Filter Bar & Empty State
@@ -466,7 +492,8 @@ struct NotesAndVocabView: View {
                 }
             }
             .padding(.horizontal, 16)
-            .padding(.vertical, 8)
+            .padding(.top, 10)
+            .padding(.bottom, 6)
         }
     }
 
@@ -497,39 +524,58 @@ struct NotesAndVocabView: View {
         action: @escaping () -> Void
     ) -> some View {
         Button(action: action) {
-            Text(title)
+            let label = Text(title)
                 .font(.subheadline.weight(prominent ? .semibold : .medium))
                 .foregroundStyle(prominent ? .white : tint)
                 .frame(maxWidth: .infinity)
-                .padding(.vertical, 11)
-                .background {
-                    if prominent {
-                        ZStack {
-                            Capsule().fill(tint)
-                            Capsule().fill(
-                                LinearGradient(
-                                    colors: [.white.opacity(0.24), .clear],
-                                    startPoint: .top,
-                                    endPoint: .bottom
-                                )
-                            )
-                        }
-                    } else {
-                        ZStack {
-                            Capsule().fill(.ultraThinMaterial)
-                            Capsule().fill(tint.opacity(0.10))
-                        }
-                    }
-                }
-                .overlay {
-                    Capsule().strokeBorder(
-                        prominent ? .white.opacity(0.35) : tint.opacity(0.32),
-                        lineWidth: 0.85
-                    )
-                }
-                .shadow(color: .black.opacity(palette.isLight ? 0.06 : 0.18), radius: 6, x: 0, y: 2)
+                .padding(.vertical, 12)
+                .contentShape(Capsule())
+
+            #if compiler(>=6.2)
+            if #available(iOS 26.0, *) {
+                let glass: Glass = prominent
+                    ? .regular.tint(tint.opacity(0.86)).interactive()
+                    : .regular.tint(tint.opacity(0.14)).interactive()
+                label.glassEffect(glass, in: Capsule())
+            } else {
+                legacyFlashButtonLabel(label: label, tint: tint, prominent: prominent)
+            }
+            #else
+            legacyFlashButtonLabel(label: label, tint: tint, prominent: prominent)
+            #endif
         }
         .buttonStyle(GlassPressButtonStyle())
+    }
+
+    @ViewBuilder
+    private func legacyFlashButtonLabel<L: View>(label: L, tint: Color, prominent: Bool) -> some View {
+        label
+            .background {
+                if prominent {
+                    ZStack {
+                        Capsule().fill(tint)
+                        Capsule().fill(
+                            LinearGradient(
+                                colors: [.white.opacity(0.24), .clear],
+                                startPoint: .top,
+                                endPoint: .bottom
+                            )
+                        )
+                    }
+                } else {
+                    ZStack {
+                        Capsule().fill(.ultraThinMaterial)
+                        Capsule().fill(tint.opacity(0.10))
+                    }
+                }
+            }
+            .overlay {
+                Capsule().strokeBorder(
+                    prominent ? .white.opacity(0.35) : tint.opacity(0.32),
+                    lineWidth: 0.85
+                )
+            }
+            .shadow(color: .black.opacity(palette.isLight ? 0.06 : 0.18), radius: 6, x: 0, y: 2)
     }
 }
 
@@ -886,15 +932,12 @@ private struct FlashcardDeckCard: View {
     var body: some View {
         ZStack(alignment: .bottom) {
             // Subtle Apple card-stack depth layer underneath
-            RoundedRectangle(cornerRadius: 24, style: .continuous)
-                .fill(.ultraThinMaterial)
-                .overlay(
-                    RoundedRectangle(cornerRadius: 24, style: .continuous)
-                        .strokeBorder(Color.white.opacity(palette.isLight ? 0.42 : 0.14), lineWidth: 0.5)
-                )
+            Color.clear
+                .frame(height: 44)
+                .appleLiquidGlassRect(cornerRadius: 24)
                 .padding(.horizontal, 12)
                 .offset(y: 7)
-                .opacity(0.65)
+                .opacity(0.70)
 
             GlassCard(cornerRadius: 26, tintColor: flipped ? palette.accent.opacity(0.05) : nil) {
                 ScrollView {
@@ -992,7 +1035,7 @@ private struct FlashcardDeckCard: View {
                         }
                     }
                     .padding(24)
-                    .frame(maxWidth: .infinity, minHeight: 320)
+                    .frame(maxWidth: .infinity, minHeight: 240)
                     .contentShape(Rectangle())
                 }
                 .clipped()

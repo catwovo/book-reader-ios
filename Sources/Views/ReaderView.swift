@@ -355,22 +355,25 @@ struct ReaderView: View {
 
                     ScrollViewReader { proxy in
                         ScrollView(.vertical, showsIndicators: false) {
-                            let prevStart = Swift.max(0, safeIndex - Swift.max(settings.visibleCount, 5))
-                            let endIdx = Swift.min(units.count, safeIndex + 1 + settings.visibleCount)
-                            let windowUnits = prevStart < endIdx ? Array(units[prevStart..<endIdx]) : []
+                            let maxContextBehind = Swift.max(settings.visibleCount, 5)
                             let lineGap = CGFloat((settings.lineSpacingMultiplier - 1.0) * 5.0)
                             let unitGap = CGFloat((settings.lineSpacingMultiplier - 1.0) * 14.0 + 6.0)
+                            let focusFill = customFocusBg ?? palette.accent.opacity(0.11)
 
-                            VStack(alignment: .leading, spacing: unitGap) {
-                                // Extra vertical spacer padding so ScrollViewReader can center/top/bottom focus smoothly
+                            LazyVStack(alignment: .leading, spacing: unitGap) {
+                                // Generous vertical spacer padding so first & last units glide smoothly to readingPositionBias
                                 Color.clear
-                                    .frame(height: Swift.max(12, topZoneHeight * 0.42 * settings.readingPositionBias))
+                                    .frame(height: Swift.max(16, topZoneHeight * 0.50 * settings.readingPositionBias))
 
-                                ForEach(windowUnits) { unit in
+                                ForEach(units) { unit in
                                     let dist = abs(unit.index - safeIndex)
                                     let isFocus = dist == 0
-                                    let targetAlpha = isFocus ? 1.0 : Swift.max(0.08, 0.34 * pow(0.60, Double(dist - 1)))
-                                    let focusFill = customFocusBg ?? palette.accent.opacity(0.11)
+                                    let withinWindow = unit.index >= safeIndex
+                                        ? (dist <= settings.visibleCount)
+                                        : (dist <= maxContextBehind)
+                                    let targetAlpha: Double = isFocus
+                                        ? 1.0
+                                        : (withinWindow ? Swift.max(0.08, 0.34 * pow(0.60, Double(dist - 1))) : 0.0)
 
                                     TokenizedUnitTextView(
                                         tokens: tokensFor(unit.text),
@@ -389,38 +392,37 @@ struct ReaderView: View {
                                     .padding(.vertical, 9)
                                     .frame(maxWidth: .infinity, alignment: .leading)
                                     .background {
-                                        if isFocus {
-                                            RoundedRectangle(cornerRadius: 18, style: .continuous)
-                                                .fill(.regularMaterial)
-                                                .overlay(
-                                                    RoundedRectangle(cornerRadius: 18, style: .continuous)
-                                                        .fill(focusFill)
-                                                )
-                                                .overlay(alignment: .leading) {
-                                                    Capsule()
-                                                        .fill(palette.accent.opacity(0.85))
-                                                        .frame(width: 3.5)
-                                                        .padding(.vertical, 10)
-                                                        .padding(.leading, 6)
-                                                }
-                                                .overlay(
-                                                    RoundedRectangle(cornerRadius: 18, style: .continuous)
-                                                        .strokeBorder(
-                                                            customFocusBg != nil ? focusTextColor.opacity(0.14) : Color.white.opacity(palette.isLight ? 0.65 : 0.22),
-                                                            lineWidth: 0.6
-                                                        )
-                                                )
-                                                .shadow(color: .black.opacity(palette.isLight ? 0.04 : 0.16), radius: 8, x: 0, y: 3)
-                                                .transition(.opacity)
-                                        }
+                                        RoundedRectangle(cornerRadius: 18, style: .continuous)
+                                            .fill(.regularMaterial)
+                                            .overlay(
+                                                RoundedRectangle(cornerRadius: 18, style: .continuous)
+                                                    .fill(focusFill)
+                                            )
+                                            .overlay(alignment: .leading) {
+                                                Capsule()
+                                                    .fill(palette.accent.opacity(0.85))
+                                                    .frame(width: 3.5)
+                                                    .padding(.vertical, 10)
+                                                    .padding(.leading, 6)
+                                            }
+                                            .overlay(
+                                                RoundedRectangle(cornerRadius: 18, style: .continuous)
+                                                    .strokeBorder(
+                                                        customFocusBg != nil ? focusTextColor.opacity(0.14) : Color.white.opacity(palette.isLight ? 0.65 : 0.22),
+                                                        lineWidth: 0.6
+                                                    )
+                                            )
+                                            .shadow(color: .black.opacity(palette.isLight ? 0.04 : 0.16), radius: 8, x: 0, y: 3)
+                                            .opacity(isFocus ? 1.0 : 0.0)
                                     }
                                     .opacity(targetAlpha)
-                                    .animation(.easeOut(duration: 0.18), value: isFocus)
+                                    .allowsHitTesting(targetAlpha > 0.05)
+                                    .animation(.easeInOut(duration: 0.28), value: safeIndex)
                                     .id(unit.index)
                                 }
 
                                 Color.clear
-                                    .frame(height: Swift.max(24, topZoneHeight * 0.45))
+                                    .frame(height: Swift.max(32, topZoneHeight * 0.55))
                             }
                             .padding(.horizontal, 16)
                         }
@@ -507,9 +509,9 @@ struct ReaderView: View {
                         }
                     }
 
-                    // Floating Liquid Glass Bottom Dock: Back · TOC · Settings
+                    // Floating Liquid Glass Bottom Dock: Back(icon) · Chapter(icon + x/N) · Settings(icon)
                     readerBottomGlassDock(
-                        tocTitle: "目录 · \(chapterIndex + 1)/\(Swift.max(1, parsedBook.chapters.count))"
+                        tocTitle: "\(chapterIndex + 1)/\(Swift.max(1, parsedBook.chapters.count))"
                     )
                     .padding(.bottom, 10)
                 }
@@ -522,7 +524,8 @@ struct ReaderView: View {
 
     @ViewBuilder
     private func readerGlassCapsulePill(
-        title: String,
+        title: String?,
+        accessibilityLabel: String,
         systemImage: String,
         isEmphasized: Bool = false,
         horizontalPadding: CGFloat = 14,
@@ -532,20 +535,63 @@ struct ReaderView: View {
         let activeCustomBg = respectCustomBottomBg ? customBottomBg : nil
         let isLightDock = activeCustomBg != nil ? (activeCustomBg!.relativeLuminance > 0.44) : palette.isLight
         let fgColor: Color = activeCustomBg != nil ? activeCustomBg!.contrastingTextColor : .primary
+        let hasTitle = !(title?.isEmpty ?? true)
 
         Button(action: action) {
-            HStack(spacing: 5) {
-                Image(systemName: systemImage)
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(isEmphasized ? palette.accent : fgColor.opacity(0.88))
-                Text(title)
-                    .font(.caption.weight(isEmphasized ? .semibold : .medium))
-                    .monospacedDigit()
-                    .lineLimit(1)
-                    .foregroundStyle(fgColor)
+            let label = Group {
+                if let title, !title.isEmpty {
+                    HStack(spacing: 5) {
+                        Image(systemName: systemImage)
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(isEmphasized ? palette.accent : fgColor.opacity(0.88))
+                        Text(title)
+                            .font(.caption.weight(isEmphasized ? .semibold : .medium))
+                            .monospacedDigit()
+                            .lineLimit(1)
+                            .foregroundStyle(fgColor)
+                    }
+                    .padding(.horizontal, horizontalPadding)
+                    .padding(.vertical, 9)
+                } else {
+                    Image(systemName: systemImage)
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(isEmphasized ? palette.accent : fgColor.opacity(0.90))
+                        .frame(width: 40, height: 38)
+                }
             }
-            .padding(.horizontal, horizontalPadding)
-            .padding(.vertical, 9)
+            .contentShape(Capsule())
+
+            #if compiler(>=6.2)
+            if #available(iOS 26.0, *) {
+                let tint: Color? = {
+                    if let activeCustomBg {
+                        return activeCustomBg.opacity(0.38)
+                    }
+                    if isEmphasized {
+                        return palette.accent.opacity(0.16)
+                    }
+                    return palette.mode != .dynamic ? palette.surfaceTint.opacity(palette.isLight ? 0.22 : 0.28) : nil
+                }()
+                let glass: Glass = tint != nil ? .regular.tint(tint!).interactive() : .regular.interactive()
+                if hasTitle {
+                    label.glassEffect(glass, in: Capsule())
+                } else {
+                    label.glassEffect(glass, in: Circle())
+                }
+            } else {
+                legacyReaderDockCapsule(label: label, activeCustomBg: activeCustomBg, isLightDock: isLightDock)
+            }
+            #else
+            legacyReaderDockCapsule(label: label, activeCustomBg: activeCustomBg, isLightDock: isLightDock)
+            #endif
+        }
+        .buttonStyle(GlassPressButtonStyle())
+        .accessibilityLabel(accessibilityLabel)
+    }
+
+    @ViewBuilder
+    private func legacyReaderDockCapsule<L: View>(label: L, activeCustomBg: Color?, isLightDock: Bool) -> some View {
+        label
             .background {
                 ZStack {
                     Capsule().fill(.regularMaterial)
@@ -582,17 +628,15 @@ struct ReaderView: View {
                     )
             }
             .shadow(color: .black.opacity(isLightDock ? 0.10 : 0.32), radius: 12, x: 0, y: 5)
-            .contentShape(Capsule())
-        }
-        .buttonStyle(GlassPressButtonStyle())
     }
 
+    @ViewBuilder
     private func readerBottomGlassDock(tocTitle: String, respectCustomBottomBg: Bool = true) -> some View {
-        HStack(spacing: 10) {
+        let row = HStack(spacing: 10) {
             readerGlassCapsulePill(
-                title: "返回",
+                title: nil,
+                accessibilityLabel: "返回",
                 systemImage: "chevron.left",
-                horizontalPadding: 14,
                 respectCustomBottomBg: respectCustomBottomBg
             ) {
                 flushProgressNow()
@@ -601,6 +645,7 @@ struct ReaderView: View {
 
             readerGlassCapsulePill(
                 title: tocTitle,
+                accessibilityLabel: "目录",
                 systemImage: "list.bullet",
                 isEmphasized: true,
                 horizontalPadding: 16,
@@ -610,15 +655,27 @@ struct ReaderView: View {
             }
 
             readerGlassCapsulePill(
-                title: "设置",
+                title: nil,
+                accessibilityLabel: "设置",
                 systemImage: "slider.horizontal.3",
-                horizontalPadding: 14,
                 respectCustomBottomBg: respectCustomBottomBg
             ) {
                 showPrefsSheet = true
             }
         }
         .padding(.horizontal, 12)
+
+        #if compiler(>=6.2)
+        if #available(iOS 26.0, *) {
+            GlassEffectContainer(spacing: 10) {
+                row
+            }
+        } else {
+            row
+        }
+        #else
+        row
+        #endif
     }
 
     private var readerTopBar: some View {
@@ -641,8 +698,7 @@ struct ReaderView: View {
                 .foregroundStyle(readerSecondaryColor)
                 .padding(.horizontal, 10)
                 .padding(.vertical, 5)
-                .background(.ultraThinMaterial, in: Capsule())
-                .overlay(Capsule().strokeBorder(readerTextColor.opacity(0.12), lineWidth: 0.6))
+                .appleLiquidGlassCapsule(interactive: false)
 
             if book.format.uppercased() == "PDF" {
                 Button {
@@ -653,8 +709,7 @@ struct ReaderView: View {
                         .foregroundStyle(readerTextColor)
                         .padding(.horizontal, 10)
                         .padding(.vertical, 5)
-                        .background(.ultraThinMaterial, in: Capsule())
-                        .overlay(Capsule().strokeBorder(readerTextColor.opacity(0.12), lineWidth: 0.6))
+                        .appleLiquidGlassCapsule()
                 }
                 .buttonStyle(GlassPressButtonStyle())
             }
@@ -1099,8 +1154,7 @@ struct ReaderView: View {
                             .font(.caption.weight(.medium))
                             .padding(.horizontal, 10)
                             .padding(.vertical, 5)
-                            .background(.ultraThinMaterial, in: Capsule())
-                            .overlay(Capsule().strokeBorder(.white.opacity(0.32), lineWidth: 0.6))
+                            .appleLiquidGlassCapsule()
                     }
                     .buttonStyle(GlassPressButtonStyle())
                 }
@@ -1168,7 +1222,7 @@ struct ReaderView: View {
                 .padding(.horizontal, 16)
 
                 readerBottomGlassDock(
-                    tocTitle: "目录 · \(pdfCurrentPage + 1)/\(totalPages)",
+                    tocTitle: "\(pdfCurrentPage + 1)/\(totalPages)",
                     respectCustomBottomBg: false
                 )
             }
@@ -1234,7 +1288,7 @@ struct ReaderView: View {
         guard !units.isEmpty else { return }
         let anchor = UnitPoint(x: 0.5, y: Swift.min(1.0, Swift.max(0.0, settings.readingPositionBias)))
         if animated {
-            withAnimation(AppMotion.panelSpring) {
+            withAnimation(.spring(response: 0.44, dampingFraction: 0.92)) {
                 proxy.scrollTo(safeIndex, anchor: anchor)
             }
         } else {

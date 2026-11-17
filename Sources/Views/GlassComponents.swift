@@ -239,6 +239,22 @@ struct GlassCard<Content: View>: View {
 
     var body: some View {
         let shape = RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+        #if compiler(>=6.2)
+        if #available(iOS 26.0, *), customFill == nil {
+            let effectiveTint: Color? = tintColor ?? (palette.mode != .dynamic ? palette.surfaceTint.opacity(palette.isLight ? 0.24 : 0.28) : nil)
+            let glass: Glass = effectiveTint != nil ? .regular.tint(effectiveTint!) : .regular
+            content()
+                .glassEffect(glass, in: shape)
+        } else {
+            legacyGlassBody(shape: shape)
+        }
+        #else
+        legacyGlassBody(shape: shape)
+        #endif
+    }
+
+    @ViewBuilder
+    private func legacyGlassBody(shape: RoundedRectangle) -> some View {
         content()
             .background {
                 ZStack {
@@ -314,6 +330,22 @@ struct GlassGroupedCard<Content: View>: View {
     }
 
     var body: some View {
+        #if compiler(>=6.2)
+        if #available(iOS 26.0, *) {
+            let effectiveTint: Color? = tintColor ?? (palette.mode != .dynamic ? palette.surfaceTint.opacity(palette.isLight ? 0.20 : 0.24) : nil)
+            let glass: Glass = effectiveTint != nil ? .regular.tint(effectiveTint!) : .regular
+            content()
+                .glassEffect(glass, in: shape)
+        } else {
+            legacyGroupedBody
+        }
+        #else
+        legacyGroupedBody
+        #endif
+    }
+
+    @ViewBuilder
+    private var legacyGroupedBody: some View {
         content()
             .background {
                 ZStack {
@@ -601,6 +633,103 @@ struct MinimalTagPill: View {
 
 // MARK: - Apple Liquid Glass Interactive Controls
 
+extension View {
+    @ViewBuilder
+    func adaptiveGlassNavBar() -> some View {
+        #if compiler(>=6.2)
+        if #available(iOS 26.0, *) {
+            self
+        } else {
+            self.toolbarBackground(.ultraThinMaterial, for: .navigationBar)
+        }
+        #else
+        self.toolbarBackground(.ultraThinMaterial, for: .navigationBar)
+        #endif
+    }
+
+    @ViewBuilder
+    func appleLiquidGlassCapsule(tint: Color? = nil, interactive: Bool = true) -> some View {
+        #if compiler(>=6.2)
+        if #available(iOS 26.0, *) {
+            let base: Glass = tint != nil ? .regular.tint(tint!) : .regular
+            let glass: Glass = interactive ? base.interactive() : base
+            self.glassEffect(glass, in: Capsule())
+        } else {
+            self
+                .background(.ultraThinMaterial, in: Capsule())
+                .overlay(Capsule().strokeBorder(.white.opacity(0.35), lineWidth: 0.7))
+        }
+        #else
+        self
+            .background(.ultraThinMaterial, in: Capsule())
+            .overlay(Capsule().strokeBorder(.white.opacity(0.35), lineWidth: 0.7))
+        #endif
+    }
+
+    @ViewBuilder
+    func appleLiquidGlassRect(cornerRadius: CGFloat, tint: Color? = nil, interactive: Bool = false) -> some View {
+        let shape = RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+        #if compiler(>=6.2)
+        if #available(iOS 26.0, *) {
+            let base: Glass = tint != nil ? .regular.tint(tint!) : .regular
+            let glass: Glass = interactive ? base.interactive() : base
+            self.glassEffect(glass, in: shape)
+        } else {
+            self
+                .background(.ultraThinMaterial, in: shape)
+                .overlay(shape.strokeBorder(.white.opacity(0.28), lineWidth: 0.7))
+        }
+        #else
+        self
+            .background(.ultraThinMaterial, in: shape)
+            .overlay(shape.strokeBorder(.white.opacity(0.28), lineWidth: 0.7))
+        #endif
+    }
+
+    @ViewBuilder
+    func adaptiveGlassSheetBackground(palette: AppThemePalette) -> some View {
+        #if compiler(>=6.2)
+        if #available(iOS 26.0, *) {
+            self
+        } else {
+            self.presentationBackground {
+                ZStack {
+                    Rectangle().fill(.regularMaterial)
+                    if palette.mode != .dynamic {
+                        Rectangle().fill(palette.surfaceTint.opacity(palette.isLight ? 0.28 : 0.24))
+                    }
+                    LinearGradient(
+                        colors: [
+                            .white.opacity(palette.isLight ? 0.28 : 0.08),
+                            .clear
+                        ],
+                        startPoint: .top,
+                        endPoint: .center
+                    )
+                }
+            }
+        }
+        #else
+        self.presentationBackground {
+            ZStack {
+                Rectangle().fill(.regularMaterial)
+                if palette.mode != .dynamic {
+                    Rectangle().fill(palette.surfaceTint.opacity(palette.isLight ? 0.28 : 0.24))
+                }
+                LinearGradient(
+                    colors: [
+                        .white.opacity(palette.isLight ? 0.28 : 0.08),
+                        .clear
+                    ],
+                    startPoint: .top,
+                    endPoint: .center
+                )
+            }
+        }
+        #endif
+    }
+}
+
 struct GlassSegmentedControl<Option: Hashable>: View {
     let options: [(value: Option, title: String)]
     @Binding var selection: Option
@@ -610,6 +739,20 @@ struct GlassSegmentedControl<Option: Hashable>: View {
     @Environment(\.appPalette) private var palette
 
     var body: some View {
+        #if compiler(>=6.2)
+        if #available(iOS 26.0, *) {
+            segmentRow(useNativeGlass: true)
+                .glassEffect(.regular.interactive(), in: Capsule())
+        } else {
+            legacySegmentedBody
+        }
+        #else
+        legacySegmentedBody
+        #endif
+    }
+
+    @ViewBuilder
+    private func segmentRow(useNativeGlass: Bool) -> some View {
         HStack(spacing: 2) {
             ForEach(options, id: \.value) { item in
                 let isSelected = selection == item.value
@@ -624,41 +767,54 @@ struct GlassSegmentedControl<Option: Hashable>: View {
                         .font(compact ? .caption.weight(isSelected ? .semibold : .medium) : .subheadline.weight(isSelected ? .semibold : .medium))
                         .lineLimit(1)
                         .minimumScaleFactor(0.85)
-                        .foregroundStyle(isSelected ? palette.accent : .secondary)
+                        .foregroundStyle(isSelected ? palette.accent : .primary.opacity(0.68))
                         .frame(maxWidth: .infinity)
                         .padding(.horizontal, compact ? 9 : 12)
                         .padding(.vertical, compact ? 5 : 7)
                         .background {
                             if isSelected {
-                                Capsule()
-                                    .fill(.regularMaterial)
-                                    .overlay {
-                                        Capsule().fill(
-                                            LinearGradient(
-                                                colors: [
-                                                    .white.opacity(palette.isLight ? 0.62 : 0.24),
-                                                    palette.accent.opacity(palette.isLight ? 0.12 : 0.22)
-                                                ],
-                                                startPoint: .top,
-                                                endPoint: .bottom
+                                if useNativeGlass {
+                                    Capsule()
+                                        .fill(palette.isLight ? Color.white.opacity(0.76) : palette.accent.opacity(0.28))
+                                        .overlay {
+                                            Capsule().strokeBorder(
+                                                .white.opacity(palette.isLight ? 0.90 : 0.36),
+                                                lineWidth: 0.65
                                             )
-                                        )
-                                    }
-                                    .overlay {
-                                        Capsule().strokeBorder(
-                                            LinearGradient(
-                                                colors: [
-                                                    .white.opacity(palette.isLight ? 0.85 : 0.38),
-                                                    palette.accent.opacity(0.32)
-                                                ],
-                                                startPoint: .topLeading,
-                                                endPoint: .bottomTrailing
-                                            ),
-                                            lineWidth: 0.85
-                                        )
-                                    }
-                                    .shadow(color: .black.opacity(palette.isLight ? 0.08 : 0.24), radius: 5, x: 0, y: 2)
-                                    .matchedGeometryEffect(id: "glassSegmentIndicator", in: glassNamespace)
+                                        }
+                                        .shadow(color: .black.opacity(palette.isLight ? 0.08 : 0.22), radius: 5, x: 0, y: 2)
+                                        .matchedGeometryEffect(id: "glassSegmentIndicator", in: glassNamespace)
+                                } else {
+                                    Capsule()
+                                        .fill(.regularMaterial)
+                                        .overlay {
+                                            Capsule().fill(
+                                                LinearGradient(
+                                                    colors: [
+                                                        .white.opacity(palette.isLight ? 0.62 : 0.24),
+                                                        palette.accent.opacity(palette.isLight ? 0.12 : 0.22)
+                                                    ],
+                                                    startPoint: .top,
+                                                    endPoint: .bottom
+                                                )
+                                            )
+                                        }
+                                        .overlay {
+                                            Capsule().strokeBorder(
+                                                LinearGradient(
+                                                    colors: [
+                                                        .white.opacity(palette.isLight ? 0.85 : 0.38),
+                                                        palette.accent.opacity(0.32)
+                                                    ],
+                                                    startPoint: .topLeading,
+                                                    endPoint: .bottomTrailing
+                                                ),
+                                                lineWidth: 0.85
+                                            )
+                                        }
+                                        .shadow(color: .black.opacity(palette.isLight ? 0.08 : 0.24), radius: 5, x: 0, y: 2)
+                                        .matchedGeometryEffect(id: "glassSegmentIndicator", in: glassNamespace)
+                                }
                             }
                         }
                         .contentShape(Capsule())
@@ -667,26 +823,31 @@ struct GlassSegmentedControl<Option: Hashable>: View {
             }
         }
         .padding(3)
-        .background {
-            ZStack {
-                Capsule().fill(.ultraThinMaterial)
-                Capsule().fill(palette.surfaceTint.opacity(palette.isLight ? 0.26 : 0.30))
+    }
+
+    @ViewBuilder
+    private var legacySegmentedBody: some View {
+        segmentRow(useNativeGlass: false)
+            .background {
+                ZStack {
+                    Capsule().fill(.ultraThinMaterial)
+                    Capsule().fill(palette.surfaceTint.opacity(palette.isLight ? 0.26 : 0.30))
+                }
             }
-        }
-        .overlay {
-            Capsule().strokeBorder(
-                LinearGradient(
-                    colors: [
-                        .white.opacity(palette.isLight ? 0.60 : 0.24),
-                        .white.opacity(0.06)
-                    ],
-                    startPoint: .topLeading,
-                    endPoint: .bottomTrailing
-                ),
-                lineWidth: 0.8
-            )
-        }
-        .shadow(color: .black.opacity(palette.isLight ? 0.05 : 0.18), radius: 6, x: 0, y: 2)
+            .overlay {
+                Capsule().strokeBorder(
+                    LinearGradient(
+                        colors: [
+                            .white.opacity(palette.isLight ? 0.60 : 0.24),
+                            .white.opacity(0.06)
+                        ],
+                        startPoint: .topLeading,
+                        endPoint: .bottomTrailing
+                    ),
+                    lineWidth: 0.8
+                )
+            }
+            .shadow(color: .black.opacity(palette.isLight ? 0.05 : 0.18), radius: 6, x: 0, y: 2)
     }
 }
 
@@ -710,6 +871,30 @@ struct GlassCircleIconButton: View {
 
     var body: some View {
         let activeTint = tintColor ?? palette.accent
+        #if compiler(>=6.2)
+        if #available(iOS 26.0, *) {
+            let glass: Glass = isActive
+                ? .regular.tint(activeTint.opacity(0.24)).interactive()
+                : .regular.interactive()
+            Button(action: action) {
+                Image(systemName: systemImage)
+                    .font(iconFont)
+                    .foregroundStyle(isActive ? activeTint : .primary)
+                    .frame(width: size, height: size)
+                    .contentShape(Circle())
+            }
+            .buttonStyle(.plain)
+            .glassEffect(glass, in: Circle())
+        } else {
+            legacyCircleBody(activeTint: activeTint)
+        }
+        #else
+        legacyCircleBody(activeTint: activeTint)
+        #endif
+    }
+
+    @ViewBuilder
+    private func legacyCircleBody(activeTint: Color) -> some View {
         Button(action: action) {
             Image(systemName: systemImage)
                 .font(iconFont)
@@ -755,6 +940,38 @@ struct GlassCapsuleChip: View {
 
     var body: some View {
         let activeTint = tintColor ?? palette.accent
+        #if compiler(>=6.2)
+        if #available(iOS 26.0, *) {
+            let glass: Glass = selected
+                ? .regular.tint(activeTint.opacity(0.24)).interactive()
+                : .regular.interactive()
+            Button(action: action) {
+                HStack(spacing: 4) {
+                    if let systemImage {
+                        Image(systemName: systemImage)
+                            .font(.caption2.weight(.semibold))
+                    }
+                    Text(title)
+                        .font(.caption.weight(selected ? .semibold : .medium))
+                        .lineLimit(1)
+                }
+                .foregroundStyle(selected ? activeTint : .primary)
+                .padding(.horizontal, 12)
+                .padding(.vertical, 6)
+                .contentShape(Capsule())
+            }
+            .buttonStyle(.plain)
+            .glassEffect(glass, in: Capsule())
+        } else {
+            legacyCapsuleBody(activeTint: activeTint)
+        }
+        #else
+        legacyCapsuleBody(activeTint: activeTint)
+        #endif
+    }
+
+    @ViewBuilder
+    private func legacyCapsuleBody(activeTint: Color) -> some View {
         Button(action: action) {
             HStack(spacing: 4) {
                 if let systemImage {
@@ -804,27 +1021,57 @@ struct GlassHorizontalPager<PageContent: View>: View {
     @ViewBuilder var pageContent: (Int) -> PageContent
 
     @State private var scrollPage: Int? = 0
+    @State private var measuredWidth: CGFloat = 0
 
     var body: some View {
-        ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: 0) {
-                ForEach(0..<pageCount, id: \.self) { idx in
-                    Group {
-                        if fillHeight {
-                            pageContent(idx)
-                                .containerRelativeFrame([.horizontal, .vertical])
-                        } else {
-                            pageContent(idx)
-                                .containerRelativeFrame(.horizontal)
+        Group {
+            if fillHeight {
+                GeometryReader { geo in
+                    let pageW = max(1, geo.size.width)
+                    let pageH = max(1, geo.size.height)
+                    ScrollView(.horizontal, showsIndicators: false) {
+                        HStack(spacing: 0) {
+                            ForEach(0..<pageCount, id: \.self) { idx in
+                                pageContent(idx)
+                                    .frame(width: pageW, height: pageH, alignment: .top)
+                                    .id(idx)
+                            }
+                        }
+                        .scrollTargetLayout()
+                    }
+                    .contentMargins(0, for: .scrollContent)
+                    .scrollTargetBehavior(.paging)
+                    .scrollPosition(id: $scrollPage)
+                }
+            } else {
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 0) {
+                        ForEach(0..<pageCount, id: \.self) { idx in
+                            Group {
+                                if measuredWidth > 1 {
+                                    pageContent(idx)
+                                        .frame(width: measuredWidth)
+                                } else {
+                                    pageContent(idx)
+                                        .containerRelativeFrame(.horizontal)
+                                }
+                            }
+                            .id(idx)
                         }
                     }
-                    .id(idx)
+                    .scrollTargetLayout()
+                }
+                .contentMargins(0, for: .scrollContent)
+                .fixedSize(horizontal: false, vertical: true)
+                .scrollTargetBehavior(.paging)
+                .scrollPosition(id: $scrollPage)
+                .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { w in
+                    if w > 1, abs(measuredWidth - w) > 0.5 {
+                        measuredWidth = w
+                    }
                 }
             }
-            .scrollTargetLayout()
         }
-        .scrollTargetBehavior(.paging)
-        .scrollPosition(id: $scrollPage)
         .onAppear {
             scrollPage = selection
         }
@@ -860,6 +1107,25 @@ struct LiquidGlassTabBar: View {
     @Environment(\.appPalette) private var palette
 
     var body: some View {
+        #if compiler(>=6.2)
+        if #available(iOS 26.0, *) {
+            GlassEffectContainer(spacing: 8) {
+                tabBarItemsRow(useNativeGlass: true)
+                    .padding(5)
+                    .glassEffect(.regular.interactive(), in: Capsule())
+            }
+            .padding(.horizontal, 16)
+            .padding(.bottom, 6)
+        } else {
+            legacyTabBar
+        }
+        #else
+        legacyTabBar
+        #endif
+    }
+
+    @ViewBuilder
+    private func tabBarItemsRow(useNativeGlass: Bool) -> some View {
         HStack(spacing: 4) {
             ForEach(items) { item in
                 let isSelected = selectedTab == item.id
@@ -878,40 +1144,52 @@ struct LiquidGlassTabBar: View {
                             .font(.system(size: 10.5, weight: isSelected ? .semibold : .medium))
                             .lineLimit(1)
                     }
-                    .foregroundStyle(isSelected ? palette.accent : .secondary)
+                    .foregroundStyle(isSelected ? palette.accent : .primary.opacity(0.68))
                     .frame(maxWidth: .infinity)
                     .frame(height: 52)
                     .background {
                         if isSelected {
-                            Capsule()
-                                .fill(.regularMaterial)
-                                .overlay {
-                                    Capsule().fill(
-                                        LinearGradient(
-                                            colors: [
-                                                .white.opacity(palette.isLight ? 0.65 : 0.22),
-                                                palette.accent.opacity(palette.isLight ? 0.14 : 0.24)
-                                            ],
-                                            startPoint: .top,
-                                            endPoint: .bottom
+                            if useNativeGlass {
+                                Capsule()
+                                    .fill(palette.accent.opacity(palette.isLight ? 0.14 : 0.24))
+                                    .overlay {
+                                        Capsule().strokeBorder(
+                                            .white.opacity(palette.isLight ? 0.72 : 0.32),
+                                            lineWidth: 0.65
                                         )
-                                    )
-                                }
-                                .overlay {
-                                    Capsule().strokeBorder(
-                                        LinearGradient(
-                                            colors: [
-                                                .white.opacity(palette.isLight ? 0.85 : 0.42),
-                                                palette.accent.opacity(0.35)
-                                            ],
-                                            startPoint: .topLeading,
-                                            endPoint: .bottomTrailing
-                                        ),
-                                        lineWidth: 0.9
-                                    )
-                                }
-                                .shadow(color: palette.accent.opacity(palette.isLight ? 0.14 : 0.24), radius: 8, x: 0, y: 3)
-                                .matchedGeometryEffect(id: "liquidGlassTabPill", in: tabNamespace)
+                                    }
+                                    .matchedGeometryEffect(id: "liquidGlassTabPill", in: tabNamespace)
+                            } else {
+                                Capsule()
+                                    .fill(.regularMaterial)
+                                    .overlay {
+                                        Capsule().fill(
+                                            LinearGradient(
+                                                colors: [
+                                                    .white.opacity(palette.isLight ? 0.65 : 0.22),
+                                                    palette.accent.opacity(palette.isLight ? 0.14 : 0.24)
+                                                ],
+                                                startPoint: .top,
+                                                endPoint: .bottom
+                                            )
+                                        )
+                                    }
+                                    .overlay {
+                                        Capsule().strokeBorder(
+                                            LinearGradient(
+                                                colors: [
+                                                    .white.opacity(palette.isLight ? 0.85 : 0.42),
+                                                    palette.accent.opacity(0.35)
+                                                ],
+                                                startPoint: .topLeading,
+                                                endPoint: .bottomTrailing
+                                            ),
+                                            lineWidth: 0.9
+                                        )
+                                    }
+                                    .shadow(color: palette.accent.opacity(palette.isLight ? 0.14 : 0.24), radius: 8, x: 0, y: 3)
+                                    .matchedGeometryEffect(id: "liquidGlassTabPill", in: tabNamespace)
+                            }
                         }
                     }
                     .contentShape(Capsule())
@@ -919,39 +1197,44 @@ struct LiquidGlassTabBar: View {
                 .buttonStyle(GlassPressButtonStyle())
             }
         }
-        .padding(5)
-        .background {
-            ZStack {
-                Capsule().fill(.ultraThinMaterial)
-                Capsule().fill(
+    }
+
+    @ViewBuilder
+    private var legacyTabBar: some View {
+        tabBarItemsRow(useNativeGlass: false)
+            .padding(5)
+            .background {
+                ZStack {
+                    Capsule().fill(.ultraThinMaterial)
+                    Capsule().fill(
+                        LinearGradient(
+                            colors: [
+                                palette.surfaceTint.opacity(palette.isLight ? 0.42 : 0.48),
+                                palette.surfaceTint.opacity(palette.isLight ? 0.24 : 0.30)
+                            ],
+                            startPoint: .top,
+                            endPoint: .bottom
+                        )
+                    )
+                }
+            }
+            .overlay {
+                Capsule().strokeBorder(
                     LinearGradient(
                         colors: [
-                            palette.surfaceTint.opacity(palette.isLight ? 0.42 : 0.48),
-                            palette.surfaceTint.opacity(palette.isLight ? 0.24 : 0.30)
+                            .white.opacity(palette.isLight ? 0.78 : 0.32),
+                            .white.opacity(palette.isLight ? 0.22 : 0.08),
+                            .white.opacity(0.04)
                         ],
-                        startPoint: .top,
-                        endPoint: .bottom
-                    )
+                        startPoint: .topLeading,
+                        endPoint: .bottomTrailing
+                    ),
+                    lineWidth: 1.0
                 )
             }
-        }
-        .overlay {
-            Capsule().strokeBorder(
-                LinearGradient(
-                    colors: [
-                        .white.opacity(palette.isLight ? 0.78 : 0.32),
-                        .white.opacity(palette.isLight ? 0.22 : 0.08),
-                        .white.opacity(0.04)
-                    ],
-                    startPoint: .topLeading,
-                    endPoint: .bottomTrailing
-                ),
-                lineWidth: 1.0
-            )
-        }
-        .shadow(color: .black.opacity(palette.isLight ? 0.12 : 0.36), radius: 18, x: 0, y: 8)
-        .padding(.horizontal, 16)
-        .padding(.bottom, 6)
+            .shadow(color: .black.opacity(palette.isLight ? 0.12 : 0.36), radius: 18, x: 0, y: 8)
+            .padding(.horizontal, 16)
+            .padding(.bottom, 6)
     }
 }
 

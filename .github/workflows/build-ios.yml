@@ -35,11 +35,11 @@ jobs:
               if r.get("isAvailable", True) and "iOS" in r.get("name", "") and r.get("version")
           ]
 
-          candidates = [
-              "/Applications/Xcode_16.4.app",
-              "/Applications/Xcode_16.3.app",
-              "/Applications/Xcode.app",
-          ] + sorted(glob.glob("/Applications/Xcode_*.app"), reverse=True)
+          candidates = (
+              sorted(glob.glob("/Applications/Xcode_26*.app"), reverse=True)
+              + ["/Applications/Xcode.app", "/Applications/Xcode_16.4.app", "/Applications/Xcode_16.3.app"]
+              + sorted(glob.glob("/Applications/Xcode_*.app"), reverse=True)
+          )
 
           seen = set()
           ordered = []
