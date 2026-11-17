@@ -94,7 +94,7 @@ enum TranslationService {
         }
     }
 
-    static func downloadEcdictMini(into db: DatabaseManager) async throws -> Int {
+    static func downloadEcdictMini() async throws -> [DictionaryEntry] {
         let urls = [
             "https://ghfast.top/https://raw.githubusercontent.com/skywind3000/ECDICT/master/ecdict.mini.csv",
             "https://raw.githubusercontent.com/skywind3000/ECDICT/master/ecdict.mini.csv"
@@ -138,8 +138,7 @@ enum TranslationService {
                 }
             }
         }
-        db.bulkInsertDictionary(entries)
-        return entries.count
+        return entries
     }
 
     private static func parseCsvCols(_ line: String) -> [String] {

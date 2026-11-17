@@ -35,8 +35,9 @@ struct SettingsView: View {
                         dictMessage = "正在下载开源 ECDICT 常用词库..."
                         Task {
                             do {
-                                let count = try await TranslationService.downloadEcdictMini(into: db)
-                                dictMessage = "导入成功！新增/更新 \(count) 词"
+                                let entries = try await TranslationService.downloadEcdictMini()
+                                db.bulkInsertDictionary(entries)
+                                dictMessage = "导入成功！新增/更新 \(entries.count) 词"
                             } catch {
                                 dictMessage = "下载失败：\(error.localizedDescription)"
                             }
