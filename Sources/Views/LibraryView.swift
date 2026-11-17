@@ -58,8 +58,13 @@ struct LibraryView: View {
     @State private var heroPageIndex = 0
     @State private var collectionTab = 0 // 0 = 本地藏书, 1 = 在线书库
     @State private var expandedFolderIds: Set<Int64> = []
-    @State private var isHeroCollapsed = false
-    @State private var lastHeroCollapseToggle: Date = .distantPast
+    @State private var localScrollOffset: CGFloat = 0
+    @State private var opdsScrollOffset: CGFloat = 0
+    @State private var expandedHeroHeight: CGFloat = 198
+    @State private var compactHeroHeight: CGFloat = 68
+    @State private var sectionBarHeight: CGFloat = 44
+    @State private var manualHeroOverride: Bool? = nil
+    @State private var overrideAnchorOffset: CGFloat = 0
 
     // Import & Folder Modals
     @State private var showFileImporter = false
@@ -171,7 +176,8 @@ struct LibraryView: View {
                     heroPageIndex = max(0, recentBooks.count - 1)
                 }
                 if recentBooks.isEmpty {
-                    isHeroCollapsed = false
+                    manualHeroOverride = nil
+                    localScrollOffset = 0
                 }
             }
             .onChange(of: db.folders.map(\.id)) { _, validIds in
@@ -182,12 +188,46 @@ struct LibraryView: View {
             }
     }
 
-    private func setHeroCollapsed(_ collapsed: Bool) {
-        guard isHeroCollapsed != collapsed else { return }
-        lastHeroCollapseToggle = Date()
-        withAnimation(.snappy(duration: 0.28, extraBounce: 0)) {
-            isHeroCollapsed = collapsed
+    private var hasRecentBooks: Bool {
+        !recentBooks.isEmpty
+    }
+
+    private var heroCollapseDelta: CGFloat {
+        guard hasRecentBooks else { return 0 }
+        return max(1, expandedHeroHeight - compactHeroHeight)
+    }
+
+    private var activeScrollOffset: CGFloat {
+        collectionTab == 0 ? localScrollOffset : opdsScrollOffset
+    }
+
+    private var heroCollapseProgress: CGFloat {
+        guard hasRecentBooks else { return 0 }
+        if let manualHeroOverride {
+            return manualHeroOverride ? 1 : 0
         }
+        return min(1, max(0, activeScrollOffset / heroCollapseDelta))
+    }
+
+    private var pinnedTopInsetHeight: CGFloat {
+        (hasRecentBooks ? compactHeroHeight : 0) + sectionBarHeight
+    }
+
+    private var currentHeroVisibleHeight: CGFloat {
+        guard hasRecentBooks else { return 0 }
+        return max(compactHeroHeight, expandedHeroHeight - heroCollapseProgress * heroCollapseDelta)
+    }
+
+    private var currentOverlayHeaderHeight: CGFloat {
+        currentHeroVisibleHeight + sectionBarHeight
+    }
+
+    private var listTopCollapsePadding: CGFloat {
+        guard hasRecentBooks else { return 0 }
+        if manualHeroOverride == true {
+            return 0
+        }
+        return heroCollapseDelta
     }
 
     @ViewBuilder
@@ -219,9 +259,27 @@ struct LibraryView: View {
                 .padding(.top, 8)
                 .padding(.bottom, 6)
 
-                heroContinueSection
-                sectionHeaderBar
-                collectionPager
+                ZStack(alignment: .top) {
+                    collectionPager
+
+                    VStack(spacing: 0) {
+                        heroContinueSection
+                        sectionHeaderBar
+                    }
+                    .background {
+                        LinearGradient(
+                            colors: [
+                                palette.backgroundBase.opacity(0.95),
+                                palette.backgroundBase.opacity(0.88),
+                                palette.backgroundBase.opacity(0.0)
+                            ],
+                            startPoint: .top,
+                            endPoint: .bottom
+                        )
+                        .allowsHitTesting(false)
+                    }
+                    .zIndex(2)
+                }
             }
 
             if let modal = folderModal {
@@ -292,56 +350,82 @@ struct LibraryView: View {
     private var heroContinueSection: some View {
         if !recentBooks.isEmpty {
             let safePage = min(heroPageIndex, recentBooks.count - 1)
-            Group {
-                if isHeroCollapsed {
-                    let activeBook = recentBooks[safePage]
-                    CompactHeroContinueBar(
-                        book: activeBook,
-                        isCaching: BookCache.shared.cachingHints.contains(activeBook.filePathHint),
-                        onExpand: { setHeroCollapsed(false) },
-                        onOpen: { onOpenBook(activeBook) }
-                    )
-                    .padding(.horizontal, 16)
-                    .padding(.top, 4)
-                    .transition(.opacity)
-                } else {
-                    VStack(spacing: 6) {
-                        GlassHorizontalPager(selection: $heroPageIndex, pageCount: recentBooks.count, fillHeight: false) { idx in
-                            if idx < recentBooks.count {
-                                let book = recentBooks[idx]
-                                HeroContinueCard(
-                                    book: book,
-                                    isCaching: BookCache.shared.cachingHints.contains(book.filePathHint),
-                                    onOpen: { onOpenBook(book) },
-                                    onDelete: { deletingBook = book }
-                                )
-                                .padding(.horizontal, 16)
-                            }
-                        }
+            let activeBook = recentBooks[safePage]
+            let p = heroCollapseProgress
+            let expandedOpacity = max(0, 1.0 - p * 1.55)
+            let compactOpacity = max(0, min(1, (p - 0.35) / 0.65))
 
-                        if recentBooks.count > 1 {
-                            MinimalPagerDots(
-                                pageCount: recentBooks.count,
-                                currentPage: safePage,
-                                onSelectPage: { target in
-                                    withAnimation(AppMotion.tabSpring) {
-                                        heroPageIndex = target
-                                    }
-                                }
+            ZStack(alignment: .top) {
+                CompactHeroContinueBar(
+                    book: activeBook,
+                    isCaching: BookCache.shared.cachingHints.contains(activeBook.filePathHint),
+                    onExpand: {
+                        overrideAnchorOffset = activeScrollOffset
+                        withAnimation(AppMotion.panelSpring) {
+                            manualHeroOverride = false
+                        }
+                    },
+                    onOpen: { onOpenBook(activeBook) }
+                )
+                .padding(.horizontal, 16)
+                .padding(.top, 4)
+                .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { h in
+                    if h > 10, abs(compactHeroHeight - h) > 0.5 {
+                        compactHeroHeight = h
+                    }
+                }
+                .opacity(compactOpacity)
+                .scaleEffect(0.97 + 0.03 * p, anchor: .top)
+                .allowsHitTesting(p >= 0.45)
+
+                VStack(spacing: 6) {
+                    GlassHorizontalPager(selection: $heroPageIndex, pageCount: recentBooks.count, fillHeight: false) { idx in
+                        if idx < recentBooks.count {
+                            let book = recentBooks[idx]
+                            HeroContinueCard(
+                                book: book,
+                                isCaching: BookCache.shared.cachingHints.contains(book.filePathHint),
+                                onOpen: { onOpenBook(book) },
+                                onDelete: { deletingBook = book }
                             )
-                            .frame(height: 16)
+                            .padding(.horizontal, 16)
                         }
                     }
-                    .padding(.top, 6)
-                    .transition(.opacity)
+
+                    if recentBooks.count > 1 {
+                        MinimalPagerDots(
+                            pageCount: recentBooks.count,
+                            currentPage: safePage,
+                            onSelectPage: { target in
+                                withAnimation(AppMotion.tabSpring) {
+                                    heroPageIndex = target
+                                }
+                            }
+                        )
+                        .frame(height: 16)
+                    }
                 }
+                .padding(.top, 6)
+                .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { h in
+                    if h > 10, abs(expandedHeroHeight - h) > 0.5 {
+                        expandedHeroHeight = h
+                    }
+                }
+                .opacity(expandedOpacity)
+                .scaleEffect(1.0 - 0.04 * p, anchor: .top)
+                .offset(y: -p * 14)
+                .allowsHitTesting(p < 0.45)
             }
+            .frame(height: currentHeroVisibleHeight, alignment: .top)
             .clipped()
             .simultaneousGesture(
                 DragGesture(minimumDistance: 24)
                     .onEnded { value in
                         if abs(value.translation.height) > abs(value.translation.width) * 1.4 {
-                            setHeroCollapsed(value.translation.height < 0)
+                            overrideAnchorOffset = activeScrollOffset
+                            withAnimation(AppMotion.panelSpring) {
+                                manualHeroOverride = value.translation.height < 0
+                            }
                         }
                     }
             )
@@ -402,6 +486,11 @@ struct LibraryView: View {
         .padding(.horizontal, 16)
         .padding(.top, 4)
         .padding(.bottom, 4)
+        .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { h in
+            if h > 10, abs(sectionBarHeight - h) > 0.5 {
+                sectionBarHeight = h
+            }
+        }
     }
 
     @ViewBuilder
@@ -411,8 +500,11 @@ struct LibraryView: View {
                 localShelfView
             } else {
                 OpdsOnlineLibraryPane(
+                    pinnedTopInsetHeight: pinnedTopInsetHeight,
+                    listTopCollapsePadding: listTopCollapsePadding,
+                    overlayHeaderHeight: currentOverlayHeaderHeight,
                     onScrollOffsetChange: { offset in
-                        handleScrollCollapse(offset)
+                        updateScrollOffset(offset, forTab: 1)
                     },
                     onOpenBook: onOpenBook
                 )
@@ -420,12 +512,26 @@ struct LibraryView: View {
         }
     }
 
-    private func handleScrollCollapse(_ offset: CGFloat) {
-        guard Date().timeIntervalSince(lastHeroCollapseToggle) > 0.34 else { return }
-        if offset > 32, !isHeroCollapsed {
-            setHeroCollapsed(true)
-        } else if offset < -46, isHeroCollapsed {
-            setHeroCollapsed(false)
+    private func updateScrollOffset(_ newOffset: CGFloat, forTab tab: Int) {
+        if tab == 0 {
+            if abs(localScrollOffset - newOffset) > 0.25 {
+                localScrollOffset = newOffset
+            }
+        } else {
+            if abs(opdsScrollOffset - newOffset) > 0.25 {
+                opdsScrollOffset = newOffset
+            }
+        }
+        if tab == collectionTab, let override = manualHeroOverride {
+            if override == false && abs(newOffset - overrideAnchorOffset) > 16 {
+                withAnimation(AppMotion.panelSpring) {
+                    manualHeroOverride = nil
+                }
+            } else if override == true && (newOffset < -18 || (overrideAnchorOffset > 20 && newOffset < 4)) {
+                withAnimation(AppMotion.panelSpring) {
+                    manualHeroOverride = nil
+                }
+            }
         }
     }
 
@@ -455,6 +561,7 @@ struct LibraryView: View {
                 Spacer()
             }
             .padding(24)
+            .padding(.top, currentOverlayHeaderHeight)
         } else if db.folders.isEmpty && rootShelfBooks.isEmpty {
             VStack(spacing: 10) {
                 Spacer()
@@ -465,16 +572,43 @@ struct LibraryView: View {
                 Spacer()
             }
             .padding(24)
+            .padding(.top, currentOverlayHeaderHeight)
         } else {
             ScrollView {
-                LazyVStack(spacing: 10) {
+                LazyVStack(spacing: 10, pinnedViews: [.sectionHeaders]) {
 
-                    // Folders (non-sticky, unified expand/collapse animation, actions in "..." menu)
+                    // Folders (sticky section headers stay pinned cleanly below sectionHeaderBar when expanded)
                     ForEach(Array(db.folders.enumerated()), id: \.element.id) { idx, folder in
                         let folderBooks = folderBooksMap[folder.id] ?? []
                         let isExpanded = expandedFolderIds.contains(folder.id)
 
-                        VStack(spacing: 5) {
+                        Section {
+                            if isExpanded {
+                                VStack(spacing: 4) {
+                                    if folderBooks.isEmpty {
+                                        GlassCard(cornerRadius: 14) {
+                                            Text("此文件夹暂无书籍，可点击右上角菜单导入或添加")
+                                                .font(.caption)
+                                                .foregroundStyle(.secondary)
+                                                .frame(maxWidth: .infinity)
+                                                .padding(.vertical, 12)
+                                                .padding(.horizontal, 12)
+                                        }
+                                    } else {
+                                        ForEach(Array(folderBooks.enumerated()), id: \.element.id) { bIdx, book in
+                                            shelfBookRow(
+                                                book: book,
+                                                index: bIdx,
+                                                count: folderBooks.count,
+                                                inFolder: true
+                                            )
+                                        }
+                                    }
+                                }
+                                .padding(.leading, 10)
+                                .transition(AppMotion.panelTransition)
+                            }
+                        } header: {
                             FolderHeaderGlassCard(
                                 folder: folder,
                                 bookCount: folderBooks.count,
@@ -509,59 +643,35 @@ struct LibraryView: View {
                                     deletingFolder = folder
                                 }
                             )
-
-                            if isExpanded {
-                                VStack(spacing: 4) {
-                                    if folderBooks.isEmpty {
-                                        GlassCard(cornerRadius: 14) {
-                                            Text("此文件夹暂无书籍，可点击右上角菜单导入或添加")
-                                                .font(.caption)
-                                                .foregroundStyle(.secondary)
-                                                .frame(maxWidth: .infinity)
-                                                .padding(.vertical, 12)
-                                                .padding(.horizontal, 12)
-                                        }
-                                    } else {
-                                        ForEach(Array(folderBooks.enumerated()), id: \.element.id) { bIdx, book in
-                                            shelfBookRow(
-                                                book: book,
-                                                index: bIdx,
-                                                count: folderBooks.count,
-                                                inFolder: true
-                                            )
-                                        }
-                                    }
-                                }
-                                .padding(.leading, 10)
-                                .transition(AppMotion.panelTransition)
-                            }
                         }
-                        .clipped()
                     }
 
-                    // Root Books
+                    // Root Books in a separate headerless Section so expanded folders unpin before root books
                     if !rootShelfBooks.isEmpty {
-                        VStack(spacing: 4) {
-                            ForEach(Array(rootShelfBooks.enumerated()), id: \.element.id) { idx, book in
-                                shelfBookRow(
-                                    book: book,
-                                    index: idx,
-                                    count: rootShelfBooks.count,
-                                    inFolder: false
-                                )
+                        Section {
+                            VStack(spacing: 4) {
+                                ForEach(Array(rootShelfBooks.enumerated()), id: \.element.id) { idx, book in
+                                    shelfBookRow(
+                                        book: book,
+                                        index: idx,
+                                        count: rootShelfBooks.count,
+                                        inFolder: false
+                                    )
+                                }
                             }
+                            .padding(.top, db.folders.isEmpty ? 0 : 4)
                         }
-                        .padding(.top, db.folders.isEmpty ? 0 : 4)
                     }
                 }
                 .padding(.horizontal, 16)
-                .padding(.top, 4)
+                .padding(.top, listTopCollapsePadding + 4)
                 .padding(.bottom, 12)
             }
+            .safeAreaPadding(.top, pinnedTopInsetHeight)
             .onScrollGeometryChange(for: CGFloat.self) { geo in
                 geo.contentOffset.y + geo.contentInsets.top
             } action: { _, newOffset in
-                handleScrollCollapse(newOffset)
+                updateScrollOffset(newOffset, forTab: 0)
             }
         }
     }
@@ -1337,6 +1447,9 @@ struct OpdsOnlineLibraryPane: View {
     @Environment(SettingsStore.self) private var settingsStore
     @Environment(\.appPalette) private var palette
 
+    var pinnedTopInsetHeight: CGFloat = 0
+    var listTopCollapsePadding: CGFloat = 0
+    var overlayHeaderHeight: CGFloat = 0
     var onScrollOffsetChange: (CGFloat) -> Void = { _ in }
     var onOpenBook: (BookItem) -> Void
 
@@ -1553,6 +1666,7 @@ struct OpdsOnlineLibraryPane: View {
                     Spacer()
                 }
                 .padding(24)
+                .padding(.top, overlayHeaderHeight)
             } else if isLoading || errorMsg != nil || entries.isEmpty {
                 VStack(spacing: 8) {
                     opdsControlsHeader
@@ -1593,6 +1707,7 @@ struct OpdsOnlineLibraryPane: View {
                         Spacer()
                     }
                 }
+                .padding(.top, overlayHeaderHeight)
             } else {
                 ScrollView {
                     LazyVStack(spacing: 8) {
@@ -1645,7 +1760,9 @@ struct OpdsOnlineLibraryPane: View {
                         .padding(.horizontal, 16)
                         .padding(.bottom, 12)
                     }
+                    .padding(.top, listTopCollapsePadding)
                 }
+                .safeAreaPadding(.top, pinnedTopInsetHeight)
                 .onScrollGeometryChange(for: CGFloat.self) { geo in
                     geo.contentOffset.y + geo.contentInsets.top
                 } action: { _, newOffset in

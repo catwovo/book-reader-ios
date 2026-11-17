@@ -745,7 +745,6 @@ struct GlassSegmentedControl<Option: Hashable>: View {
     @Binding var selection: Option
     var compact: Bool = false
 
-    @Namespace private var glassNamespace
     @Environment(\.appPalette) private var palette
     @State private var trackSize: CGSize = .zero
     @State private var isPressing: Bool = false
@@ -783,38 +782,45 @@ struct GlassSegmentedControl<Option: Hashable>: View {
     var body: some View {
         #if compiler(>=6.2)
         if #available(iOS 26.0, *) {
-            GlassEffectContainer(spacing: 4) {
-                interactiveTrack(useNativeGlass: true)
-            }
+            segmentedTrackBody(useNativeGlass: true)
         } else {
-            legacySegmentedBody
+            segmentedTrackBody(useNativeGlass: false)
         }
         #else
-        legacySegmentedBody
+        segmentedTrackBody(useNativeGlass: false)
         #endif
     }
 
     @ViewBuilder
-    private func interactiveTrack(useNativeGlass: Bool) -> some View {
+    private func segmentedTrackBody(useNativeGlass: Bool) -> some View {
         let pillWidth = max(20, segmentWidth)
         let pillHeight = max(22, trackSize.height - trackInset * 2)
         let offsetX = trackSize.width > 1 ? (activeCenterX - trackSize.width * 0.5) : 0
 
         ZStack {
-            if useNativeGlass, trackSize.width > 1 {
-                #if compiler(>=6.2)
-                if #available(iOS 26.0, *) {
-                    Capsule()
-                        .fill(.clear)
-                        .frame(width: trackSize.width, height: trackSize.height)
-                        .glassEffect(.regular, in: Capsule())
-                        .zIndex(0)
-                        .allowsHitTesting(false)
+            // 1. Recessed frosted track well (never wrapped inside GlassEffectContainer with the thumb)
+            Capsule()
+                .fill(.ultraThinMaterial)
+                .overlay {
+                    Capsule().fill(Color.primary.opacity(palette.isLight ? 0.055 : 0.16))
                 }
-                #endif
-            }
+                .overlay {
+                    Capsule().strokeBorder(
+                        LinearGradient(
+                            colors: [
+                                Color.black.opacity(palette.isLight ? 0.08 : 0.24),
+                                Color.white.opacity(palette.isLight ? 0.55 : 0.14)
+                            ],
+                            startPoint: .top,
+                            endPoint: .bottom
+                        ),
+                        lineWidth: 0.7
+                    )
+                }
+                .zIndex(0)
+                .allowsHitTesting(false)
 
-            // Sliding Liquid Glass droplet: rests behind selected label, lifts above labels on finger press/drag
+            // 2. Elevated Liquid Glass pill (zIndex 1 above track at rest; zIndex 3 above labels when pressing/dragging)
             if trackSize.width > 1 {
                 slidingGlassPill(
                     useNativeGlass: useNativeGlass,
@@ -822,10 +828,11 @@ struct GlassSegmentedControl<Option: Hashable>: View {
                     height: pillHeight
                 )
                 .offset(x: offsetX)
-                .zIndex(isPressing ? 3 : 0.5)
+                .zIndex(isPressing ? 3 : 1)
                 .allowsHitTesting(false)
             }
 
+            // 3. Segment labels (always above resting pill, refracted under the lifted droplet on press)
             HStack(spacing: 0) {
                 ForEach(Array(options.enumerated()), id: \.element.value) { idx, item in
                     let isLit = hoveredIndex == idx
@@ -833,7 +840,7 @@ struct GlassSegmentedControl<Option: Hashable>: View {
                         .font(compact ? .caption.weight(isLit ? .semibold : .medium) : .subheadline.weight(isLit ? .semibold : .medium))
                         .lineLimit(1)
                         .minimumScaleFactor(0.85)
-                        .foregroundStyle(isLit ? palette.accent : .primary.opacity(0.70))
+                        .foregroundStyle(isLit ? palette.accent : .primary.opacity(0.68))
                         .scaleEffect(isPressing && isLit ? 1.04 : 1.0)
                         .frame(maxWidth: .infinity)
                         .padding(.horizontal, compact ? 8 : 12)
@@ -842,8 +849,9 @@ struct GlassSegmentedControl<Option: Hashable>: View {
             }
             .padding(trackInset)
             .allowsHitTesting(false)
-            .zIndex(1)
+            .zIndex(2)
         }
+        .fixedSize(horizontal: false, vertical: true)
         .onGeometryChange(for: CGSize.self) { $0.size } action: { newSize in
             trackSize = newSize
         }
@@ -898,31 +906,62 @@ struct GlassSegmentedControl<Option: Hashable>: View {
 
     @ViewBuilder
     private func slidingGlassPill(useNativeGlass: Bool, width: CGFloat, height: CGFloat) -> some View {
-        let basePill = Capsule()
-            .fill(.clear)
-            .frame(width: width, height: height)
+        let restingCoreColor = palette.isLight
+            ? Color.white.opacity(0.76)
+            : palette.accent.opacity(0.24)
+        let restingSheen = LinearGradient(
+            colors: [
+                .white.opacity(palette.isLight ? 0.65 : 0.20),
+                palette.accent.opacity(palette.isLight ? 0.08 : 0.14)
+            ],
+            startPoint: .top,
+            endPoint: .bottom
+        )
+        let rimGradient = LinearGradient(
+            colors: [
+                .white.opacity(palette.isLight ? 0.92 : 0.46),
+                palette.accent.opacity(0.32)
+            ],
+            startPoint: .topLeading,
+            endPoint: .bottomTrailing
+        )
 
         if useNativeGlass {
             #if compiler(>=6.2)
             if #available(iOS 26.0, *) {
                 let glass: Glass = isPressing
                     ? .clear.interactive()
-                    : .regular.tint(palette.accent.opacity(palette.isLight ? 0.16 : 0.28))
-                basePill
-                    .glassEffect(glass, in: Capsule())
-                    .glassEffectID("glassSegmentIndicator", in: glassNamespace)
+                    : .regular.tint(palette.accent.opacity(palette.isLight ? 0.12 : 0.24))
+                Capsule()
+                    .fill(isPressing ? Color.white.opacity(0.06) : restingCoreColor)
+                    .frame(width: width, height: height)
                     .overlay {
-                        if isPressing {
-                            Capsule()
-                                .strokeBorder(.white.opacity(palette.isLight ? 0.85 : 0.45), lineWidth: 0.85)
+                        if !isPressing {
+                            Capsule().fill(restingSheen)
                         }
+                    }
+                    .glassEffect(glass, in: Capsule())
+                    .overlay {
+                        Capsule().strokeBorder(
+                            isPressing
+                                ? LinearGradient(
+                                    colors: [
+                                        .white.opacity(palette.isLight ? 0.92 : 0.56),
+                                        .white.opacity(0.18)
+                                    ],
+                                    startPoint: .topLeading,
+                                    endPoint: .bottomTrailing
+                                )
+                                : rimGradient,
+                            lineWidth: isPressing ? 1.0 : 0.85
+                        )
                     }
                     .scaleEffect(x: isPressing ? (1.08 + dragStretch) : 1.0, y: isPressing ? 1.22 : 1.0)
                     .shadow(
-                        color: .black.opacity(isPressing ? (palette.isLight ? 0.14 : 0.34) : 0),
-                        radius: isPressing ? 10 : 0,
+                        color: .black.opacity(isPressing ? (palette.isLight ? 0.16 : 0.36) : (palette.isLight ? 0.10 : 0.28)),
+                        radius: isPressing ? 10 : 5,
                         x: 0,
-                        y: isPressing ? 4 : 0
+                        y: isPressing ? 4 : 2
                     )
             }
             #endif
@@ -934,7 +973,7 @@ struct GlassSegmentedControl<Option: Hashable>: View {
                     Capsule().fill(
                         LinearGradient(
                             colors: [
-                                .white.opacity(isPressing ? 0.55 : (palette.isLight ? 0.62 : 0.24)),
+                                .white.opacity(isPressing ? 0.52 : (palette.isLight ? 0.72 : 0.26)),
                                 palette.accent.opacity(isPressing ? 0.08 : (palette.isLight ? 0.12 : 0.22))
                             ],
                             startPoint: .top,
@@ -943,51 +982,16 @@ struct GlassSegmentedControl<Option: Hashable>: View {
                     )
                 }
                 .overlay {
-                    Capsule().strokeBorder(
-                        LinearGradient(
-                            colors: [
-                                .white.opacity(palette.isLight ? 0.88 : 0.42),
-                                palette.accent.opacity(0.32)
-                            ],
-                            startPoint: .topLeading,
-                            endPoint: .bottomTrailing
-                        ),
-                        lineWidth: isPressing ? 1.1 : 0.85
-                    )
+                    Capsule().strokeBorder(rimGradient, lineWidth: isPressing ? 1.1 : 0.85)
                 }
                 .scaleEffect(x: isPressing ? (1.08 + dragStretch) : 1.0, y: isPressing ? 1.18 : 1.0)
                 .shadow(
-                    color: .black.opacity(palette.isLight ? (isPressing ? 0.14 : 0.08) : 0.28),
+                    color: .black.opacity(palette.isLight ? (isPressing ? 0.15 : 0.09) : 0.30),
                     radius: isPressing ? 9 : 5,
                     x: 0,
                     y: isPressing ? 4 : 2
                 )
         }
-    }
-
-    @ViewBuilder
-    private var legacySegmentedBody: some View {
-        interactiveTrack(useNativeGlass: false)
-            .background {
-                ZStack {
-                    Capsule().fill(.ultraThinMaterial)
-                    Capsule().fill(palette.surfaceTint.opacity(palette.isLight ? 0.26 : 0.30))
-                }
-            }
-            .overlay {
-                Capsule().strokeBorder(
-                    LinearGradient(
-                        colors: [
-                            .white.opacity(palette.isLight ? 0.60 : 0.24),
-                            .white.opacity(0.06)
-                        ],
-                        startPoint: .topLeading,
-                        endPoint: .bottomTrailing
-                    ),
-                    lineWidth: 0.8
-                )
-            }
-            .shadow(color: .black.opacity(palette.isLight ? 0.05 : 0.18), radius: 6, x: 0, y: 2)
     }
 }
 

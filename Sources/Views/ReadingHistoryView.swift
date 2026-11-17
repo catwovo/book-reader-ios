@@ -117,8 +117,13 @@ struct ReadingHistoryView: View {
     @State private var bookMonth: Int = HistoryDateHelper.calendar.component(.month, from: Date())
     @State private var bookListYear: Int = HistoryDateHelper.calendar.component(.year, from: Date())
     @State private var expandedBookDates: Set<String> = []
-    @State private var isBookHeaderCollapsed = false
-    @State private var lastBookCollapseToggle: Date = .distantPast
+    @State private var bookScrollOffset: CGFloat = 0
+    @State private var bookManualOverride: Bool? = nil
+    @State private var bookOverrideAnchor: CGFloat = 0
+    @State private var bookExpandedCard1H: CGFloat = 76
+    @State private var bookCompactCard1H: CGFloat = 36
+    @State private var bookExpandedCard2H: CGFloat = 152
+    @State private var bookCompactCard2H: CGFloat = 46
 
     // Vocab state
     @State private var vocabPeriod = 0 // 0 = 按日, 1 = 按周, 2 = 按月, 3 = 按年
@@ -128,8 +133,13 @@ struct ReadingHistoryView: View {
     @State private var vocabMonth: Int = HistoryDateHelper.calendar.component(.month, from: Date())
     @State private var vocabListYear: Int = HistoryDateHelper.calendar.component(.year, from: Date())
     @State private var expandedVocabDates: Set<String> = []
-    @State private var isVocabHeaderCollapsed = false
-    @State private var lastVocabCollapseToggle: Date = .distantPast
+    @State private var vocabScrollOffset: CGFloat = 0
+    @State private var vocabManualOverride: Bool? = nil
+    @State private var vocabOverrideAnchor: CGFloat = 0
+    @State private var vocabExpandedCard1H: CGFloat = 114
+    @State private var vocabCompactCard1H: CGFloat = 36
+    @State private var vocabExpandedCard2H: CGFloat = 186
+    @State private var vocabCompactCard2H: CGFloat = 46
 
     private var today: Date {
         HistoryDateHelper.calendar.startOfDay(for: Date())
@@ -372,6 +382,60 @@ struct ReadingHistoryView: View {
         max(1, activeVocabMonths.map { $0.1.total }.max() ?? 1)
     }
 
+    private var bookExpandedHeaderTotalH: CGFloat {
+        8 + bookExpandedCard1H + 8 + bookExpandedCard2H + 8
+    }
+
+    private var bookCompactHeaderTotalH: CGFloat {
+        4 + bookCompactCard1H + 6 + bookCompactCard2H + 8
+    }
+
+    private var bookCollapseDelta: CGFloat {
+        max(1, bookExpandedHeaderTotalH - bookCompactHeaderTotalH)
+    }
+
+    private var bookCollapseProgress: CGFloat {
+        if let bookManualOverride {
+            return bookManualOverride ? 1 : 0
+        }
+        return min(1, max(0, bookScrollOffset / bookCollapseDelta))
+    }
+
+    private var isBookMostlyCollapsed: Bool {
+        bookCollapseProgress > 0.65
+    }
+
+    private var bookListTopPadding: CGFloat {
+        bookManualOverride == true ? 0 : bookCollapseDelta
+    }
+
+    private var vocabExpandedHeaderTotalH: CGFloat {
+        8 + vocabExpandedCard1H + 8 + vocabExpandedCard2H + 8
+    }
+
+    private var vocabCompactHeaderTotalH: CGFloat {
+        4 + vocabCompactCard1H + 6 + vocabCompactCard2H + 8
+    }
+
+    private var vocabCollapseDelta: CGFloat {
+        max(1, vocabExpandedHeaderTotalH - vocabCompactHeaderTotalH)
+    }
+
+    private var vocabCollapseProgress: CGFloat {
+        if let vocabManualOverride {
+            return vocabManualOverride ? 1 : 0
+        }
+        return min(1, max(0, vocabScrollOffset / vocabCollapseDelta))
+    }
+
+    private var isVocabMostlyCollapsed: Bool {
+        vocabCollapseProgress > 0.65
+    }
+
+    private var vocabListTopPadding: CGFloat {
+        vocabManualOverride == true ? 0 : vocabCollapseDelta
+    }
+
     var body: some View {
         ZStack {
             AmbientGlassBackdrop(themeMode: settingsStore.settings.themeMode)
@@ -381,15 +445,16 @@ struct ReadingHistoryView: View {
                 HStack(spacing: 8) {
                     Text("阅读记录")
                         .font(.title2.bold())
+                    let currentCollapsed = category == 0 ? isBookMostlyCollapsed : isVocabMostlyCollapsed
                     GlassCircleIconButton(
-                        systemImage: (category == 0 ? isBookHeaderCollapsed : isVocabHeaderCollapsed) ? "chevron.down" : "chevron.up",
+                        systemImage: currentCollapsed ? "chevron.down" : "chevron.up",
                         size: 26,
                         iconFont: .caption2.bold()
                     ) {
                         if category == 0 {
-                            setBookHeaderCollapsed(!isBookHeaderCollapsed)
+                            toggleBookManualCollapse(!isBookMostlyCollapsed)
                         } else {
-                            setVocabHeaderCollapsed(!isVocabHeaderCollapsed)
+                            toggleVocabManualCollapse(!isVocabMostlyCollapsed)
                         }
                     }
                     Spacer()
@@ -415,36 +480,90 @@ struct ReadingHistoryView: View {
         }
     }
 
-    private func setBookHeaderCollapsed(_ collapsed: Bool) {
-        guard isBookHeaderCollapsed != collapsed else { return }
-        lastBookCollapseToggle = Date()
-        withAnimation(.snappy(duration: 0.28, extraBounce: 0)) {
-            isBookHeaderCollapsed = collapsed
+    private func toggleBookManualCollapse(_ collapsed: Bool) {
+        bookOverrideAnchor = bookScrollOffset
+        withAnimation(AppMotion.panelSpring) {
+            if !collapsed && bookScrollOffset <= 2 {
+                bookManualOverride = nil
+            } else {
+                bookManualOverride = collapsed
+            }
         }
     }
 
-    private func setVocabHeaderCollapsed(_ collapsed: Bool) {
-        guard isVocabHeaderCollapsed != collapsed else { return }
-        lastVocabCollapseToggle = Date()
-        withAnimation(.snappy(duration: 0.28, extraBounce: 0)) {
-            isVocabHeaderCollapsed = collapsed
+    private func toggleVocabManualCollapse(_ collapsed: Bool) {
+        vocabOverrideAnchor = vocabScrollOffset
+        withAnimation(AppMotion.panelSpring) {
+            if !collapsed && vocabScrollOffset <= 2 {
+                vocabManualOverride = nil
+            } else {
+                vocabManualOverride = collapsed
+            }
+        }
+    }
+
+    private func handleBookScrollOffset(_ newOffset: CGFloat) {
+        if abs(bookScrollOffset - newOffset) > 0.25 {
+            bookScrollOffset = newOffset
+        }
+        if let override = bookManualOverride {
+            if override == false && abs(newOffset - bookOverrideAnchor) > 16 {
+                withAnimation(AppMotion.panelSpring) {
+                    bookManualOverride = nil
+                }
+            } else if override == true && (newOffset < -18 || (bookOverrideAnchor > 20 && newOffset < 4)) {
+                withAnimation(AppMotion.panelSpring) {
+                    bookManualOverride = nil
+                }
+            }
+        }
+    }
+
+    private func handleVocabScrollOffset(_ newOffset: CGFloat) {
+        if abs(vocabScrollOffset - newOffset) > 0.25 {
+            vocabScrollOffset = newOffset
+        }
+        if let override = vocabManualOverride {
+            if override == false && abs(newOffset - vocabOverrideAnchor) > 16 {
+                withAnimation(AppMotion.panelSpring) {
+                    vocabManualOverride = nil
+                }
+            } else if override == true && (newOffset < -18 || (vocabOverrideAnchor > 20 && newOffset < 4)) {
+                withAnimation(AppMotion.panelSpring) {
+                    vocabManualOverride = nil
+                }
+            }
         }
     }
 
     // MARK: - Book History Page
 
     private var bookHistoryPage: some View {
-        VStack(spacing: 0) {
-            bookHistoryFloatingHeader(collapsed: isBookHeaderCollapsed)
+        ZStack(alignment: .top) {
+            bookHistoryScrollList
+
+            bookHistoryFloatingHeader
+                .background {
+                    LinearGradient(
+                        colors: [
+                            palette.backgroundBase.opacity(0.95),
+                            palette.backgroundBase.opacity(0.88),
+                            palette.backgroundBase.opacity(0.0)
+                        ],
+                        startPoint: .top,
+                        endPoint: .bottom
+                    )
+                    .allowsHitTesting(false)
+                }
                 .simultaneousGesture(
                     DragGesture(minimumDistance: 24)
                         .onEnded { value in
                             if abs(value.translation.height) > abs(value.translation.width) * 1.4 {
-                                setBookHeaderCollapsed(value.translation.height < 0)
+                                toggleBookManualCollapse(value.translation.height < 0)
                             }
                         }
                 )
-            bookHistoryScrollList
+                .zIndex(2)
         }
     }
 
@@ -523,65 +642,84 @@ struct ReadingHistoryView: View {
                 }
             }
             .padding(.horizontal, 16)
-            .padding(.top, 4)
+            .padding(.top, bookListTopPadding + 4)
             .padding(.bottom, 16)
         }
+        .safeAreaPadding(.top, bookCompactHeaderTotalH)
         .onScrollGeometryChange(for: CGFloat.self) { geo in
             geo.contentOffset.y + geo.contentInsets.top
         } action: { _, newOffset in
-            guard Date().timeIntervalSince(lastBookCollapseToggle) > 0.34 else { return }
-            if newOffset > 32, !isBookHeaderCollapsed {
-                setBookHeaderCollapsed(true)
-            } else if newOffset < -46, isBookHeaderCollapsed {
-                setBookHeaderCollapsed(false)
-            }
+            handleBookScrollOffset(newOffset)
         }
     }
 
     @ViewBuilder
-    private func bookHistoryFloatingHeader(collapsed: Bool) -> some View {
-        VStack(spacing: collapsed ? 6 : 8) {
-            // Card 1: Overall Book Summary (always full-width)
-            GlassCard(cornerRadius: collapsed ? 15 : 20) {
-                Group {
-                    if collapsed {
-                        HStack(spacing: 0) {
-                            CompactInlineStat(label: "累计", value: "\(totalDaysRead) 天")
-                            HistoryStatDivider(height: 14)
-                            CompactInlineStat(label: "连续", value: "\(streakDays) 天")
-                            HistoryStatDivider(height: 14)
-                            CompactInlineStat(label: "总计", value: formatDuration(totalSecondsAll))
-                        }
-                        .frame(maxWidth: .infinity)
-                        .padding(.horizontal, 12)
-                        .padding(.vertical, 9)
-                    } else {
-                        HStack(spacing: 0) {
-                            HistorySummaryStatItem(label: "累计阅读", value: "\(totalDaysRead) 天", systemImage: "calendar", iconColor: palette.accent)
-                            HistoryStatDivider()
-                            HistorySummaryStatItem(label: "连续打卡", value: "\(streakDays) 天", systemImage: "flame.fill", iconColor: .orange)
-                            HistoryStatDivider()
-                            HistorySummaryStatItem(label: "累计时长", value: formatDuration(totalSecondsAll), systemImage: "clock.fill", iconColor: .teal)
-                        }
-                        .frame(maxWidth: .infinity)
-                        .padding(.horizontal, 12)
-                        .padding(.vertical, 15)
+    private var bookHistoryFloatingHeader: some View {
+        let p = bookCollapseProgress
+        let expandedOpacity = max(0, 1.0 - p * 1.55)
+        let compactOpacity = max(0, min(1, (p - 0.35) / 0.65))
+        let card1Height = max(bookCompactCard1H, bookExpandedCard1H - p * (bookExpandedCard1H - bookCompactCard1H))
+        let card2Height = max(bookCompactCard2H, bookExpandedCard2H - p * (bookExpandedCard2H - bookCompactCard2H))
+        let cardSpacing = 8 - p * 2
+        let topPad = 8 - p * 4
+        let compactPeriodTitle = bookPeriod == 0
+            ? "\(bookYear)年\(bookMonth)月 · \(formatDuration(monthSeconds))"
+            : "\(bookListYear)年 · \(formatDuration(yearSeconds))"
+
+        VStack(spacing: cardSpacing) {
+            // Card 1: Overall Book Summary (always full-width, zero teardown)
+            GlassCard(cornerRadius: 18) {
+                ZStack(alignment: .center) {
+                    HStack(spacing: 0) {
+                        CompactInlineStat(label: "累计", value: "\(totalDaysRead) 天")
+                        HistoryStatDivider(height: 14)
+                        CompactInlineStat(label: "连续", value: "\(streakDays) 天")
+                        HistoryStatDivider(height: 14)
+                        CompactInlineStat(label: "总计", value: formatDuration(totalSecondsAll))
                     }
+                    .frame(maxWidth: .infinity)
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 9)
+                    .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { h in
+                        if h > 10, abs(bookCompactCard1H - h) > 0.5 {
+                            bookCompactCard1H = h
+                        }
+                    }
+                    .opacity(compactOpacity)
+
+                    HStack(spacing: 0) {
+                        HistorySummaryStatItem(label: "累计阅读", value: "\(totalDaysRead) 天", systemImage: "calendar", iconColor: palette.accent)
+                        HistoryStatDivider()
+                        HistorySummaryStatItem(label: "连续打卡", value: "\(streakDays) 天", systemImage: "flame.fill", iconColor: .orange)
+                        HistoryStatDivider()
+                        HistorySummaryStatItem(label: "累计时长", value: formatDuration(totalSecondsAll), systemImage: "clock.fill", iconColor: .teal)
+                    }
+                    .frame(maxWidth: .infinity)
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 15)
+                    .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { h in
+                        if h > 10, abs(bookExpandedCard1H - h) > 0.5 {
+                            bookExpandedCard1H = h
+                        }
+                    }
+                    .opacity(expandedOpacity)
                 }
+                .frame(maxWidth: .infinity)
+                .frame(height: card1Height, alignment: .center)
+                .clipped()
                 .contentShape(Rectangle())
                 .onTapGesture {
-                    if collapsed { setBookHeaderCollapsed(false) }
+                    if isBookMostlyCollapsed {
+                        toggleBookManualCollapse(false)
+                    }
                 }
             }
 
-            // Card 2: Swipeable Book Period Card (按月 <-> 按年)
-            GlassCard(cornerRadius: collapsed ? 15 : 20) {
-                if collapsed {
-                    let compactTitle = bookPeriod == 0
-                        ? "\(bookYear)年\(bookMonth)月 · \(formatDuration(monthSeconds))"
-                        : "\(bookListYear)年 · \(formatDuration(yearSeconds))"
+            // Card 2: Swipeable Book Period Card (按月 <-> 按年, pre-mounted for 120fps)
+            GlassCard(cornerRadius: 18) {
+                ZStack(alignment: .top) {
                     PeriodNavigatorRow(
-                        title: compactTitle,
+                        title: compactPeriodTitle,
                         onPrev: {
                             if bookPeriod == 0 {
                                 let shifted = HistoryDateHelper.shiftYearMonth(year: bookYear, month: bookMonth, delta: -1)
@@ -603,7 +741,14 @@ struct ReadingHistoryView: View {
                     )
                     .padding(.horizontal, 16)
                     .padding(.vertical, 8)
-                } else {
+                    .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { h in
+                        if h > 10, abs(bookCompactCard2H - h) > 0.5 {
+                            bookCompactCard2H = h
+                        }
+                    }
+                    .opacity(compactOpacity)
+                    .allowsHitTesting(p >= 0.45)
+
                     VStack(spacing: 10) {
                         GlassSegmentedControl(
                             titles: bookPeriodOptions,
@@ -653,28 +798,52 @@ struct ReadingHistoryView: View {
                         }
                     }
                     .padding(.vertical, 14)
+                    .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { h in
+                        if h > 10, abs(bookExpandedCard2H - h) > 0.5 {
+                            bookExpandedCard2H = h
+                        }
+                    }
+                    .opacity(expandedOpacity)
+                    .allowsHitTesting(p < 0.45)
                 }
+                .frame(maxWidth: .infinity)
+                .frame(height: card2Height, alignment: .top)
+                .clipped()
             }
         }
         .padding(.horizontal, 16)
-        .padding(.top, collapsed ? 4 : 8)
+        .padding(.top, topPad)
         .padding(.bottom, 8)
     }
 
     // MARK: - Vocab History Page
 
     private var vocabHistoryPage: some View {
-        VStack(spacing: 0) {
-            vocabHistoryFloatingHeader(collapsed: isVocabHeaderCollapsed)
+        ZStack(alignment: .top) {
+            vocabHistoryScrollList
+
+            vocabHistoryFloatingHeader
+                .background {
+                    LinearGradient(
+                        colors: [
+                            palette.backgroundBase.opacity(0.95),
+                            palette.backgroundBase.opacity(0.88),
+                            palette.backgroundBase.opacity(0.0)
+                        ],
+                        startPoint: .top,
+                        endPoint: .bottom
+                    )
+                    .allowsHitTesting(false)
+                }
                 .simultaneousGesture(
                     DragGesture(minimumDistance: 24)
                         .onEnded { value in
                             if abs(value.translation.height) > abs(value.translation.width) * 1.4 {
-                                setVocabHeaderCollapsed(value.translation.height < 0)
+                                toggleVocabManualCollapse(value.translation.height < 0)
                             }
                         }
                 )
-            vocabHistoryScrollList
+                .zIndex(2)
         }
     }
 
@@ -817,18 +986,14 @@ struct ReadingHistoryView: View {
                 }
             }
             .padding(.horizontal, 16)
-            .padding(.top, 4)
+            .padding(.top, vocabListTopPadding + 4)
             .padding(.bottom, 16)
         }
+        .safeAreaPadding(.top, vocabCompactHeaderTotalH)
         .onScrollGeometryChange(for: CGFloat.self) { geo in
             geo.contentOffset.y + geo.contentInsets.top
         } action: { _, newOffset in
-            guard Date().timeIntervalSince(lastVocabCollapseToggle) > 0.34 else { return }
-            if newOffset > 32, !isVocabHeaderCollapsed {
-                setVocabHeaderCollapsed(true)
-            } else if newOffset < -46, isVocabHeaderCollapsed {
-                setVocabHeaderCollapsed(false)
-            }
+            handleVocabScrollOffset(newOffset)
         }
     }
 
@@ -876,62 +1041,85 @@ struct ReadingHistoryView: View {
     }
 
     @ViewBuilder
-    private func vocabHistoryFloatingHeader(collapsed: Bool) -> some View {
-        VStack(spacing: collapsed ? 6 : 8) {
-            // Card 1: Overall Vocab Summary + Tri-color mastery bar (always full-width)
-            GlassCard(cornerRadius: collapsed ? 15 : 20) {
-                Group {
-                    if collapsed {
-                        HStack(spacing: 0) {
-                            CompactInlineStat(label: "生词", value: "\(db.vocabList.count) 词")
-                            HistoryStatDivider(height: 14)
-                            CompactInlineStat(label: "复习", value: "\(allVocabReviewTotals.total) 次")
-                            HistoryStatDivider(height: 14)
-                            CompactInlineStat(label: "已认识", value: "\(vocabPoolCounts.known) 词")
-                        }
-                        .frame(maxWidth: .infinity)
-                        .padding(.horizontal, 12)
-                        .padding(.vertical, 9)
-                    } else {
-                        VStack(spacing: 10) {
-                            HStack(spacing: 0) {
-                                HistorySummaryStatItem(label: "生词总量", value: "\(db.vocabList.count) 词", systemImage: "character.book.closed.fill", iconColor: palette.accent)
-                                HistoryStatDivider()
-                                HistorySummaryStatItem(label: "累计复习", value: "\(allVocabReviewTotals.total) 次", systemImage: "rectangle.stack.fill", iconColor: .orange)
-                                HistoryStatDivider()
-                                HistorySummaryStatItem(label: "已认识", value: "\(vocabPoolCounts.known) 词", systemImage: "checkmark.seal.fill", iconColor: .green)
-                            }
+    private var vocabHistoryFloatingHeader: some View {
+        let p = vocabCollapseProgress
+        let expandedOpacity = max(0, 1.0 - p * 1.55)
+        let compactOpacity = max(0, min(1, (p - 0.35) / 0.65))
+        let card1Height = max(vocabCompactCard1H, vocabExpandedCard1H - p * (vocabExpandedCard1H - vocabCompactCard1H))
+        let card2Height = max(vocabCompactCard2H, vocabExpandedCard2H - p * (vocabExpandedCard2H - vocabCompactCard2H))
+        let cardSpacing = 8 - p * 2
+        let topPad = 8 - p * 4
 
-                            if !db.vocabList.isEmpty {
-                                VStack(spacing: 8) {
-                                    TriColorVocabBar(
-                                        unknown: vocabPoolCounts.unknown,
-                                        fuzzy: vocabPoolCounts.fuzzy,
-                                        known: vocabPoolCounts.known,
-                                        height: 5
-                                    )
-                                    HStack(spacing: 16) {
-                                        MiniOptionBadge(text: "不认识 \(vocabPoolCounts.unknown)", dotColor: .red)
-                                        MiniOptionBadge(text: "模糊 \(vocabPoolCounts.fuzzy)", dotColor: .orange)
-                                        MiniOptionBadge(text: "已认识 \(vocabPoolCounts.known)", dotColor: palette.accent)
-                                    }
+        VStack(spacing: cardSpacing) {
+            // Card 1: Overall Vocab Summary + Tri-color mastery bar (always full-width, zero teardown)
+            GlassCard(cornerRadius: 18) {
+                ZStack(alignment: .center) {
+                    HStack(spacing: 0) {
+                        CompactInlineStat(label: "生词", value: "\(db.vocabList.count) 词")
+                        HistoryStatDivider(height: 14)
+                        CompactInlineStat(label: "复习", value: "\(allVocabReviewTotals.total) 次")
+                        HistoryStatDivider(height: 14)
+                        CompactInlineStat(label: "已认识", value: "\(vocabPoolCounts.known) 词")
+                    }
+                    .frame(maxWidth: .infinity)
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 9)
+                    .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { h in
+                        if h > 10, abs(vocabCompactCard1H - h) > 0.5 {
+                            vocabCompactCard1H = h
+                        }
+                    }
+                    .opacity(compactOpacity)
+
+                    VStack(spacing: 10) {
+                        HStack(spacing: 0) {
+                            HistorySummaryStatItem(label: "生词总量", value: "\(db.vocabList.count) 词", systemImage: "character.book.closed.fill", iconColor: palette.accent)
+                            HistoryStatDivider()
+                            HistorySummaryStatItem(label: "累计复习", value: "\(allVocabReviewTotals.total) 次", systemImage: "rectangle.stack.fill", iconColor: .orange)
+                            HistoryStatDivider()
+                            HistorySummaryStatItem(label: "已认识", value: "\(vocabPoolCounts.known) 词", systemImage: "checkmark.seal.fill", iconColor: .green)
+                        }
+
+                        if !db.vocabList.isEmpty {
+                            VStack(spacing: 8) {
+                                TriColorVocabBar(
+                                    unknown: vocabPoolCounts.unknown,
+                                    fuzzy: vocabPoolCounts.fuzzy,
+                                    known: vocabPoolCounts.known,
+                                    height: 5
+                                )
+                                HStack(spacing: 16) {
+                                    MiniOptionBadge(text: "不认识 \(vocabPoolCounts.unknown)", dotColor: .red)
+                                    MiniOptionBadge(text: "模糊 \(vocabPoolCounts.fuzzy)", dotColor: .orange)
+                                    MiniOptionBadge(text: "已认识 \(vocabPoolCounts.known)", dotColor: palette.accent)
                                 }
                             }
                         }
-                        .frame(maxWidth: .infinity)
-                        .padding(.horizontal, 16)
-                        .padding(.vertical, 15)
                     }
+                    .frame(maxWidth: .infinity)
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 15)
+                    .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { h in
+                        if h > 10, abs(vocabExpandedCard1H - h) > 0.5 {
+                            vocabExpandedCard1H = h
+                        }
+                    }
+                    .opacity(expandedOpacity)
                 }
+                .frame(maxWidth: .infinity)
+                .frame(height: card1Height, alignment: .center)
+                .clipped()
                 .contentShape(Rectangle())
                 .onTapGesture {
-                    if collapsed { setVocabHeaderCollapsed(false) }
+                    if isVocabMostlyCollapsed {
+                        toggleVocabManualCollapse(false)
+                    }
                 }
             }
 
-            // Card 2: Swipeable Vocab Period Card (按日 / 按周 / 按月 / 按年)
-            GlassCard(cornerRadius: collapsed ? 15 : 20) {
-                if collapsed {
+            // Card 2: Swipeable Vocab Period Card (按日 / 按周 / 按月 / 按年, pre-mounted for 120fps)
+            GlassCard(cornerRadius: 18) {
+                ZStack(alignment: .top) {
                     PeriodNavigatorRow(
                         title: compactVocabPeriodTitle,
                         onPrev: { shiftVocabPeriod(-1) },
@@ -939,7 +1127,14 @@ struct ReadingHistoryView: View {
                     )
                     .padding(.horizontal, 16)
                     .padding(.vertical, 8)
-                } else {
+                    .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { h in
+                        if h > 10, abs(vocabCompactCard2H - h) > 0.5 {
+                            vocabCompactCard2H = h
+                        }
+                    }
+                    .opacity(compactOpacity)
+                    .allowsHitTesting(p >= 0.45)
+
                     VStack(spacing: 10) {
                         GlassSegmentedControl(
                             titles: vocabPeriodOptions,
@@ -1034,11 +1229,21 @@ struct ReadingHistoryView: View {
                         }
                     }
                     .padding(.vertical, 14)
+                    .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { h in
+                        if h > 10, abs(vocabExpandedCard2H - h) > 0.5 {
+                            vocabExpandedCard2H = h
+                        }
+                    }
+                    .opacity(expandedOpacity)
+                    .allowsHitTesting(p < 0.45)
                 }
+                .frame(maxWidth: .infinity)
+                .frame(height: card2Height, alignment: .top)
+                .clipped()
             }
         }
         .padding(.horizontal, 16)
-        .padding(.top, collapsed ? 4 : 8)
+        .padding(.top, topPad)
         .padding(.bottom, 8)
     }
 }
