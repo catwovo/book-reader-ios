@@ -42,26 +42,31 @@ struct NotesAndVocabView: View {
 
     var body: some View {
         NavigationStack {
-            VStack(spacing: 0) {
-                Picker("分类", selection: $segment) {
-                    Text("句子 (\(filteredNotes.count))").tag(0)
-                    Text("词汇 (\(filteredVocab.count))").tag(1)
-                    Text("闪卡").tag(2)
-                }
-                .pickerStyle(.segmented)
-                .padding(.horizontal, 16)
-                .padding(.vertical, 8)
-                .onChange(of: segment) { _, _ in flipped = false }
+            ZStack {
+                AmbientGlassBackdrop()
 
-                if segment == 0 {
-                    notesList
-                } else if segment == 1 {
-                    vocabList
-                } else {
-                    flashcardView
+                VStack(spacing: 0) {
+                    Picker("分类", selection: $segment) {
+                        Text("句子 (\(filteredNotes.count))").tag(0)
+                        Text("词汇 (\(filteredVocab.count))").tag(1)
+                        Text("闪卡").tag(2)
+                    }
+                    .pickerStyle(.segmented)
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 8)
+                    .onChange(of: segment) { _, _ in flipped = false }
+
+                    if segment == 0 {
+                        notesList
+                    } else if segment == 1 {
+                        vocabList
+                    } else {
+                        flashcardView
+                    }
                 }
             }
             .navigationTitle("笔记与词库")
+            .toolbarBackground(.ultraThinMaterial, for: .navigationBar)
             .searchable(text: $searchText, prompt: "搜索句子、单词或释义")
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
@@ -75,6 +80,13 @@ struct NotesAndVocabView: View {
                             Button("全部次数 (≥1)") { minLookup = 1 }
                             Button("高频生词 (≥2)") { minLookup = 2 }
                             Button("核心难点 (≥3)") { minLookup = 3 }
+                            let knownIds = db.vocabList.filter { $0.familiarity >= 2 }.map(\.id)
+                            if !knownIds.isEmpty {
+                                Divider()
+                                Button("重置已掌握词汇 (\(knownIds.count)词)") {
+                                    db.resetKnownVocab(ids: knownIds)
+                                }
+                            }
                         }
                     } label: {
                         Image(systemName: "line.3.horizontal.decrease.circle")
@@ -120,55 +132,54 @@ struct NotesAndVocabView: View {
                     description: Text("阅读时点击译文卡片右上角「记笔记」即可收藏句子与批注")
                 )
             } else {
-                List {
-                    ForEach(filteredNotes) { note in
-                        VStack(alignment: .leading, spacing: 8) {
-                            Text("“\(note.sentenceText)”")
-                                .font(.subheadline.italic())
-                            if !note.sentenceTranslation.isEmpty {
-                                Text(note.sentenceTranslation)
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
-                            }
-                            if !note.noteText.isEmpty {
-                                Text(note.noteText)
-                                    .font(.footnote)
-                                    .padding(8)
-                                    .frame(maxWidth: .infinity, alignment: .leading)
-                                    .background(Color.accentColor.opacity(0.08))
-                                    .clipShape(RoundedRectangle(cornerRadius: 8))
-                            }
-                            HStack {
-                                Text("《\(note.bookTitle)》")
-                                    .font(.caption2)
-                                    .foregroundStyle(.secondary)
-                                Spacer()
-                                if let book = db.books.first(where: { $0.id == note.bookId }) {
-                                    Button("回到原书") {
-                                        onJumpToBook(book, note.chapterIndex, note.unitIndex)
+                ScrollView {
+                    LazyVStack(spacing: 12) {
+                        ForEach(filteredNotes) { note in
+                            GlassCard(cornerRadius: 18) {
+                                VStack(alignment: .leading, spacing: 8) {
+                                    Text("“\(note.sentenceText)”")
+                                        .font(.subheadline.italic())
+                                    if !note.sentenceTranslation.isEmpty {
+                                        Text(note.sentenceTranslation)
+                                            .font(.caption)
+                                            .foregroundStyle(.secondary)
                                     }
-                                    .font(.caption)
+                                    if !note.noteText.isEmpty {
+                                        Text(note.noteText)
+                                            .font(.footnote)
+                                            .padding(8)
+                                            .frame(maxWidth: .infinity, alignment: .leading)
+                                            .background(Color.accentColor.opacity(0.08))
+                                            .clipShape(RoundedRectangle(cornerRadius: 8))
+                                    }
+                                    HStack {
+                                        Text("《\(note.bookTitle)》")
+                                            .font(.caption2)
+                                            .foregroundStyle(.secondary)
+                                        Spacer()
+                                        Button("编辑") {
+                                            editDraft = note.noteText
+                                            editingNote = note
+                                        }
+                                        .font(.caption)
+                                        Button("删除", role: .destructive) {
+                                            db.deleteNote(id: note.id)
+                                        }
+                                        .font(.caption)
+                                        if let book = db.books.first(where: { $0.id == note.bookId }) {
+                                            Button("回到原书") {
+                                                onJumpToBook(book, note.chapterIndex, note.unitIndex)
+                                            }
+                                            .font(.caption.bold())
+                                        }
+                                    }
                                 }
+                                .padding(14)
                             }
-                        }
-                        .padding(.vertical, 4)
-                        .swipeActions(edge: .trailing) {
-                            Button(role: .destructive) {
-                                db.deleteNote(id: note.id)
-                            } label: {
-                                Label("删除", systemImage: "trash")
-                            }
-                            Button {
-                                editDraft = note.noteText
-                                editingNote = note
-                            } label: {
-                                Label("编辑", systemImage: "pencil")
-                            }
-                            .tint(.blue)
                         }
                     }
+                    .padding(16)
                 }
-                .listStyle(.insetGrouped)
             }
         }
     }
@@ -182,48 +193,51 @@ struct NotesAndVocabView: View {
                     description: Text("在阅读器中轻触任意英文单词即可自动收录")
                 )
             } else {
-                List {
-                    ForEach(filteredVocab) { item in
-                        VStack(alignment: .leading, spacing: 6) {
-                            HStack {
-                                Text(item.word)
-                                    .font(.headline)
-                                    .foregroundStyle(Color.accentColor)
-                                Text(item.phonetic)
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
-                                Button {
-                                    speech.speak(item.word)
-                                } label: {
-                                    Image(systemName: "speaker.wave.2")
-                                        .font(.caption)
+                ScrollView {
+                    LazyVStack(spacing: 10) {
+                        ForEach(filteredVocab) { item in
+                            GlassCard(cornerRadius: 16) {
+                                VStack(alignment: .leading, spacing: 6) {
+                                    HStack {
+                                        Text(item.word)
+                                            .font(.headline)
+                                            .foregroundStyle(Color.accentColor)
+                                        Text(item.phonetic)
+                                            .font(.caption)
+                                            .foregroundStyle(.secondary)
+                                        Button {
+                                            speech.speak(item.word)
+                                        } label: {
+                                            Image(systemName: "speaker.wave.2")
+                                                .font(.caption)
+                                        }
+                                        Spacer()
+                                        Text("×\(item.lookupCount)")
+                                            .font(.caption2.bold())
+                                            .padding(.horizontal, 8)
+                                            .padding(.vertical, 2)
+                                            .background(Color.accentColor.opacity(0.14))
+                                            .clipShape(Capsule())
+                                        Button(role: .destructive) {
+                                            db.deleteVocab(id: item.id)
+                                        } label: {
+                                            Image(systemName: "trash")
+                                                .font(.caption)
+                                        }
+                                    }
+                                    Text(item.translation).font(.subheadline)
+                                    if !item.contextSentence.isEmpty {
+                                        Text("“\(item.contextSentence)”")
+                                            .font(.caption.italic())
+                                            .foregroundStyle(.secondary)
+                                    }
                                 }
-                                Spacer()
-                                Text("×\(item.lookupCount)")
-                                    .font(.caption2.bold())
-                                    .padding(.horizontal, 8)
-                                    .padding(.vertical, 2)
-                                    .background(Color.accentColor.opacity(0.14))
-                                    .clipShape(Capsule())
-                            }
-                            Text(item.translation).font(.subheadline)
-                            if !item.contextSentence.isEmpty {
-                                Text("“\(item.contextSentence)”")
-                                    .font(.caption.italic())
-                                    .foregroundStyle(.secondary)
-                            }
-                        }
-                        .padding(.vertical, 4)
-                        .swipeActions {
-                            Button(role: .destructive) {
-                                db.deleteVocab(id: item.id)
-                            } label: {
-                                Label("删除", systemImage: "trash")
+                                .padding(14)
                             }
                         }
                     }
+                    .padding(16)
                 }
-                .listStyle(.insetGrouped)
             }
         }
     }
@@ -241,45 +255,44 @@ struct NotesAndVocabView: View {
                         .font(.caption)
                         .foregroundStyle(.secondary)
 
-                    VStack(spacing: 14) {
-                        Spacer()
-                        Text(card.word)
-                            .font(.largeTitle.bold())
-                            .foregroundStyle(Color.accentColor)
-                        HStack {
-                            Text(card.phonetic).foregroundStyle(.secondary)
-                            Button { speech.speak(card.word) } label: {
-                                Image(systemName: "speaker.wave.2.fill")
+                    GlassCard(cornerRadius: 26) {
+                        VStack(spacing: 14) {
+                            Spacer()
+                            Text(card.word)
+                                .font(.largeTitle.bold())
+                                .foregroundStyle(Color.accentColor)
+                            HStack {
+                                Text(card.phonetic).foregroundStyle(.secondary)
+                                Button { speech.speak(card.word) } label: {
+                                    Image(systemName: "speaker.wave.2.fill")
+                                }
                             }
-                        }
-                        if !card.contextSentence.isEmpty {
-                            Text("“\(card.contextSentence)”")
-                                .font(.subheadline.italic())
-                                .multilineTextAlignment(.center)
-                                .padding(.horizontal)
-                        }
-                        if flipped {
-                            Divider().padding(.vertical, 6)
-                            Text(card.translation)
-                                .font(.headline)
-                                .multilineTextAlignment(.center)
-                            if !card.contextTranslation.isEmpty {
-                                Text(card.contextTranslation)
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
+                            if !card.contextSentence.isEmpty {
+                                Text("“\(card.contextSentence)”")
+                                    .font(.subheadline.italic())
                                     .multilineTextAlignment(.center)
+                                    .padding(.horizontal)
                             }
+                            if flipped {
+                                Divider().padding(.vertical, 6)
+                                Text(card.translation)
+                                    .font(.headline)
+                                    .multilineTextAlignment(.center)
+                                if !card.contextTranslation.isEmpty {
+                                    Text(card.contextTranslation)
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                        .multilineTextAlignment(.center)
+                                }
+                            }
+                            Spacer()
+                            Text(flipped ? "点击下方评估掌握度" : "轻触卡片查看释义")
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
                         }
-                        Spacer()
-                        Text(flipped ? "点击下方评估掌握度" : "轻触卡片查看释义")
-                            .font(.caption2)
-                            .foregroundStyle(.secondary)
+                        .padding(24)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
                     }
-                    .padding(24)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-                    .background(Color(.secondarySystemGroupedBackground))
-                    .clipShape(RoundedRectangle(cornerRadius: 24, style: .continuous))
-                    .shadow(color: .black.opacity(0.06), radius: 12, y: 4)
                     .onTapGesture {
                         withAnimation(.spring(duration: 0.3)) { flipped.toggle() }
                     }

@@ -5,6 +5,7 @@ struct BookReaderApp: App {
     @State private var db = DatabaseManager()
     @State private var settingsStore = SettingsStore()
     @State private var speech = SpeechManager()
+    @State private var feedbackPlayer = StepFeedbackPlayer()
 
     @State private var activeBook: BookItem?
     @State private var parsedBook: ParsedBook?
@@ -55,6 +56,7 @@ struct BookReaderApp: App {
             .environment(db)
             .environment(settingsStore)
             .environment(speech)
+            .environment(feedbackPlayer)
             .preferredColorScheme(colorSchemeFor(settingsStore.settings.themeMode))
             .alert("无法打开图书", isPresented: Binding(
                 get: { openError != nil },
@@ -77,7 +79,13 @@ struct BookReaderApp: App {
 
     private func openBook(_ book: BookItem, chapter: Int?, unit: Int?) {
         do {
-            let parsed = try BookParser.parseBook(book: book)
+            let parsed: ParsedBook
+            if let cached = BookCache.load(for: book) {
+                parsed = cached
+            } else {
+                parsed = try BookParser.parseBook(book: book)
+                BookCache.save(parsed, for: book)
+            }
             jumpChapter = chapter
             jumpUnit = unit
             parsedBook = parsed

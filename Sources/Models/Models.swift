@@ -32,6 +32,7 @@ struct VocabItem: Identifiable, Hashable, Sendable {
     var lemma: String
     var phonetic: String
     var translation: String
+    var englishTranslation: String
     var lookupCount: Int
     var contextSentence: String
     var contextTranslation: String
@@ -117,17 +118,65 @@ enum AppThemeMode: String, Codable, CaseIterable, Sendable {
     }
 }
 
+enum StepSoundTrack: String, Codable, CaseIterable, Sendable {
+    case off
+    case piano
+    case marimba
+    case chime
+
+    var displayName: String {
+        switch self {
+        case .off: return "关闭"
+        case .piano: return "轻柔钢琴"
+        case .marimba: return "清脆木琴"
+        case .chime: return "空灵风铃"
+        }
+    }
+}
+
+struct OpdsSource: Identifiable, Codable, Hashable, Sendable {
+    var id: UUID = UUID()
+    var name: String
+    var url: String
+    var username: String = ""
+    var password: String = ""
+}
+
 struct ReaderSettings: Codable, Equatable, Sendable {
     var visibleCount: Int = 3
     var stepMode: StepMode = .sentence
     var autoTranslateSentence: Bool = true
+    var sentenceTranslateEngine: String = "apple" // "apple" | "ai"
+    var autoAiAnalyze: Bool = false
     var underlineLookedUpWords: Bool = true
+
+    // Layout & Typography
     var fontSize: Double = 20
+    var lineSpacingMultiplier: Double = 1.35
+    var readingPositionBias: Double = 0.0
+    var readingZoneRatio: Double = 0.45
+
+    // Step Feedback
+    var stepSoundTrack: StepSoundTrack = .off
+    var stepHapticLevel: Int = 1 // 0=off, 1=light, 2=medium, 3=heavy
+
+    // Theme & 5 Custom Reader Colors (-1 = default glass)
     var themeMode: AppThemeMode = .system
+    var readerBgColorHex: Int64 = -1
+    var readerFocusColorHex: Int64 = -1
+    var readerBottomBgColorHex: Int64 = -1
+    var readerSentenceCardColorHex: Int64 = -1
+    var readerWordCardColorHex: Int64 = -1
+
+    // AI
     var aiBaseUrl: String = "https://api.openai.com/v1"
     var aiApiKey: String = ""
     var aiModel: String = "gpt-4o-mini"
     var aiSystemPrompt: String = "你是一个专业的英语精读助手。请用简洁清晰的中文，分析所给句子或词汇在当前语境中的含义、语法结构与核心用法。"
+
+    // OPDS & WebDAV
+    var opdsSources: [OpdsSource] = []
+    var activeOpdsSourceId: UUID? = nil
     var opdsUrl: String = ""
     var opdsUsername: String = ""
     var opdsPassword: String = ""

@@ -38,12 +38,7 @@ enum BookParser {
     By automatically capturing the exact sentence in which you first discovered a word, review becomes an effortless journey back to the moment of discovery. Over time, even the most complex literature becomes lucid and approachable.
     """
 
-    static func parseBook(book: BookItem) throws -> ParsedBook {
-        if book.filePathHint == "sample://art_of_slow_reading" {
-            return parseTxtContent(title: book.title, text: sampleBookText)
-        }
-
-        let data: Data
+    static func loadRawData(for book: BookItem) throws -> Data {
         if let bookmark = book.bookmarkData {
             var isStale = false
             let url = try URL(
@@ -56,14 +51,22 @@ enum BookParser {
             defer {
                 if accessed { url.stopAccessingSecurityScopedResource() }
             }
-            data = try Data(contentsOf: url)
+            return try Data(contentsOf: url)
         } else if let url = URL(string: book.filePathHint), url.isFileURL {
-            data = try Data(contentsOf: url)
+            return try Data(contentsOf: url)
         } else if FileManager.default.fileExists(atPath: book.filePathHint) {
-            data = try Data(contentsOf: URL(fileURLWithPath: book.filePathHint))
+            return try Data(contentsOf: URL(fileURLWithPath: book.filePathHint))
         } else {
             throw NSError(domain: "BookParser", code: 404, userInfo: [NSLocalizedDescriptionKey: "找不到原图书文件，请重新关联"])
         }
+    }
+
+    static func parseBook(book: BookItem) throws -> ParsedBook {
+        if book.filePathHint == "sample://art_of_slow_reading" {
+            return parseTxtContent(title: book.title, text: sampleBookText)
+        }
+
+        let data = try loadRawData(for: book)
 
         switch book.format.uppercased() {
         case "TXT":

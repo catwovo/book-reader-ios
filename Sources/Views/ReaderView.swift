@@ -1,3 +1,4 @@
+import PDFKit
 import SwiftUI
 import Translation
 
@@ -14,6 +15,7 @@ struct ReaderView: View {
     @Environment(DatabaseManager.self) private var db
     @Environment(SettingsStore.self) private var settingsStore
     @Environment(SpeechManager.self) private var speech
+    @Environment(StepFeedbackPlayer.self) private var feedbackPlayer
 
     let book: BookItem
     let parsedBook: ParsedBook
@@ -30,6 +32,9 @@ struct ReaderView: View {
     @State private var showNoteEditor = false
     @State private var noteDraft = ""
 
+    @State private var pdfOriginalMode = false
+    @State private var pdfData: Data? = nil
+
     @State private var sentenceTranslation = ""
     @State private var translatingSentence = false
     @State private var translationConfig: TranslationSession.Configuration?
@@ -39,7 +44,6 @@ struct ReaderView: View {
     @State private var aiLoading = false
 
     @State private var stageWidth: CGFloat = 340
-    @State private var stepTrigger = 0
 
     private var settings: ReaderSettings { settingsStore.settings }
 
@@ -49,7 +53,7 @@ struct ReaderView: View {
             parsedBook.chapters[chapterIndex],
             mode: settings.stepMode,
             fontSize: settings.fontSize,
-            maxWidth: Double(max(260, stageWidth - 36))
+            maxWidth: Double(Swift.max(260, stageWidth - 36))
         )
     }
 
@@ -69,200 +73,247 @@ struct ReaderView: View {
 
     var body: some View {
         NavigationStack {
-            VStack(spacing: 0) {
-                let progress = units.isEmpty ? 0.0 : Double(unitIndex + 1) / Double(units.count)
-                ProgressView(value: progress)
-                    .tint(.accentColor)
+            ZStack {
+                AmbientGlassBackdrop()
 
-                // TOP HALF: Progressive Reading Zone
-                GeometryReader { geo in
-                    ScrollView {
-                        VStack(alignment: .leading, spacing: 10) {
-                            Text(unitIndex > 0 ? "↑ 已读滚出：\(units[unitIndex - 1].text)" : "轻触单词查词 · 轻点下半屏推进")
-                                .font(.caption2)
-                                .foregroundStyle(.secondary.opacity(0.65))
-                                .lineLimit(1)
+                if pdfOriginalMode, let data = pdfData {
+                    PdfOriginalPageView(data: data)
+                        .ignoresSafeArea(edges: .bottom)
+                } else {
+                    GeometryReader { totalGeo in
+                        let topHeight = totalGeo.size.height * settings.readingZoneRatio
+                        let bottomHeight = Swift.max(180, totalGeo.size.height - topHeight)
 
-                            let endIdx = min(units.count, unitIndex + 1 + settings.visibleCount)
-                            let slice = unitIndex < endIdx ? Array(units[unitIndex..<endIdx]) : []
+                        VStack(spacing: 0) {
+                            let progress = units.isEmpty ? 0.0 : Double(unitIndex + 1) / Double(units.count)
+                            ProgressView(value: progress)
+                                .tint(.accentColor)
 
-                            ForEach(Array(slice.enumerated()), id: \.element.id) { idx, unit in
-                                let isFocus = idx == 0
-                                let rowOpacity = isFocus ? 1.0 : max(0.35, 0.85 - Double(idx - 1) * 0.18)
+                            // TOP HALF: Progressive Reading Zone
+                            GeometryReader { geo in
+                                ScrollView {
+                                    VStack(alignment: .leading, spacing: 10) {
+                                        if settings.readingPositionBias > 0.05 {
+                                            Spacer()
+                                                .frame(height: Swift.max(0, (topHeight - 160) * settings.readingPositionBias))
+                                        }
 
-                                TokenizedLineView(
-                                    unit: unit,
-                                    fontSize: settings.fontSize,
-                                    isFocus: isFocus,
-                                    underlineEnabled: settings.underlineLookedUpWords,
-                                    lookedUpMap: lookedUpMap,
-                                    selectedWord: wordCard?.word,
-                                    onWordTap: { token in
-                                        lookupWord(token: token, in: unit)
+                                        Text(unitIndex > 0 ? "↑ 已读滚出：\(units[unitIndex - 1].text)" : "轻触单词查词 · 轻点下半屏推进")
+                                            .font(.caption2)
+                                            .foregroundStyle(.secondary.opacity(0.65))
+                                            .lineLimit(1)
+
+                                        let endIdx = Swift.min(units.count, unitIndex + 1 + settings.visibleCount)
+                                        let slice = unitIndex < endIdx ? Array(units[unitIndex..<endIdx]) : []
+
+                                        ForEach(Array(slice.enumerated()), id: \.element.id) { idx, unit in
+                                            let isFocus = idx == 0
+                                            let rowOpacity = isFocus ? 1.0 : Swift.max(0.35, 0.85 - Double(idx - 1) * 0.18)
+                                            let focusBg = Color(hexInt64: settings.readerFocusColorHex)
+                                                ?? Color.accentColor.opacity(0.14)
+
+                                            TokenizedLineView(
+                                                unit: unit,
+                                                fontSize: settings.fontSize,
+                                                lineSpacing: CGFloat((settings.lineSpacingMultiplier - 1.0) * settings.fontSize),
+                                                isFocus: isFocus,
+                                                underlineEnabled: settings.underlineLookedUpWords,
+                                                lookedUpMap: lookedUpMap,
+                                                selectedWord: wordCard?.word,
+                                                onWordTap: { token in
+                                                    lookupWord(token: token, in: unit)
+                                                }
+                                            )
+                                            .padding(.horizontal, 14)
+                                            .padding(.vertical, 10)
+                                            .frame(maxWidth: .infinity, alignment: .leading)
+                                            .background {
+                                                if isFocus {
+                                                    RoundedRectangle(cornerRadius: 14, style: .continuous)
+                                                        .fill(.ultraThinMaterial)
+                                                        .overlay(
+                                                            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                                                                .fill(focusBg)
+                                                        )
+                                                        .overlay(
+                                                            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                                                                .strokeBorder(.white.opacity(0.35), lineWidth: 0.7)
+                                                        )
+                                                }
+                                            }
+                                            .opacity(rowOpacity)
+                                        }
                                     }
-                                )
-                                .padding(.horizontal, 12)
-                                .padding(.vertical, 8)
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                                .background(
-                                    RoundedRectangle(cornerRadius: 12, style: .continuous)
-                                        .fill(isFocus ? Color.accentColor.opacity(0.12) : Color.clear)
-                                )
-                                .opacity(rowOpacity)
-                            }
-                        }
-                        .padding(.horizontal, 18)
-                        .padding(.vertical, 12)
-                    }
-                    .onAppear { stageWidth = geo.size.width }
-                    .onChange(of: geo.size.width) { _, newW in stageWidth = newW }
-                }
-                .frame(maxHeight: .infinity)
-
-                Divider()
-
-                // BOTTOM HALF: Translation / Word / AI Cards + Tap-to-Advance
-                ScrollView {
-                    VStack(spacing: 12) {
-                        // Sentence Translation Card
-                        VStack(alignment: .leading, spacing: 8) {
-                            HStack {
-                                Label("当前句离线翻译", systemImage: "translate")
-                                    .font(.caption.weight(.semibold))
-                                    .foregroundStyle(Color.accentColor)
-                                Spacer()
-                                Button {
-                                    noteDraft = ""
-                                    showNoteEditor = true
-                                } label: {
-                                    Label("记笔记", systemImage: "bookmark")
-                                        .font(.caption)
+                                    .padding(.horizontal, 18)
+                                    .padding(.vertical, 12)
                                 }
-                                .buttonStyle(.bordered)
-                                .controlSize(.mini)
-
-                                Button {
-                                    triggerAiAnalysis(sentence: focusSentenceText(), word: nil)
-                                } label: {
-                                    Label("AI 精讲", systemImage: "sparkles")
-                                        .font(.caption)
-                                }
-                                .buttonStyle(.borderedProminent)
-                                .controlSize(.mini)
+                                .onAppear { stageWidth = geo.size.width }
+                                .onChange(of: geo.size.width) { _, newW in stageWidth = newW }
                             }
+                            .frame(height: topHeight)
+                            .background(Color(hexInt64: settings.readerBgColorHex) ?? Color.clear)
 
-                            if translatingSentence {
-                                HStack(spacing: 8) {
-                                    ProgressView().controlSize(.small)
-                                    Text("Apple 离线翻译中...").font(.footnote).foregroundStyle(.secondary)
-                                }
-                            } else {
-                                Text(sentenceTranslation.isEmpty ? "（已关闭自动翻译，点击「AI 精讲」或开启自动翻译）" : sentenceTranslation)
-                                    .font(.subheadline)
-                                    .textSelection(.enabled)
-                            }
-                        }
-                        .padding(14)
-                        .background(Color(.secondarySystemGroupedBackground))
-                        .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+                            // Glass Divider Pill
+                            Capsule()
+                                .fill(.secondary.opacity(0.35))
+                                .frame(width: 40, height: 4)
+                                .padding(.vertical, 4)
 
-                        // Word Definition Card
-                        if let card = wordCard {
-                            VStack(alignment: .leading, spacing: 8) {
-                                HStack {
-                                    Text(card.word)
-                                        .font(.title3.bold())
-                                        .foregroundStyle(Color.accentColor)
-                                    Text(card.phonetic)
-                                        .font(.caption)
-                                        .foregroundStyle(.secondary)
-                                    Button {
-                                        speech.speak(card.word)
-                                    } label: {
-                                        Image(systemName: "speaker.wave.2.fill")
-                                            .font(.caption)
+                            // BOTTOM HALF: Glass Cards + Tap-to-Advance
+                            ScrollView {
+                                VStack(spacing: 12) {
+                                    // Sentence Translation Glass Card
+                                    GlassCard(
+                                        cornerRadius: 18,
+                                        tintColor: Color(hexInt64: settings.readerSentenceCardColorHex)
+                                    ) {
+                                        VStack(alignment: .leading, spacing: 8) {
+                                            HStack {
+                                                Label(
+                                                    settings.sentenceTranslateEngine == "ai" ? "AI 整句翻译" : "Apple 离线翻译",
+                                                    systemImage: "translate"
+                                                )
+                                                .font(.caption.weight(.semibold))
+                                                .foregroundStyle(Color.accentColor)
+                                                Spacer()
+                                                Button {
+                                                    noteDraft = ""
+                                                    showNoteEditor = true
+                                                } label: {
+                                                    Label("记笔记", systemImage: "bookmark")
+                                                        .font(.caption)
+                                                }
+                                                .buttonStyle(.bordered)
+                                                .controlSize(.mini)
+
+                                                Button {
+                                                    triggerAiAnalysis(sentence: focusSentenceText(), word: nil)
+                                                } label: {
+                                                    Label("AI 精讲", systemImage: "sparkles")
+                                                        .font(.caption)
+                                                }
+                                                .buttonStyle(.borderedProminent)
+                                                .controlSize(.mini)
+                                            }
+
+                                            if translatingSentence {
+                                                HStack(spacing: 8) {
+                                                    ProgressView().controlSize(.small)
+                                                    Text("正在翻译...").font(.footnote).foregroundStyle(.secondary)
+                                                }
+                                            } else {
+                                                Text(sentenceTranslation.isEmpty ? "（已关闭自动翻译，点击「AI 精讲」或开启自动翻译）" : sentenceTranslation)
+                                                    .font(.subheadline)
+                                                    .textSelection(.enabled)
+                                            }
+                                        }
+                                        .padding(14)
                                     }
-                                    Spacer()
-                                    Text("已查 \(card.lookupCount) 次")
-                                        .font(.caption2.weight(.semibold))
-                                        .padding(.horizontal, 8)
-                                        .padding(.vertical, 3)
-                                        .background(Color.accentColor.opacity(0.15))
-                                        .clipShape(Capsule())
-                                }
 
-                                Text(card.translation)
-                                    .font(.subheadline)
-                                    .textSelection(.enabled)
+                                    // Word Definition Glass Card
+                                    if let card = wordCard {
+                                        GlassCard(
+                                            cornerRadius: 18,
+                                            tintColor: Color(hexInt64: settings.readerWordCardColorHex) ?? Color.accentColor.opacity(0.08)
+                                        ) {
+                                            VStack(alignment: .leading, spacing: 8) {
+                                                HStack {
+                                                    Text(card.word)
+                                                        .font(.title3.bold())
+                                                        .foregroundStyle(Color.accentColor)
+                                                    Text(card.phonetic)
+                                                        .font(.caption)
+                                                        .foregroundStyle(.secondary)
+                                                    Button {
+                                                        speech.speak(card.word)
+                                                    } label: {
+                                                        Image(systemName: "speaker.wave.2.fill")
+                                                            .font(.caption)
+                                                    }
+                                                    Spacer()
+                                                    Text("已查 \(card.lookupCount) 次")
+                                                        .font(.caption2.weight(.semibold))
+                                                        .padding(.horizontal, 8)
+                                                        .padding(.vertical, 3)
+                                                        .background(Color.accentColor.opacity(0.16))
+                                                        .clipShape(Capsule())
+                                                }
 
-                                Button {
-                                    triggerAiAnalysis(sentence: card.contextSentence, word: card.word)
-                                } label: {
-                                    Label("AI 语境释义", systemImage: "sparkles")
-                                        .font(.caption)
+                                                Text(card.translation)
+                                                    .font(.subheadline)
+                                                    .textSelection(.enabled)
+
+                                                Button {
+                                                    triggerAiAnalysis(sentence: card.contextSentence, word: card.word)
+                                                } label: {
+                                                    Label("AI 语境释义", systemImage: "sparkles")
+                                                        .font(.caption)
+                                                }
+                                                .buttonStyle(.bordered)
+                                                .controlSize(.small)
+                                            }
+                                            .padding(14)
+                                        }
+                                    }
+
+                                    // AI Explanation Glass Card
+                                    if aiLoading || !aiResult.isEmpty {
+                                        GlassCard(cornerRadius: 18) {
+                                            VStack(alignment: .leading, spacing: 8) {
+                                                HStack {
+                                                    Label("AI 深度解析", systemImage: "sparkles")
+                                                        .font(.caption.weight(.semibold))
+                                                        .foregroundStyle(Color.accentColor)
+                                                    Spacer()
+                                                    Button("收起") { aiResult = "" }
+                                                        .font(.caption)
+                                                }
+                                                if aiLoading {
+                                                    ProgressView().controlSize(.small)
+                                                } else {
+                                                    Text(aiResult)
+                                                        .font(.footnote)
+                                                        .textSelection(.enabled)
+                                                }
+                                            }
+                                            .padding(14)
+                                        }
+                                    }
+
+                                    // Tap Blank Area to Advance
+                                    VStack(spacing: 4) {
+                                        Text("轻点此处推进下一\(settings.stepMode == .sentence ? "句" : "行")")
+                                            .font(.footnote.weight(.medium))
+                                        Text("向上轻扫退回上一\(settings.stepMode == .sentence ? "句" : "行")")
+                                            .font(.caption2)
+                                    }
+                                    .foregroundStyle(.secondary.opacity(0.75))
+                                    .frame(maxWidth: .infinity)
+                                    .frame(height: 110)
+                                    .contentShape(Rectangle())
+                                    .onTapGesture { stepNext() }
                                 }
-                                .buttonStyle(.bordered)
-                                .controlSize(.small)
+                                .padding(16)
                             }
-                            .padding(14)
-                            .background(Color.accentColor.opacity(0.08))
-                            .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+                            .frame(height: bottomHeight)
+                            .background(Color(hexInt64: settings.readerBottomBgColorHex) ?? Color.clear)
+                            .contentShape(Rectangle())
+                            .onTapGesture { stepNext() }
+                            .gesture(
+                                DragGesture(minimumDistance: 36)
+                                    .onEnded { value in
+                                        if value.translation.height < -50 {
+                                            stepPrev()
+                                        }
+                                    }
+                            )
                         }
-
-                        // AI Explanation Card
-                        if aiLoading || !aiResult.isEmpty {
-                            VStack(alignment: .leading, spacing: 8) {
-                                HStack {
-                                    Label("AI 深度解析", systemImage: "sparkles")
-                                        .font(.caption.weight(.semibold))
-                                        .foregroundStyle(Color.accentColor)
-                                    Spacer()
-                                    Button("收起") { aiResult = "" }
-                                        .font(.caption)
-                                }
-                                if aiLoading {
-                                    ProgressView().controlSize(.small)
-                                } else {
-                                    Text(aiResult)
-                                        .font(.footnote)
-                                        .textSelection(.enabled)
-                                }
-                            }
-                            .padding(14)
-                            .background(Color(.secondarySystemGroupedBackground))
-                            .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
-                        }
-
-                        // Tap Blank Area to Advance
-                        VStack(spacing: 4) {
-                            Text("轻点此处推进下一\(settings.stepMode == .sentence ? "句" : "行")")
-                                .font(.footnote.weight(.medium))
-                            Text("向上轻扫退回上一\(settings.stepMode == .sentence ? "句" : "行")")
-                                .font(.caption2)
-                        }
-                        .foregroundStyle(.secondary.opacity(0.7))
-                        .frame(maxWidth: .infinity)
-                        .frame(height: 110)
-                        .contentShape(Rectangle())
-                        .onTapGesture { stepNext() }
                     }
-                    .padding(16)
                 }
-                .background(Color(.systemGroupedBackground))
-                .contentShape(Rectangle())
-                .onTapGesture { stepNext() }
-                .gesture(
-                    DragGesture(minimumDistance: 36)
-                        .onEnded { value in
-                            if value.translation.height < -50 {
-                                stepPrev()
-                            }
-                        }
-                )
-                .frame(maxHeight: .infinity)
             }
             .navigationTitle(book.title)
             .navigationBarTitleDisplayMode(.inline)
+            .toolbarBackground(.ultraThinMaterial, for: .navigationBar)
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) {
                     Button {
@@ -272,6 +323,13 @@ struct ReaderView: View {
                     }
                 }
                 ToolbarItemGroup(placement: .topBarTrailing) {
+                    if book.format.uppercased() == "PDF" {
+                        Button {
+                            togglePdfOriginalMode()
+                        } label: {
+                            Image(systemName: pdfOriginalMode ? "text.alignleft" : "doc.richtext")
+                        }
+                    }
                     Button {
                         showTocSheet = true
                     } label: {
@@ -280,11 +338,10 @@ struct ReaderView: View {
                     Button {
                         showPrefsSheet = true
                     } label: {
-                        Image(systemName: "textformat.size")
+                        Image(systemName: "slider.horizontal.3")
                     }
                 }
             }
-            .sensoryFeedback(.impact(weight: .light), trigger: stepTrigger)
             .translationTask(translationConfig) { session in
                 let target = focusSentenceText()
                 guard !target.isEmpty else { return }
@@ -303,8 +360,8 @@ struct ReaderView: View {
                 translatingSentence = false
             }
             .onAppear {
-                chapterIndex = (initialChapter ?? book.currentChapter).clamped(to: 0...max(0, parsedBook.chapters.count - 1))
-                unitIndex = max(0, initialUnit ?? book.currentIndex)
+                chapterIndex = (initialChapter ?? book.currentChapter).clamped(to: 0...Swift.max(0, parsedBook.chapters.count - 1))
+                unitIndex = Swift.max(0, initialUnit ?? book.currentIndex)
                 triggerAutoTranslation()
             }
             .onChange(of: unitIndex) { _, _ in triggerAutoTranslation() }
@@ -318,7 +375,7 @@ struct ReaderView: View {
                             bookTitle: book.title,
                             chapter: chapterIndex,
                             index: unitIndex,
-                            total: max(1, units.count),
+                            total: Swift.max(1, units.count),
                             deltaSeconds: 5,
                             unitsDelta: 0
                         )
@@ -332,7 +389,7 @@ struct ReaderView: View {
                             Button {
                                 chapterIndex = idx
                                 unitIndex = 0
-                                db.updateBookProgress(bookId: book.id, bookTitle: book.title, chapter: idx, index: 0, total: max(1, units.count), deltaSeconds: 0, unitsDelta: 0)
+                                db.updateBookProgress(bookId: book.id, bookTitle: book.title, chapter: idx, index: 0, total: Swift.max(1, units.count), deltaSeconds: 0, unitsDelta: 0)
                                 showTocSheet = false
                             } label: {
                                 HStack {
@@ -357,43 +414,8 @@ struct ReaderView: View {
                 }
             }
             .sheet(isPresented: $showPrefsSheet) {
-                NavigationStack {
-                    Form {
-                        Section("推进与显示") {
-                            Picker("推进粒度", selection: Binding(
-                                get: { settings.stepMode },
-                                set: { settingsStore.settings.stepMode = $0 }
-                            )) {
-                                ForEach(StepMode.allCases, id: \.self) { m in
-                                    Text(m.displayName).tag(m)
-                                }
-                            }
-                            Stepper("后续显示：+\(settings.visibleCount)", value: Binding(
-                                get: { settings.visibleCount },
-                                set: { settingsStore.settings.visibleCount = $0 }
-                            ), in: 1...8)
-                            VStack(alignment: .leading) {
-                                Text("正文字号：\(Int(settings.fontSize)) pt")
-                                Slider(value: Binding(
-                                    get: { settings.fontSize },
-                                    set: { settingsStore.settings.fontSize = $0 }
-                                ), in: 16...28, step: 1)
-                            }
-                            Toggle("自动翻译当前焦点句", isOn: Binding(
-                                get: { settings.autoTranslateSentence },
-                                set: { settingsStore.settings.autoTranslateSentence = $0 }
-                            ))
-                        }
-                    }
-                    .navigationTitle("阅读调节")
-                    .navigationBarTitleDisplayMode(.inline)
-                    .toolbar {
-                        ToolbarItem(placement: .topBarTrailing) {
-                            Button("完成") { showPrefsSheet = false }
-                        }
-                    }
-                }
-                .presentationDetents([.medium])
+                ReaderPreferencesSheet()
+                    .presentationDetents([.medium, .large])
             }
             .sheet(isPresented: $showNoteEditor) {
                 NavigationStack {
@@ -434,6 +456,19 @@ struct ReaderView: View {
         }
     }
 
+    private func togglePdfOriginalMode() {
+        if pdfOriginalMode {
+            pdfOriginalMode = false
+        } else {
+            if pdfData == nil {
+                pdfData = try? BookParser.loadRawData(for: book)
+            }
+            if pdfData != nil {
+                pdfOriginalMode = true
+            }
+        }
+    }
+
     private func focusSentenceText() -> String {
         guard let unit = currentUnit else { return "" }
         return settings.stepMode == .sentence ? unit.text : unit.parentSentence
@@ -441,15 +476,34 @@ struct ReaderView: View {
 
     private func triggerAutoTranslation() {
         let target = focusSentenceText()
-        guard settings.autoTranslateSentence, !target.isEmpty else {
+        guard !target.isEmpty else { return }
+
+        if settings.autoAiAnalyze {
+            triggerAiAnalysis(sentence: target, word: nil)
+        }
+
+        guard settings.autoTranslateSentence else {
             sentenceTranslation = ""
             return
         }
+
         if let cached = db.getCachedTranslation(target) {
             sentenceTranslation = cached
             translatingSentence = false
             return
         }
+
+        if settings.sentenceTranslateEngine == "ai" {
+            translatingSentence = true
+            Task {
+                let res = await TranslationService.analyzeWithAi(settings: settings, sentence: target, targetWord: nil)
+                db.saveCachedTranslation(source: target, translated: res)
+                sentenceTranslation = res
+                translatingSentence = false
+            }
+            return
+        }
+
         translatingSentence = true
         if translationConfig == nil {
             translationConfig = TranslationSession.Configuration(
@@ -464,7 +518,7 @@ struct ReaderView: View {
     private func stepNext() {
         guard !units.isEmpty else { return }
         lastInteractionDate = Date()
-        stepTrigger += 1
+        feedbackPlayer.triggerFeedback(soundTrack: settings.stepSoundTrack, hapticLevel: settings.stepHapticLevel)
         wordCard = nil
         aiResult = ""
         if unitIndex + 1 < units.count {
@@ -473,14 +527,14 @@ struct ReaderView: View {
         } else if chapterIndex + 1 < parsedBook.chapters.count {
             chapterIndex += 1
             unitIndex = 0
-            db.updateBookProgress(bookId: book.id, bookTitle: book.title, chapter: chapterIndex, index: 0, total: max(1, units.count), deltaSeconds: 0, unitsDelta: 1)
+            db.updateBookProgress(bookId: book.id, bookTitle: book.title, chapter: chapterIndex, index: 0, total: Swift.max(1, units.count), deltaSeconds: 0, unitsDelta: 1)
         }
     }
 
     private func stepPrev() {
         guard !units.isEmpty else { return }
         lastInteractionDate = Date()
-        stepTrigger += 1
+        feedbackPlayer.triggerFeedback(soundTrack: settings.stepSoundTrack, hapticLevel: settings.stepHapticLevel)
         wordCard = nil
         aiResult = ""
         if unitIndex > 0 {
@@ -489,7 +543,7 @@ struct ReaderView: View {
         } else if chapterIndex > 0 {
             chapterIndex -= 1
             unitIndex = 0
-            db.updateBookProgress(bookId: book.id, bookTitle: book.title, chapter: chapterIndex, index: 0, total: max(1, units.count), deltaSeconds: 0, unitsDelta: 0)
+            db.updateBookProgress(bookId: book.id, bookTitle: book.title, chapter: chapterIndex, index: 0, total: Swift.max(1, units.count), deltaSeconds: 0, unitsDelta: 0)
         }
     }
 
@@ -530,9 +584,92 @@ struct ReaderView: View {
     }
 }
 
+private struct ReaderPreferencesSheet: View {
+    @Environment(\.dismiss) private var dismiss
+    @Environment(SettingsStore.self) private var settingsStore
+
+    var body: some View {
+        @Bindable var store = settingsStore
+        NavigationStack {
+            Form {
+                Section("推进与排版") {
+                    Picker("推进粒度", selection: $store.settings.stepMode) {
+                        ForEach(StepMode.allCases, id: \.self) { m in
+                            Text(m.displayName).tag(m)
+                        }
+                    }
+                    Stepper("后续显示：+\(store.settings.visibleCount)", value: $store.settings.visibleCount, in: 1...8)
+                    VStack(alignment: .leading) {
+                        Text("正文字号：\(Int(store.settings.fontSize)) pt")
+                        Slider(value: $store.settings.fontSize, in: 16...28, step: 1)
+                    }
+                    VStack(alignment: .leading) {
+                        Text("行间距倍数：\(String(format: "%.2fx", store.settings.lineSpacingMultiplier))")
+                        Slider(value: $store.settings.lineSpacingMultiplier, in: 1.0...1.8, step: 0.05)
+                    }
+                    VStack(alignment: .leading) {
+                        Text("阅读区高度占比：\(Int(store.settings.readingZoneRatio * 100))%")
+                        Slider(value: $store.settings.readingZoneRatio, in: 0.25...0.75, step: 0.05)
+                    }
+                    VStack(alignment: .leading) {
+                        Text("焦点垂直位置偏移：\(Int(store.settings.readingPositionBias * 100))%")
+                        Slider(value: $store.settings.readingPositionBias, in: 0.0...0.7, step: 0.05)
+                    }
+                }
+
+                Section("翻译与 AI") {
+                    Toggle("自动翻译当前句", isOn: $store.settings.autoTranslateSentence)
+                    Picker("整句翻译引擎", selection: $store.settings.sentenceTranslateEngine) {
+                        Text("Apple 系统离线").tag("apple")
+                        Text("自定义 AI").tag("ai")
+                    }
+                    Toggle("翻句自动 AI 精讲", isOn: $store.settings.autoAiAnalyze)
+                }
+
+                Section("步进音效与震动反馈") {
+                    Picker("翻句音效", selection: $store.settings.stepSoundTrack) {
+                        ForEach(StepSoundTrack.allCases, id: \.self) { t in
+                            Text(t.displayName).tag(t)
+                        }
+                    }
+                    Picker("震动强度", selection: $store.settings.stepHapticLevel) {
+                        Text("关闭").tag(0)
+                        Text("轻柔").tag(1)
+                        Text("适中").tag(2)
+                        Text("强烈").tag(3)
+                    }
+                }
+            }
+            .navigationTitle("阅读调节")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button("完成") { dismiss() }
+                }
+            }
+        }
+    }
+}
+
+private struct PdfOriginalPageView: UIViewRepresentable {
+    let data: Data
+
+    func makeUIView(context: Context) -> PDFView {
+        let view = PDFView()
+        view.autoScales = true
+        view.displayMode = .singlePageContinuous
+        view.displayDirection = .vertical
+        view.document = PDFDocument(data: data)
+        return view
+    }
+
+    func updateUIView(_ uiView: PDFView, context: Context) {}
+}
+
 private struct TokenizedLineView: View {
     let unit: ReadingUnit
     let fontSize: Double
+    let lineSpacing: CGFloat
     let isFocus: Bool
     let underlineEnabled: Bool
     let lookedUpMap: [String: Int]
@@ -541,7 +678,7 @@ private struct TokenizedLineView: View {
 
     var body: some View {
         let tokens = unit.text.components(separatedBy: " ").filter { !$0.isEmpty }
-        WordFlowLayout(horizontalSpacing: 5, verticalSpacing: 4) {
+        WordFlowLayout(horizontalSpacing: 5, verticalSpacing: Swift.max(4, lineSpacing)) {
             ForEach(Array(tokens.enumerated()), id: \.offset) { _, tok in
                 let clean = tok.trimmingCharacters(in: CharacterSet.letters.inverted).lowercased()
                 let isKnown = underlineEnabled && (lookedUpMap[clean] ?? 0) > 0
@@ -586,7 +723,7 @@ private struct WordFlowLayout: Layout {
                 rowHeight = 0
             }
             x += size.width + horizontalSpacing
-            rowHeight = max(rowHeight, size.height)
+            rowHeight = Swift.max(rowHeight, size.height)
         }
         return CGSize(width: maxWidth, height: y + rowHeight)
     }
@@ -604,7 +741,7 @@ private struct WordFlowLayout: Layout {
             }
             sub.place(at: CGPoint(x: x, y: y), proposal: ProposedViewSize(size))
             x += size.width + horizontalSpacing
-            rowHeight = max(rowHeight, size.height)
+            rowHeight = Swift.max(rowHeight, size.height)
         }
     }
 }

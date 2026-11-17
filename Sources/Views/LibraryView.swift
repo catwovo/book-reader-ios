@@ -33,73 +33,82 @@ struct LibraryView: View {
 
     var body: some View {
         NavigationStack {
-            List {
-                if !db.folders.isEmpty {
-                    Section {
-                        ScrollView(.horizontal, showsIndicators: false) {
-                            HStack(spacing: 8) {
-                                folderPill(title: "全部", id: nil)
-                                ForEach(db.folders) { folder in
-                                    folderPill(title: folder.name, id: folder.id)
-                                        .contextMenu {
-                                            Button(role: .destructive) {
-                                                db.deleteFolder(id: folder.id)
-                                                if selectedFolderId == folder.id { selectedFolderId = nil }
-                                            } label: {
-                                                Label("删除文件夹", systemImage: "trash")
-                                            }
-                                        }
-                                }
-                            }
-                            .padding(.vertical, 4)
-                        }
-                    }
-                    .listRowInsets(EdgeInsets(top: 4, leading: 16, bottom: 4, trailing: 16))
-                    .listRowBackground(Color.clear)
-                }
+            ZStack {
+                AmbientGlassBackdrop()
 
-                if filteredBooks.isEmpty {
-                    ContentUnavailableView(
-                        "书架暂无图书",
-                        systemImage: "books.vertical",
-                        description: Text("点击右上角 + 导入本地 EPUB、TXT、PDF、MOBI 或 AZW3")
-                    )
-                } else {
-                    Section(header: Text("共 \(filteredBooks.count) 本")) {
-                        ForEach(filteredBooks) { book in
-                            Button {
-                                onOpenBook(book)
-                            } label: {
-                                BookRowView(book: book)
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 14) {
+                        if !db.folders.isEmpty {
+                            ScrollView(.horizontal, showsIndicators: false) {
+                                HStack(spacing: 8) {
+                                    folderPill(title: "全部", id: nil)
+                                    ForEach(db.folders) { folder in
+                                        folderPill(title: folder.name, id: folder.id)
+                                            .contextMenu {
+                                                Button(role: .destructive) {
+                                                    db.deleteFolder(id: folder.id)
+                                                    if selectedFolderId == folder.id { selectedFolderId = nil }
+                                                } label: {
+                                                    Label("删除文件夹", systemImage: "trash")
+                                                }
+                                            }
+                                    }
+                                }
+                                .padding(.horizontal, 16)
+                                .padding(.vertical, 4)
                             }
-                            .tint(.primary)
-                            .contextMenu {
-                                if !db.folders.isEmpty {
-                                    Menu("移动到文件夹") {
-                                        Button("移出文件夹") {
-                                            db.moveBook(book.id, toFolder: nil)
+                        }
+
+                        if filteredBooks.isEmpty {
+                            ContentUnavailableView(
+                                "书架暂无图书",
+                                systemImage: "books.vertical",
+                                description: Text("点击右上角 + 导入本地 EPUB、TXT、PDF、MOBI 或 AZW3")
+                            )
+                            .padding(.top, 60)
+                        } else {
+                            LazyVStack(spacing: 12) {
+                                ForEach(filteredBooks) { book in
+                                    Button {
+                                        onOpenBook(book)
+                                    } label: {
+                                        GlassCard(cornerRadius: 20) {
+                                            BookRowView(book: book)
+                                                .padding(16)
                                         }
-                                        ForEach(db.folders) { f in
-                                            Button(f.name) {
-                                                db.moveBook(book.id, toFolder: f.id)
+                                    }
+                                    .buttonStyle(.plain)
+                                    .contextMenu {
+                                        if !db.folders.isEmpty {
+                                            Menu("移动到文件夹") {
+                                                Button("移出文件夹") {
+                                                    db.moveBook(book.id, toFolder: nil)
+                                                }
+                                                ForEach(db.folders) { f in
+                                                    Button(f.name) {
+                                                        db.moveBook(book.id, toFolder: f.id)
+                                                    }
+                                                }
+                                            }
+                                        }
+                                        if book.filePathHint != "sample://art_of_slow_reading" {
+                                            Button(role: .destructive) {
+                                                db.deleteBook(id: book.id)
+                                            } label: {
+                                                Label("从书架移除", systemImage: "trash")
                                             }
                                         }
                                     }
                                 }
-                                if book.filePathHint != "sample://art_of_slow_reading" {
-                                    Button(role: .destructive) {
-                                        db.deleteBook(id: book.id)
-                                    } label: {
-                                        Label("从书架移除", systemImage: "trash")
-                                    }
-                                }
                             }
+                            .padding(.horizontal, 16)
                         }
                     }
+                    .padding(.vertical, 12)
                 }
             }
-            .listStyle(.insetGrouped)
             .navigationTitle("书架")
+            .toolbarBackground(.ultraThinMaterial, for: .navigationBar)
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
                     Menu {
@@ -178,9 +187,14 @@ struct LibraryView: View {
                 .font(.subheadline.weight(isSelected ? .semibold : .regular))
                 .padding(.horizontal, 14)
                 .padding(.vertical, 7)
-                .background(isSelected ? Color.accentColor : Color(.secondarySystemGroupedBackground))
+                .background {
+                    if isSelected {
+                        Capsule().fill(Color.accentColor)
+                    } else {
+                        Capsule().fill(.ultraThinMaterial)
+                    }
+                }
                 .foregroundStyle(isSelected ? .white : .primary)
-                .clipShape(Capsule())
         }
         .buttonStyle(.plain)
     }
@@ -190,17 +204,18 @@ private struct BookRowView: View {
     let book: BookItem
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
+        VStack(alignment: .leading, spacing: 10) {
             HStack(alignment: .top) {
                 Text(book.title)
                     .font(.headline)
                     .lineLimit(2)
+                    .multilineTextAlignment(.leading)
                 Spacer()
                 Text(book.format)
                     .font(.caption2.weight(.bold))
-                    .padding(.horizontal, 8)
-                    .padding(.vertical, 3)
-                    .background(Color.accentColor.opacity(0.14))
+                    .padding(.horizontal, 9)
+                    .padding(.vertical, 4)
+                    .background(Color.accentColor.opacity(0.15))
                     .foregroundStyle(Color.accentColor)
                     .clipShape(Capsule())
             }
@@ -216,11 +231,10 @@ private struct BookRowView: View {
             .font(.caption)
             .foregroundStyle(.secondary)
         }
-        .padding(.vertical, 4)
     }
 }
 
-// MARK: - OPDS Browser Sheet
+// MARK: - OPDS Browser Sheet (Supports Multi-Source Switching)
 private struct OpdsBrowserSheet: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(DatabaseManager.self) private var db
@@ -228,6 +242,8 @@ private struct OpdsBrowserSheet: View {
     let selectedFolderId: Int64?
 
     @State private var currentUrl: String = ""
+    @State private var activeUser: String = ""
+    @State private var activePass: String = ""
     @State private var entries: [OpdsEntry] = []
     @State private var loading = false
     @State private var errorMsg: String?
@@ -235,6 +251,25 @@ private struct OpdsBrowserSheet: View {
     var body: some View {
         NavigationStack {
             List {
+                if !settingsStore.settings.opdsSources.isEmpty {
+                    Section("已保存书源") {
+                        ScrollView(.horizontal, showsIndicators: false) {
+                            HStack(spacing: 8) {
+                                ForEach(settingsStore.settings.opdsSources) { src in
+                                    Button(src.name) {
+                                        currentUrl = src.url
+                                        activeUser = src.username
+                                        activePass = src.password
+                                        loadFeed()
+                                    }
+                                    .buttonStyle(.bordered)
+                                    .controlSize(.small)
+                                }
+                            }
+                        }
+                    }
+                }
+
                 if let errorMsg {
                     Text(errorMsg).foregroundStyle(.red).font(.footnote)
                 }
@@ -242,7 +277,7 @@ private struct OpdsBrowserSheet: View {
                     ContentUnavailableView(
                         "OPDS 书库",
                         systemImage: "globe",
-                        description: Text("请在「设置」或上方输入 OPDS 地址后点击加载")
+                        description: Text("请在「设置 → OPDS 书源管理」添加书源，或点击右上角刷新")
                     )
                 } else {
                     ForEach(entries) { entry in
@@ -281,7 +316,15 @@ private struct OpdsBrowserSheet: View {
                 }
             }
             .onAppear {
-                currentUrl = settingsStore.settings.opdsUrl
+                if let first = settingsStore.settings.opdsSources.first {
+                    currentUrl = first.url
+                    activeUser = first.username
+                    activePass = first.password
+                } else {
+                    currentUrl = settingsStore.settings.opdsUrl
+                    activeUser = settingsStore.settings.opdsUsername
+                    activePass = settingsStore.settings.opdsPassword
+                }
                 if !currentUrl.isEmpty { loadFeed() }
             }
         }
@@ -294,8 +337,8 @@ private struct OpdsBrowserSheet: View {
             do {
                 entries = try await NetworkBookService.fetchOpdsFeed(
                     urlString: currentUrl,
-                    username: settingsStore.settings.opdsUsername,
-                    password: settingsStore.settings.opdsPassword
+                    username: activeUser,
+                    password: activePass
                 )
             } catch {
                 errorMsg = error.localizedDescription
@@ -312,8 +355,8 @@ private struct OpdsBrowserSheet: View {
                 let dest = try await NetworkBookService.downloadBookToLocal(
                     urlString: entry.linkUrl,
                     suggestedName: "\(entry.title).\(ext)",
-                    username: settingsStore.settings.opdsUsername,
-                    password: settingsStore.settings.opdsPassword
+                    username: activeUser,
+                    password: activePass
                 )
                 db.addBook(title: entry.title, bookmarkData: nil, filePathHint: dest.absoluteString, format: entry.formatHint, folderId: selectedFolderId)
                 dismiss()

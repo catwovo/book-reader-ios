@@ -475,6 +475,7 @@ final class DatabaseManager {
             lemma: lemma,
             phonetic: phonetic,
             translation: translation,
+            englishTranslation: "",
             lookupCount: newCount,
             contextSentence: contextSentence,
             contextTranslation: contextTranslation,
@@ -499,6 +500,7 @@ final class DatabaseManager {
                     lemma: String(cString: sqlite3_column_text(stmt, 2)),
                     phonetic: String(cString: sqlite3_column_text(stmt, 3)),
                     translation: String(cString: sqlite3_column_text(stmt, 4)),
+                    englishTranslation: "",
                     lookupCount: Int(sqlite3_column_int(stmt, 5)),
                     contextSentence: String(cString: sqlite3_column_text(stmt, 6)),
                     contextTranslation: String(cString: sqlite3_column_text(stmt, 7)),
@@ -561,6 +563,24 @@ final class DatabaseManager {
             sqlite3_step(stmt)
         }
         sqlite3_finalize(stmt)
+        vocabList = fetchVocab()
+    }
+
+    func resetKnownVocab(ids: [Int64]) {
+        guard !ids.isEmpty else { return }
+        let ts = nowMs()
+        exec("BEGIN TRANSACTION")
+        var stmt: OpaquePointer?
+        if sqlite3_prepare_v2(db, "UPDATE vocab SET familiarity = 0, updatedAt = ?1 WHERE id = ?2", -1, &stmt, nil) == SQLITE_OK {
+            for id in ids {
+                sqlite3_reset(stmt)
+                sqlite3_bind_int64(stmt, 1, ts)
+                sqlite3_bind_int64(stmt, 2, id)
+                sqlite3_step(stmt)
+            }
+        }
+        sqlite3_finalize(stmt)
+        exec("COMMIT")
         vocabList = fetchVocab()
     }
 
