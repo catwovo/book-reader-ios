@@ -91,29 +91,29 @@ struct LibraryView: View {
                     importPickedFiles(urls, targetFolderId: importTargetFolderId)
                 }
             }
-            .alert("新建文件夹", isPresented: $showNewFolderAlert) {
-                TextField("例如：英文原著、技术文档", text: $newFolderName)
-                Button("创建") {
-                    let trimmed = newFolderName.trimmingCharacters(in: .whitespacesAndNewlines)
-                    if !trimmed.isEmpty {
-                        db.createFolder(name: trimmed)
-                    }
+            .sheet(isPresented: $showNewFolderAlert) {
+                GlassFolderInputSheet(
+                    title: "新建文件夹",
+                    subtitle: "输入名称，将藏书按主题或类型分类整理",
+                    systemImage: "folder.badge.plus",
+                    placeholder: "例如：英文原著、技术文档",
+                    confirmTitle: "创建",
+                    initialName: newFolderName
+                ) { trimmed in
+                    db.createFolder(name: trimmed)
                 }
-                Button("取消", role: .cancel) {}
             }
-            .alert("重命名文件夹", isPresented: Binding(
-                get: { renamingFolder != nil },
-                set: { if !$0 { renamingFolder = nil } }
-            )) {
-                TextField("文件夹名称", text: $renameFolderName)
-                Button("保存") {
-                    let trimmed = renameFolderName.trimmingCharacters(in: .whitespacesAndNewlines)
-                    if let target = renamingFolder, !trimmed.isEmpty {
-                        db.renameFolder(id: target.id, name: trimmed)
-                    }
-                    renamingFolder = nil
+            .sheet(item: $renamingFolder) { target in
+                GlassFolderInputSheet(
+                    title: "重命名文件夹",
+                    subtitle: "修改文件夹「\(target.name)」的名称",
+                    systemImage: "folder.badge.gearshape",
+                    placeholder: "输入新的文件夹名称",
+                    confirmTitle: "保存",
+                    initialName: renameFolderName.isEmpty ? target.name : renameFolderName
+                ) { trimmed in
+                    db.renameFolder(id: target.id, name: trimmed)
                 }
-                Button("取消", role: .cancel) { renamingFolder = nil }
             }
             .alert("删除文件夹", isPresented: Binding(
                 get: { deletingFolder != nil },
@@ -1034,6 +1034,214 @@ private struct MoveBookToFolderSheet: View {
                 }
             }
         }
+    }
+}
+
+private struct GlassFolderInputSheet: View {
+    @Environment(\.dismiss) private var dismiss
+    @Environment(\.appPalette) private var palette
+
+    let title: String
+    let subtitle: String
+    let systemImage: String
+    let placeholder: String
+    let confirmTitle: String
+    let initialName: String
+    var onConfirm: (String) -> Void
+
+    @State private var name: String = ""
+    @FocusState private var isInputFocused: Bool
+
+    init(
+        title: String,
+        subtitle: String,
+        systemImage: String,
+        placeholder: String,
+        confirmTitle: String,
+        initialName: String,
+        onConfirm: @escaping (String) -> Void
+    ) {
+        self.title = title
+        self.subtitle = subtitle
+        self.systemImage = systemImage
+        self.placeholder = placeholder
+        self.confirmTitle = confirmTitle
+        self.initialName = initialName
+        self.onConfirm = onConfirm
+        _name = State(initialValue: initialName)
+    }
+
+    private var trimmedName: String {
+        name.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            HStack(spacing: 12) {
+                AppleIconBadge(
+                    systemImage: systemImage,
+                    size: 38,
+                    cornerRadius: 11,
+                    filled: true
+                )
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(title)
+                        .font(.headline)
+                        .foregroundStyle(.primary)
+                    Text(subtitle)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
+                Spacer()
+            }
+
+            HStack(spacing: 10) {
+                Image(systemName: "folder.fill")
+                    .font(.body)
+                    .foregroundStyle(palette.accent)
+
+                TextField(placeholder, text: $name)
+                    .font(.body)
+                    .textInputAutocapitalization(.never)
+                    .autocorrectionDisabled(false)
+                    .submitLabel(.done)
+                    .focused($isInputFocused)
+                    .onSubmit {
+                        submitIfValid()
+                    }
+
+                if !name.isEmpty {
+                    Button {
+                        name = ""
+                    } label: {
+                        Image(systemName: "xmark.circle.fill")
+                            .font(.body)
+                            .foregroundStyle(.secondary.opacity(0.75))
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+            .padding(.horizontal, 14)
+            .padding(.vertical, 13)
+            .background {
+                ZStack {
+                    RoundedRectangle(cornerRadius: 16, style: .continuous)
+                        .fill(.ultraThinMaterial)
+                    RoundedRectangle(cornerRadius: 16, style: .continuous)
+                        .fill(palette.surfaceTint.opacity(palette.isLight ? 0.36 : 0.28))
+                }
+            }
+            .overlay {
+                RoundedRectangle(cornerRadius: 16, style: .continuous)
+                    .strokeBorder(
+                        isInputFocused
+                            ? palette.accent.opacity(0.65)
+                            : Color.white.opacity(palette.isLight ? 0.65 : 0.22),
+                        lineWidth: isInputFocused ? 1.2 : 0.7
+                    )
+            }
+            .shadow(color: .black.opacity(palette.isLight ? 0.04 : 0.18), radius: 8, x: 0, y: 3)
+
+            HStack(spacing: 12) {
+                Button {
+                    dismiss()
+                } label: {
+                    Text("取消")
+                        .font(.subheadline.weight(.medium))
+                        .foregroundStyle(.primary)
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 12)
+                        .background {
+                            ZStack {
+                                Capsule().fill(.ultraThinMaterial)
+                                Capsule().fill(
+                                    LinearGradient(
+                                        colors: [.white.opacity(palette.isLight ? 0.30 : 0.10), .clear],
+                                        startPoint: .top,
+                                        endPoint: .bottom
+                                    )
+                                )
+                            }
+                        }
+                        .overlay {
+                            Capsule()
+                                .strokeBorder(.white.opacity(palette.isLight ? 0.72 : 0.24), lineWidth: 0.75)
+                        }
+                }
+                .buttonStyle(GlassPressButtonStyle())
+
+                Button {
+                    submitIfValid()
+                } label: {
+                    Text(confirmTitle)
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(.white)
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 12)
+                        .background {
+                            Capsule()
+                                .fill(
+                                    LinearGradient(
+                                        colors: [
+                                            palette.accent.opacity(trimmedName.isEmpty ? 0.35 : 0.96),
+                                            palette.accent.opacity(trimmedName.isEmpty ? 0.28 : 0.80)
+                                        ],
+                                        startPoint: .top,
+                                        endPoint: .bottom
+                                    )
+                                )
+                        }
+                        .overlay {
+                            Capsule()
+                                .strokeBorder(.white.opacity(trimmedName.isEmpty ? 0.15 : 0.42), lineWidth: 0.75)
+                        }
+                        .shadow(
+                            color: trimmedName.isEmpty ? .clear : palette.accent.opacity(0.28),
+                            radius: 10,
+                            x: 0,
+                            y: 4
+                        )
+                }
+                .buttonStyle(GlassPressButtonStyle())
+                .disabled(trimmedName.isEmpty)
+            }
+        }
+        .padding(.horizontal, 20)
+        .padding(.top, 24)
+        .padding(.bottom, 18)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+        .presentationDetents([.height(248)])
+        .presentationCornerRadius(30)
+        .presentationDragIndicator(.visible)
+        .presentationBackground {
+            ZStack {
+                Rectangle().fill(.regularMaterial)
+                if palette.mode != .dynamic {
+                    Rectangle().fill(palette.surfaceTint.opacity(palette.isLight ? 0.28 : 0.24))
+                }
+                LinearGradient(
+                    colors: [
+                        .white.opacity(palette.isLight ? 0.28 : 0.08),
+                        .clear
+                    ],
+                    startPoint: .top,
+                    endPoint: .center
+                )
+            }
+        }
+        .onAppear {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.18) {
+                isInputFocused = true
+            }
+        }
+    }
+
+    private func submitIfValid() {
+        let trimmed = trimmedName
+        guard !trimmed.isEmpty else { return }
+        onConfirm(trimmed)
+        dismiss()
     }
 }
 

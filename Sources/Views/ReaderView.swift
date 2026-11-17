@@ -2437,7 +2437,7 @@ private struct TokenizedUnitTextView: View {
                         .font(.system(size: fontSize, weight: .regular, design: .serif))
                         .foregroundStyle(textColor)
                         .padding(.vertical, 1)
-                        .padding(.trailing, ReaderPunctHelper.trailingSpacing(token.text))
+                        .padding(.trailing, ReaderPunctHelper.trailingSpacing(for: token.text))
                         .layoutValue(key: TokenAttachPrevKey.self, value: attachPrev)
                         .layoutValue(key: TokenAttachNextKey.self, value: attachNext)
                 }
