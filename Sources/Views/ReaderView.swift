@@ -1496,7 +1496,6 @@ struct ReaderView: View {
             if Task.isCancelled { return }
         }
 
-        var fastApplied = false
         let finalRes = await TranslationService.translateSentenceProgressive(
             text: target,
             settings: settings,
@@ -1509,8 +1508,7 @@ struct ReaderView: View {
                 try await appleBridge.translate(text, toEnglish: toEn)
             },
             onFastPreview: { preview in
-                guard !fastApplied, target == targetSentence else { return }
-                fastApplied = true
+                guard target == targetSentence else { return }
                 sentenceTranslation = preview
                 sentenceSource = TranslationService.getCachedSentenceSource(text: target, settings: settings) ?? "在线翻译"
                 translatingSentence = false
