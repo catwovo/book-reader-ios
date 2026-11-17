@@ -13,8 +13,81 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Select Xcode 16
-        run: sudo xcode-select -s /Applications/Xcode_16.2.app/Contents/Developer || true
+      - name: Select Compatible Xcode
+        run: |
+          SELECTED_XCODE=$(python3 - <<'PY'
+          import glob, json, os, plistlib, subprocess
+
+          try:
+              raw = subprocess.check_output(["xcrun", "simctl", "list", "runtimes", "-j"], text=True)
+              runtimes = json.loads(raw).get("runtimes", [])
+          except Exception:
+              runtimes = []
+
+          ios_builds = {
+              r.get("buildversion")
+              for r in runtimes
+              if r.get("isAvailable", True) and "iOS" in r.get("name", "")
+          }
+          ios_versions = [
+              r.get("version", "")
+              for r in runtimes
+              if r.get("isAvailable", True) and "iOS" in r.get("name", "") and r.get("version")
+          ]
+
+          candidates = [
+              "/Applications/Xcode_16.4.app",
+              "/Applications/Xcode_16.3.app",
+              "/Applications/Xcode.app",
+          ] + sorted(glob.glob("/Applications/Xcode_*.app"), reverse=True)
+
+          seen = set()
+          ordered = []
+          for c in candidates:
+              if os.path.exists(c):
+                  real = os.path.realpath(c)
+                  if real not in seen and "beta" not in os.path.basename(real).lower():
+                      seen.add(real)
+                      ordered.append(real)
+
+          chosen = None
+          for app in ordered:
+              sys_plist = os.path.join(
+                  app,
+                  "Contents/Developer/Platforms/iPhoneSimulator.platform/Developer/SDKs/iPhoneSimulator.sdk/System/Library/CoreServices/SystemVersion.plist",
+              )
+              sdk_plist = os.path.join(
+                  app,
+                  "Contents/Developer/Platforms/iPhoneSimulator.platform/Developer/SDKs/iPhoneSimulator.sdk/SDKSettings.plist",
+              )
+              build_ver = None
+              sdk_ver = None
+              if os.path.exists(sys_plist):
+                  with open(sys_plist, "rb") as f:
+                      build_ver = plistlib.load(f).get("ProductBuildVersion")
+              if os.path.exists(sdk_plist):
+                  with open(sdk_plist, "rb") as f:
+                      sdk_ver = plistlib.load(f).get("Version")
+              if (build_ver and build_ver in ios_builds) or (
+                  sdk_ver and any(v == sdk_ver or v.startswith(sdk_ver + ".") for v in ios_versions)
+              ):
+                  chosen = app
+                  break
+
+          if not chosen and ordered:
+              chosen = os.path.realpath("/Applications/Xcode.app") if os.path.exists("/Applications/Xcode.app") else ordered[0]
+
+          print(chosen or "")
+          PY
+          )
+          echo "Available iOS runtimes:"
+          xcrun simctl list runtimes || true
+          echo "Selected Xcode: $SELECTED_XCODE"
+          if [ -n "$SELECTED_XCODE" ]; then
+            sudo xcode-select -s "$SELECTED_XCODE/Contents/Developer"
+            sudo xcodebuild -runFirstLaunch || true
+          fi
+          xcodebuild -version
 
       - name: Install XcodeGen
         run: brew install xcodegen
@@ -32,6 +105,7 @@ jobs:
             -scheme BookReader \
             -configuration Release \
             -sdk iphoneos \
+            -destination 'generic/platform=iOS' \
             -archivePath build/BookReader.xcarchive \
             CODE_SIGNING_ALLOWED=NO \
             CODE_SIGNING_REQUIRED=NO \

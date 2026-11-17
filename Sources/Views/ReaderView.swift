@@ -491,7 +491,7 @@ struct ReaderView: View {
                                 .font(.caption2)
                                 .foregroundStyle(bottomSecondaryColor.opacity(0.55))
                                 .padding(.top, 8)
-                                .padding(.bottom, 64)
+                                .padding(.bottom, 68)
                                 .frame(maxWidth: .infinity)
                         }
                         .padding(.horizontal, 14)
@@ -507,28 +507,10 @@ struct ReaderView: View {
                         }
                     }
 
-                    // Floating Liquid Glass Bottom TOC Pill
-                    Button {
-                        showTocSheet = true
-                    } label: {
-                        HStack(spacing: 6) {
-                            Image(systemName: "list.bullet")
-                                .font(.caption.weight(.semibold))
-                            Text("目录 · \(chapterIndex + 1)/\(Swift.max(1, parsedBook.chapters.count))")
-                                .font(.caption.weight(.medium))
-                                .monospacedDigit()
-                        }
-                        .foregroundStyle(customBottomBg != nil ? customBottomBg!.contrastingTextColor : .primary)
-                        .padding(.horizontal, 18)
-                        .padding(.vertical, 8)
-                        .background(.ultraThinMaterial, in: Capsule())
-                        .overlay {
-                            Capsule()
-                                .strokeBorder(.white.opacity(0.38), lineWidth: 0.75)
-                        }
-                        .shadow(color: .black.opacity(0.12), radius: 10, y: 4)
-                    }
-                    .buttonStyle(GlassPressButtonStyle())
+                    // Floating Liquid Glass Bottom Dock: Back · TOC · Settings
+                    readerBottomGlassDock(
+                        tocTitle: "目录 · \(chapterIndex + 1)/\(Swift.max(1, parsedBook.chapters.count))"
+                    )
                     .padding(.bottom, 10)
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -536,22 +518,111 @@ struct ReaderView: View {
         }
     }
 
-    // MARK: - Top Bar & Scrubber
+    // MARK: - Top Bar & Bottom Glass Dock
+
+    @ViewBuilder
+    private func readerGlassCapsulePill(
+        title: String,
+        systemImage: String,
+        isEmphasized: Bool = false,
+        horizontalPadding: CGFloat = 14,
+        respectCustomBottomBg: Bool = true,
+        action: @escaping () -> Void
+    ) -> some View {
+        let activeCustomBg = respectCustomBottomBg ? customBottomBg : nil
+        let isLightDock = activeCustomBg != nil ? (activeCustomBg!.relativeLuminance > 0.44) : palette.isLight
+        let fgColor: Color = activeCustomBg != nil ? activeCustomBg!.contrastingTextColor : .primary
+
+        Button(action: action) {
+            HStack(spacing: 5) {
+                Image(systemName: systemImage)
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(isEmphasized ? palette.accent : fgColor.opacity(0.88))
+                Text(title)
+                    .font(.caption.weight(isEmphasized ? .semibold : .medium))
+                    .monospacedDigit()
+                    .lineLimit(1)
+                    .foregroundStyle(fgColor)
+            }
+            .padding(.horizontal, horizontalPadding)
+            .padding(.vertical, 9)
+            .background {
+                ZStack {
+                    Capsule().fill(.regularMaterial)
+                    if let activeCustomBg {
+                        Capsule().fill(activeCustomBg.opacity(0.42))
+                    } else if palette.mode != .dynamic {
+                        Capsule().fill(palette.surfaceTint.opacity(palette.isLight ? 0.34 : 0.28))
+                    }
+                    Capsule().fill(
+                        LinearGradient(
+                            colors: [
+                                .white.opacity(isLightDock ? 0.36 : 0.12),
+                                .clear
+                            ],
+                            startPoint: .top,
+                            endPoint: .bottom
+                        )
+                    )
+                }
+            }
+            .overlay {
+                Capsule()
+                    .strokeBorder(
+                        LinearGradient(
+                            colors: [
+                                .white.opacity(isLightDock ? 0.82 : 0.34),
+                                .white.opacity(isLightDock ? 0.20 : 0.08),
+                                .white.opacity(0.03)
+                            ],
+                            startPoint: .topLeading,
+                            endPoint: .bottomTrailing
+                        ),
+                        lineWidth: 0.75
+                    )
+            }
+            .shadow(color: .black.opacity(isLightDock ? 0.10 : 0.32), radius: 12, x: 0, y: 5)
+            .contentShape(Capsule())
+        }
+        .buttonStyle(GlassPressButtonStyle())
+    }
+
+    private func readerBottomGlassDock(tocTitle: String, respectCustomBottomBg: Bool = true) -> some View {
+        HStack(spacing: 10) {
+            readerGlassCapsulePill(
+                title: "返回",
+                systemImage: "chevron.left",
+                horizontalPadding: 14,
+                respectCustomBottomBg: respectCustomBottomBg
+            ) {
+                flushProgressNow()
+                onBack()
+            }
+
+            readerGlassCapsulePill(
+                title: tocTitle,
+                systemImage: "list.bullet",
+                isEmphasized: true,
+                horizontalPadding: 16,
+                respectCustomBottomBg: respectCustomBottomBg
+            ) {
+                showTocSheet = true
+            }
+
+            readerGlassCapsulePill(
+                title: "设置",
+                systemImage: "slider.horizontal.3",
+                horizontalPadding: 14,
+                respectCustomBottomBg: respectCustomBottomBg
+            ) {
+                showPrefsSheet = true
+            }
+        }
+        .padding(.horizontal, 12)
+    }
 
     private var readerTopBar: some View {
         HStack(spacing: 10) {
-            Button {
-                flushProgressNow()
-                onBack()
-            } label: {
-                Image(systemName: "chevron.left")
-                    .font(.body.weight(.semibold))
-                    .foregroundStyle(readerTextColor)
-                    .frame(width: 34, height: 34)
-                    .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-
             VStack(alignment: .leading, spacing: 1) {
                 Text(book.title)
                     .font(.subheadline.weight(.semibold))
@@ -568,35 +639,28 @@ struct ReaderView: View {
                 .font(.caption2.weight(.medium))
                 .monospacedDigit()
                 .foregroundStyle(readerSecondaryColor)
-                .padding(.horizontal, 9)
-                .padding(.vertical, 4)
-                .background(readerTextColor.opacity(0.06), in: Capsule())
-                .overlay(Capsule().strokeBorder(readerTextColor.opacity(0.10), lineWidth: 0.5))
+                .padding(.horizontal, 10)
+                .padding(.vertical, 5)
+                .background(.ultraThinMaterial, in: Capsule())
+                .overlay(Capsule().strokeBorder(readerTextColor.opacity(0.12), lineWidth: 0.6))
 
             if book.format.uppercased() == "PDF" {
                 Button {
                     togglePdfOriginalMode()
                 } label: {
-                    Image(systemName: "doc.richtext")
-                        .font(.subheadline)
+                    Label("原版", systemImage: "doc.richtext")
+                        .font(.caption2.weight(.semibold))
                         .foregroundStyle(readerTextColor)
-                        .frame(width: 32, height: 32)
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 5)
+                        .background(.ultraThinMaterial, in: Capsule())
+                        .overlay(Capsule().strokeBorder(readerTextColor.opacity(0.12), lineWidth: 0.6))
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(GlassPressButtonStyle())
             }
-
-            Button {
-                showPrefsSheet = true
-            } label: {
-                Image(systemName: "slider.horizontal.3")
-                    .font(.subheadline)
-                    .foregroundStyle(readerTextColor)
-                    .frame(width: 32, height: 32)
-            }
-            .buttonStyle(.plain)
         }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 6)
+        .padding(.horizontal, 16)
+        .padding(.vertical, 8)
     }
 
     private var chapterScrubberBar: some View {
@@ -1016,16 +1080,6 @@ struct ReaderView: View {
         VStack(spacing: 0) {
             // Top bar
             HStack(spacing: 10) {
-                Button {
-                    flushProgressNow()
-                    onBack()
-                } label: {
-                    Image(systemName: "chevron.left")
-                        .font(.body.weight(.semibold))
-                        .frame(width: 34, height: 34)
-                }
-                .buttonStyle(.plain)
-
                 VStack(alignment: .leading, spacing: 1) {
                     Text(book.title)
                         .font(.subheadline.weight(.semibold))
@@ -1046,20 +1100,12 @@ struct ReaderView: View {
                             .padding(.horizontal, 10)
                             .padding(.vertical, 5)
                             .background(.ultraThinMaterial, in: Capsule())
+                            .overlay(Capsule().strokeBorder(.white.opacity(0.32), lineWidth: 0.6))
                     }
-                    .buttonStyle(.plain)
+                    .buttonStyle(GlassPressButtonStyle())
                 }
-
-                Button {
-                    showTocSheet = true
-                } label: {
-                    Image(systemName: "list.bullet")
-                        .font(.subheadline)
-                        .frame(width: 32, height: 32)
-                }
-                .buttonStyle(.plain)
             }
-            .padding(.horizontal, 12)
+            .padding(.horizontal, 16)
             .padding(.vertical, 8)
             .background(.ultraThinMaterial)
 
@@ -1078,48 +1124,56 @@ struct ReaderView: View {
                 Spacer()
             }
 
-            // Bottom page controls
-            HStack(spacing: 12) {
-                Button {
-                    if pdfCurrentPage > 0 {
-                        pdfCurrentPage -= 1
-                        feedbackPlayer.playStep(noteCount: 1)
+            // Bottom page controls + Liquid Glass Dock
+            VStack(spacing: 10) {
+                HStack(spacing: 12) {
+                    Button {
+                        if pdfCurrentPage > 0 {
+                            pdfCurrentPage -= 1
+                            feedbackPlayer.playStep(noteCount: 1)
+                        }
+                    } label: {
+                        Image(systemName: "chevron.left")
+                            .frame(width: 34, height: 34)
+                            .background(.ultraThinMaterial, in: Circle())
                     }
-                } label: {
-                    Image(systemName: "chevron.left")
-                        .frame(width: 34, height: 34)
-                        .background(.ultraThinMaterial, in: Circle())
-                }
-                .disabled(pdfCurrentPage <= 0)
+                    .disabled(pdfCurrentPage <= 0)
 
-                if totalPages > 1 {
-                    Slider(
-                        value: Binding(
-                            get: { Double(pdfCurrentPage) },
-                            set: { pdfCurrentPage = Int($0.rounded()) }
-                        ),
-                        in: 0...Double(totalPages - 1),
-                        step: 1
-                    )
-                    .tint(palette.accent)
-                } else {
-                    Spacer()
-                }
-
-                Button {
-                    if pdfCurrentPage + 1 < totalPages {
-                        pdfCurrentPage += 1
-                        feedbackPlayer.playStep(noteCount: 1)
+                    if totalPages > 1 {
+                        Slider(
+                            value: Binding(
+                                get: { Double(pdfCurrentPage) },
+                                set: { pdfCurrentPage = Int($0.rounded()) }
+                            ),
+                            in: 0...Double(totalPages - 1),
+                            step: 1
+                        )
+                        .tint(palette.accent)
+                    } else {
+                        Spacer()
                     }
-                } label: {
-                    Image(systemName: "chevron.right")
-                        .frame(width: 34, height: 34)
-                        .background(.ultraThinMaterial, in: Circle())
+
+                    Button {
+                        if pdfCurrentPage + 1 < totalPages {
+                            pdfCurrentPage += 1
+                            feedbackPlayer.playStep(noteCount: 1)
+                        }
+                    } label: {
+                        Image(systemName: "chevron.right")
+                            .frame(width: 34, height: 34)
+                            .background(.ultraThinMaterial, in: Circle())
+                    }
+                    .disabled(pdfCurrentPage + 1 >= totalPages)
                 }
-                .disabled(pdfCurrentPage + 1 >= totalPages)
+                .padding(.horizontal, 16)
+
+                readerBottomGlassDock(
+                    tocTitle: "目录 · \(pdfCurrentPage + 1)/\(totalPages)",
+                    respectCustomBottomBg: false
+                )
             }
-            .padding(.horizontal, 16)
-            .padding(.vertical, 10)
+            .padding(.top, 10)
+            .padding(.bottom, 10)
             .background(.ultraThinMaterial)
         }
     }
