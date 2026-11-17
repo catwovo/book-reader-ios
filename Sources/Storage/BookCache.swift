@@ -1,8 +1,5 @@
 import Foundation
 
-extension BookChapter: Codable {}
-extension ParsedBook: Codable {}
-
 enum BookCache {
     private static var cacheDirectory: URL {
         let base = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first!

@@ -3,12 +3,12 @@ import PDFKit
 import UIKit
 import zlib
 
-struct BookChapter: Hashable, Sendable {
+struct BookChapter: Codable, Hashable, Sendable {
     var title: String
     var paragraphs: [String]
 }
 
-struct ParsedBook: Hashable, Sendable {
+struct ParsedBook: Codable, Hashable, Sendable {
     var title: String
     var chapters: [BookChapter]
 }
