@@ -795,35 +795,38 @@ struct ReaderView: View {
         let isStarred = currentNote != nil
         let hasNoteText = !(currentNote?.noteText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?? true)
         let isErrorSrc = sentenceSource.contains("失败") || sentenceSource.contains("未就绪")
+        let isTranslationExpanded = translatingSentence || !sentenceTranslation.isEmpty
 
-        return GlassCard(cornerRadius: 22, customFill: customSentenceCardBg) {
-            VStack(alignment: .leading, spacing: 10) {
-                if translatingSentence {
-                    HStack(spacing: 8) {
-                        ProgressView().controlSize(.small)
-                        Text("正在翻译当前句...")
-                            .font(.caption)
-                            .foregroundStyle(sentenceCardSecondaryColor)
-                    }
-                    .padding(.horizontal, 11)
-                    .padding(.vertical, 9)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .background(sentenceCardTextColor.opacity(0.05), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-                } else {
-                    Text(sentenceTranslation.isEmpty ? "已关闭自动翻译" : sentenceTranslation)
-                        .font(.subheadline)
-                        .lineSpacing(4.5)
-                        .foregroundStyle(sentenceCardTextColor)
-                        .textSelection(.enabled)
+        return GlassCard(cornerRadius: isTranslationExpanded ? 22 : 18, customFill: customSentenceCardBg) {
+            VStack(alignment: .leading, spacing: isTranslationExpanded ? 10 : 8) {
+                if isTranslationExpanded {
+                    if translatingSentence {
+                        HStack(spacing: 8) {
+                            ProgressView().controlSize(.small)
+                            Text("正在翻译当前句...")
+                                .font(.caption)
+                                .foregroundStyle(sentenceCardSecondaryColor)
+                        }
+                        .padding(.horizontal, 11)
+                        .padding(.vertical, 9)
                         .frame(maxWidth: .infinity, alignment: .leading)
+                        .background(sentenceCardTextColor.opacity(0.05), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+                    } else {
+                        Text(sentenceTranslation)
+                            .font(.subheadline)
+                            .lineSpacing(4.5)
+                            .foregroundStyle(sentenceCardTextColor)
+                            .textSelection(.enabled)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+
+                    Divider()
+                        .opacity(0.45)
                 }
 
-                Divider()
-                    .opacity(0.45)
-
-                // Controls row
+                // Controls row (always visible; acts as the compact collapsed bar when translation is off)
                 HStack(spacing: 6) {
-                    if !settings.autoTranslateSentence && sentenceTranslation.isEmpty && !translatingSentence {
+                    if !isTranslationExpanded {
                         Button {
                             Task {
                                 await loadSentenceTranslation(forceRefresh: true, ignoreAutoSetting: true)
@@ -832,7 +835,7 @@ struct ReaderView: View {
                             Label("点击翻译", systemImage: "translate")
                                 .font(.caption2.weight(.semibold))
                                 .padding(.horizontal, 10)
-                                .padding(.vertical, 5)
+                                .padding(.vertical, 5.5)
                                 .background(palette.accent.opacity(0.14), in: Capsule())
                                 .foregroundStyle(palette.accent)
                         }
@@ -874,6 +877,22 @@ struct ReaderView: View {
                                 .background(sentenceCardTextColor.opacity(0.06), in: Circle())
                         }
                         .buttonStyle(GlassPressButtonStyle())
+
+                        if !settings.autoTranslateSentence {
+                            Button {
+                                withAnimation(AppMotion.panelSpring) {
+                                    sentenceTranslation = ""
+                                    sentenceSource = ""
+                                }
+                            } label: {
+                                Image(systemName: "chevron.up")
+                                    .font(.caption.weight(.semibold))
+                                    .foregroundStyle(sentenceCardSecondaryColor)
+                                    .frame(width: 28, height: 28)
+                                    .background(sentenceCardTextColor.opacity(0.06), in: Circle())
+                            }
+                            .buttonStyle(GlassPressButtonStyle())
+                        }
                     }
 
                     // Bookmark star
@@ -974,8 +993,9 @@ struct ReaderView: View {
                     .transition(AppMotion.panelTransition)
                 }
             }
-            .padding(.horizontal, 16)
-            .padding(.vertical, 13)
+            .padding(.horizontal, isTranslationExpanded ? 16 : 14)
+            .padding(.vertical, isTranslationExpanded ? 13 : 9)
+            .animation(AppMotion.panelSpring, value: isTranslationExpanded)
         }
     }
 
@@ -2222,12 +2242,14 @@ private struct ReaderPreferencesSheet: View {
                             systemImage: "music.note",
                             expanded: $feedbackExpanded
                         ) {
-                            VStack(alignment: .leading, spacing: 6) {
-                                Text("钢琴音效曲目（按目标句视觉行数演奏，最多 6 音）")
-                                    .font(.caption)
+                            // Row 1: 音效（单行）
+                            HStack(spacing: 8) {
+                                Text("音效")
+                                    .font(.caption.weight(.medium))
                                     .foregroundStyle(.secondary)
+                                    .fixedSize()
                                 ScrollView(.horizontal, showsIndicators: false) {
-                                    HStack(spacing: 8) {
+                                    HStack(spacing: 6) {
                                         ForEach(StepSoundTrack.allCases, id: \.self) { track in
                                             let selected = store.settings.stepSoundTrack == track
                                             GlassCapsuleChip(title: track.displayName, selected: selected) {
@@ -2240,8 +2262,13 @@ private struct ReaderPreferencesSheet: View {
                                 }
                             }
 
-                            VStack(alignment: .leading, spacing: 6) {
-                                Text("翻句震动强度").font(.caption).foregroundStyle(.secondary)
+                            // Row 2: 震动方式（强度与方式合行，最多两行）
+                            HStack(spacing: 8) {
+                                Text("震动")
+                                    .font(.caption.weight(.medium))
+                                    .foregroundStyle(.secondary)
+                                    .fixedSize()
+
                                 GlassSegmentedControl(
                                     titles: ["关闭", "轻柔", "适中", "强烈"],
                                     selection: Binding(
@@ -2253,22 +2280,22 @@ private struct ReaderPreferencesSheet: View {
                                     ),
                                     compact: true
                                 )
-                            }
+                                .frame(maxWidth: .infinity)
 
-                            if store.settings.stepHapticLevel > 0 {
-                                VStack(alignment: .leading, spacing: 6) {
-                                    Text("震动方式").font(.caption).foregroundStyle(.secondary)
-                                    GlassSegmentedControl(
-                                        options: StepHapticMode.allCases.map { ($0, $0.displayName) },
-                                        selection: Binding(
-                                            get: { store.settings.stepHapticMode },
-                                            set: { val in
-                                                store.settings.stepHapticMode = val
-                                                feedbackPlayer.playHapticPreview(level: store.settings.stepHapticLevel, followLines: val == .line)
-                                            }
-                                        ),
-                                        compact: true
-                                    )
+                                if store.settings.stepHapticLevel > 0 {
+                                    let isLine = store.settings.stepHapticMode == .line
+                                    GlassCapsuleChip(
+                                        title: isLine ? "随行" : "单次",
+                                        systemImage: "waveform",
+                                        selected: isLine
+                                    ) {
+                                        let next: StepHapticMode = isLine ? .single : .line
+                                        withAnimation(AppMotion.panelSpring) {
+                                            store.settings.stepHapticMode = next
+                                        }
+                                        feedbackPlayer.playHapticPreview(level: store.settings.stepHapticLevel, followLines: next == .line)
+                                    }
+                                    .fixedSize()
                                 }
                             }
 

@@ -42,9 +42,16 @@ private enum LibraryActiveSheet: Identifiable {
     }
 }
 
-private enum LibraryFolderModal: Equatable {
+private enum LibraryFolderModal: Identifiable, Equatable {
     case newFolder
     case renameFolder(BookFolder)
+
+    var id: String {
+        switch self {
+        case .newFolder: return "newFolder"
+        case .renameFolder(let folder): return "rename_\(folder.id)"
+        }
+    }
 }
 
 struct LibraryView: View {
@@ -126,6 +133,47 @@ struct LibraryView: View {
                          : "确定删除空文件夹「\(target.name)」吗？")
                 }
             }
+            .sheet(item: $folderModal) { modal in
+                Group {
+                    switch modal {
+                    case .newFolder:
+                        GlassFolderInputModal(
+                            title: "新建文件夹",
+                            subtitle: "输入名称，将藏书按主题或类型分类整理",
+                            systemImage: "folder.badge.plus",
+                            placeholder: "例如：英文原著、技术文档",
+                            confirmTitle: "创建",
+                            initialName: "",
+                            onCancel: {
+                                folderModal = nil
+                            },
+                            onConfirm: { trimmed in
+                                db.createFolder(name: trimmed)
+                                folderModal = nil
+                            }
+                        )
+                    case .renameFolder(let target):
+                        GlassFolderInputModal(
+                            title: "重命名文件夹",
+                            subtitle: "修改文件夹「\(target.name)」的名称",
+                            systemImage: "folder.badge.gearshape",
+                            placeholder: "输入新的文件夹名称",
+                            confirmTitle: "保存",
+                            initialName: target.name,
+                            onCancel: {
+                                folderModal = nil
+                            },
+                            onConfirm: { trimmed in
+                                db.renameFolder(id: target.id, name: trimmed)
+                                folderModal = nil
+                            }
+                        )
+                    }
+                }
+                .presentationDetents([.height(250)])
+                .presentationDragIndicator(.visible)
+                .presentationCornerRadius(28)
+            }
     }
 
     private func attachBookSheets<Content: View>(to content: Content) -> some View {
@@ -185,9 +233,6 @@ struct LibraryView: View {
             .onChange(of: db.folders.map(\.id)) { _, validIds in
                 expandedFolderIds = expandedFolderIds.intersection(Set(validIds))
             }
-            .onChange(of: folderModal != nil) { _, shown in
-                onModalOverlayChange(shown)
-            }
     }
 
     private var hasRecentBooks: Bool {
@@ -196,7 +241,7 @@ struct LibraryView: View {
 
     private var heroCollapseDelta: CGFloat {
         guard hasRecentBooks else { return 0 }
-        return max(1, expandedHeroHeight - compactHeroHeight)
+        return max(0, expandedHeroHeight - compactHeroHeight)
     }
 
     private var activeScrollOffset: CGFloat {
@@ -210,11 +255,6 @@ struct LibraryView: View {
     private var currentHeroVisibleHeight: CGFloat {
         guard hasRecentBooks else { return 0 }
         return isHeroCollapsed ? compactHeroHeight : expandedHeroHeight
-    }
-
-    private var listTopCollapsePadding: CGFloat {
-        guard hasRecentBooks else { return 0 }
-        return isHeroCollapsed ? 0 : heroCollapseDelta
     }
 
     private func setHeroCollapsed(_ collapsed: Bool, recordAnchor: Bool = false) {
@@ -267,82 +307,8 @@ struct LibraryView: View {
                         heroContinueSection
                         sectionHeaderBar
                     }
-                    .background {
-                        LinearGradient(
-                            colors: [
-                                palette.backgroundBase.opacity(0.98),
-                                palette.backgroundBase.opacity(0.92),
-                                palette.backgroundBase.opacity(0.72)
-                            ],
-                            startPoint: .top,
-                            endPoint: .bottom
-                        )
-                        .allowsHitTesting(false)
-                    }
                     .zIndex(2)
                 }
-            }
-
-            if let modal = folderModal {
-                ZStack {
-                    Color.black.opacity(0.30)
-                        .ignoresSafeArea()
-                        .onTapGesture {
-                            withAnimation(AppMotion.panelSpring) {
-                                folderModal = nil
-                            }
-                        }
-
-                    VStack {
-                        Spacer(minLength: 12)
-                        switch modal {
-                        case .newFolder:
-                            GlassFolderInputModal(
-                                title: "新建文件夹",
-                                subtitle: "输入名称，将藏书按主题或类型分类整理",
-                                systemImage: "folder.badge.plus",
-                                placeholder: "例如：英文原著、技术文档",
-                                confirmTitle: "创建",
-                                initialName: "",
-                                onCancel: {
-                                    withAnimation(AppMotion.panelSpring) {
-                                        folderModal = nil
-                                    }
-                                },
-                                onConfirm: { trimmed in
-                                    db.createFolder(name: trimmed)
-                                    withAnimation(AppMotion.panelSpring) {
-                                        folderModal = nil
-                                    }
-                                }
-                            )
-                        case .renameFolder(let target):
-                            GlassFolderInputModal(
-                                title: "重命名文件夹",
-                                subtitle: "修改文件夹「\(target.name)」的名称",
-                                systemImage: "folder.badge.gearshape",
-                                placeholder: "输入新的文件夹名称",
-                                confirmTitle: "保存",
-                                initialName: target.name,
-                                onCancel: {
-                                    withAnimation(AppMotion.panelSpring) {
-                                        folderModal = nil
-                                    }
-                                },
-                                onConfirm: { trimmed in
-                                    db.renameFolder(id: target.id, name: trimmed)
-                                    withAnimation(AppMotion.panelSpring) {
-                                        folderModal = nil
-                                    }
-                                }
-                            )
-                        }
-                        Spacer(minLength: 12)
-                    }
-                    .padding(.horizontal, 22)
-                }
-                .transition(.opacity.combined(with: .scale(scale: 0.96)))
-                .zIndex(20)
             }
         }
     }
@@ -455,9 +421,7 @@ struct LibraryView: View {
                     iconFont: .subheadline,
                     isActive: true
                 ) {
-                    withAnimation(AppMotion.panelSpring) {
-                        folderModal = .newFolder
-                    }
+                    folderModal = .newFolder
                 }
 
                 GlassCircleIconButton(
@@ -493,7 +457,8 @@ struct LibraryView: View {
                 localShelfView
             } else {
                 OpdsOnlineLibraryPane(
-                    listTopCollapsePadding: listTopCollapsePadding,
+                    heroTopSpacerHeight: heroCollapseDelta,
+                    emptyTopPadding: isHeroCollapsed ? 0 : heroCollapseDelta,
                     onScrollOffsetChange: { offset in
                         updateScrollOffset(offset, forTab: 1)
                     },
@@ -520,7 +485,7 @@ struct LibraryView: View {
             } else if newOffset > 24 {
                 setHeroCollapsed(true)
             }
-        } else if newOffset < -26 {
+        } else if newOffset <= 8 {
             setHeroCollapsed(false)
         }
     }
@@ -551,7 +516,7 @@ struct LibraryView: View {
                 Spacer()
             }
             .padding(24)
-            .padding(.top, listTopCollapsePadding)
+            .padding(.top, isHeroCollapsed ? 0 : heroCollapseDelta)
         } else if db.folders.isEmpty && rootShelfBooks.isEmpty {
             VStack(spacing: 10) {
                 Spacer()
@@ -562,120 +527,114 @@ struct LibraryView: View {
                 Spacer()
             }
             .padding(24)
-            .padding(.top, listTopCollapsePadding)
+            .padding(.top, isHeroCollapsed ? 0 : heroCollapseDelta)
         } else {
-            ScrollView {
-                LazyVStack(spacing: 0, pinnedViews: [.sectionHeaders]) {
+            ScrollViewReader { scrollProxy in
+                ScrollView {
+                    LazyVStack(spacing: 0, pinnedViews: [.sectionHeaders]) {
 
-                    // Folders (sticky section headers stay pinned cleanly at the top edge of ScrollView below sectionHeaderBar when expanded)
-                    ForEach(Array(db.folders.enumerated()), id: \.element.id) { idx, folder in
-                        let folderBooks = folderBooksMap[folder.id] ?? []
-                        let isExpanded = expandedFolderIds.contains(folder.id)
+                        // Folders (sticky section headers stay pinned cleanly below sectionHeaderBar when expanded)
+                        ForEach(Array(db.folders.enumerated()), id: \.element.id) { idx, folder in
+                            let folderBooks = folderBooksMap[folder.id] ?? []
+                            let isExpanded = expandedFolderIds.contains(folder.id)
 
-                        Section {
-                            if isExpanded {
-                                if folderBooks.isEmpty {
-                                    GlassCard(cornerRadius: 14) {
-                                        Text("此文件夹暂无书籍，可点击右上角菜单导入或添加")
-                                            .font(.caption)
-                                            .foregroundStyle(.secondary)
-                                            .frame(maxWidth: .infinity)
-                                            .padding(.vertical, 12)
-                                            .padding(.horizontal, 12)
+                            Section {
+                                if isExpanded {
+                                    VStack(spacing: 4) {
+                                        if folderBooks.isEmpty {
+                                            GlassCard(cornerRadius: 14) {
+                                                Text("此文件夹暂无书籍，可点击右上角菜单导入或添加")
+                                                    .font(.caption)
+                                                    .foregroundStyle(.secondary)
+                                                    .frame(maxWidth: .infinity)
+                                                    .padding(.vertical, 12)
+                                                    .padding(.horizontal, 12)
+                                            }
+                                        } else {
+                                            ForEach(Array(folderBooks.enumerated()), id: \.element.id) { bIdx, book in
+                                                shelfBookRow(
+                                                    book: book,
+                                                    index: bIdx,
+                                                    count: folderBooks.count,
+                                                    inFolder: true
+                                                )
+                                            }
+                                        }
                                     }
                                     .padding(.leading, 10)
                                     .padding(.bottom, 4)
-                                    .transition(AppMotion.panelTransition)
-                                } else {
-                                    ForEach(Array(folderBooks.enumerated()), id: \.element.id) { bIdx, book in
-                                        shelfBookRow(
-                                            book: book,
-                                            index: bIdx,
-                                            count: folderBooks.count,
-                                            inFolder: true
-                                        )
-                                        .padding(.leading, 10)
-                                        .padding(.bottom, 4)
-                                        .transition(AppMotion.panelTransition)
-                                    }
+                                    .transition(.opacity)
                                 }
-                            }
-                        } header: {
-                            FolderHeaderGlassCard(
-                                folder: folder,
-                                bookCount: folderBooks.count,
-                                isExpanded: isExpanded,
-                                index: idx,
-                                count: db.folders.count,
-                                onToggleExpand: {
-                                    withAnimation(AppMotion.panelSpring) {
-                                        if isExpanded {
-                                            _ = expandedFolderIds.remove(folder.id)
-                                        } else {
+                            } header: {
+                                FolderHeaderGlassCard(
+                                    folder: folder,
+                                    bookCount: folderBooks.count,
+                                    isExpanded: isExpanded,
+                                    index: idx,
+                                    count: db.folders.count,
+                                    onToggleExpand: {
+                                        let willCollapse = isExpanded
+                                        withAnimation(.spring(response: 0.28, dampingFraction: 0.96)) {
+                                            if willCollapse {
+                                                _ = expandedFolderIds.remove(folder.id)
+                                            } else {
+                                                _ = expandedFolderIds.insert(folder.id)
+                                            }
+                                        }
+                                        if willCollapse {
+                                            withAnimation(.spring(response: 0.28, dampingFraction: 0.96)) {
+                                                scrollProxy.scrollTo("folder_\(folder.id)", anchor: .top)
+                                            }
+                                        }
+                                    },
+                                    onImportHere: {
+                                        withAnimation(.spring(response: 0.28, dampingFraction: 0.96)) {
                                             _ = expandedFolderIds.insert(folder.id)
                                         }
-                                    }
-                                },
-                                onImportHere: {
-                                    withAnimation(AppMotion.panelSpring) {
-                                        _ = expandedFolderIds.insert(folder.id)
-                                    }
-                                    importTargetFolderId = folder.id
-                                    showFileImporter = true
-                                },
-                                onAddExistingBooks: {
-                                    activeSheet = .addBooksToFolder(folder)
-                                },
-                                onRename: {
-                                    withAnimation(AppMotion.panelSpring) {
+                                        importTargetFolderId = folder.id
+                                        showFileImporter = true
+                                    },
+                                    onAddExistingBooks: {
+                                        activeSheet = .addBooksToFolder(folder)
+                                    },
+                                    onRename: {
                                         folderModal = .renameFolder(folder)
+                                    },
+                                    onDeleteFolder: {
+                                        deletingFolder = folder
                                     }
-                                },
-                                onDeleteFolder: {
-                                    deletingFolder = folder
-                                }
-                            )
-                            .padding(.bottom, 4)
-                            .background {
-                                if isExpanded {
-                                    LinearGradient(
-                                        colors: [
-                                            palette.backgroundBase.opacity(0.96),
-                                            palette.backgroundBase.opacity(0.90),
-                                            palette.backgroundBase.opacity(0.0)
-                                        ],
-                                        startPoint: .top,
-                                        endPoint: .bottom
-                                    )
-                                }
-                            }
-                        }
-                    }
-
-                    // Root Books in a separate headerless Section so expanded folders unpin before root books
-                    if !rootShelfBooks.isEmpty {
-                        Section {
-                            ForEach(Array(rootShelfBooks.enumerated()), id: \.element.id) { idx, book in
-                                shelfBookRow(
-                                    book: book,
-                                    index: idx,
-                                    count: rootShelfBooks.count,
-                                    inFolder: false
                                 )
-                                .padding(.top, idx == 0 && !db.folders.isEmpty ? 4 : 0)
+                                .id("folder_\(folder.id)")
                                 .padding(.bottom, 4)
                             }
                         }
+
+                        // Root Books in a separate headerless Section so expanded folders unpin before root books
+                        if !rootShelfBooks.isEmpty {
+                            Section {
+                                ForEach(Array(rootShelfBooks.enumerated()), id: \.element.id) { idx, book in
+                                    shelfBookRow(
+                                        book: book,
+                                        index: idx,
+                                        count: rootShelfBooks.count,
+                                        inFolder: false
+                                    )
+                                    .padding(.top, idx == 0 && !db.folders.isEmpty ? 4 : 0)
+                                    .padding(.bottom, 4)
+                                }
+                            }
+                        }
                     }
+                    .padding(.horizontal, 16)
+                    .padding(.top, heroCollapseDelta + 4)
+                    .padding(.bottom, 12)
                 }
-                .padding(.horizontal, 16)
-                .padding(.top, listTopCollapsePadding + 4)
-                .padding(.bottom, 12)
-            }
-            .onScrollGeometryChange(for: CGFloat.self) { geo in
-                geo.contentOffset.y + geo.contentInsets.top
-            } action: { _, newOffset in
-                updateScrollOffset(newOffset, forTab: 0)
+                .scrollBounceBehavior(.always)
+                .onScrollGeometryChange(for: CGFloat.self) { geo in
+                    geo.contentOffset.y + geo.contentInsets.top
+                } action: { _, newOffset in
+                    updateScrollOffset(newOffset, forTab: 0)
+                }
             }
         }
     }
@@ -1055,18 +1014,18 @@ private struct FolderHeaderGlassCard: View {
         .padding(.horizontal, 13)
         .padding(.vertical, 10)
 
-        if isExpanded {
-            GlassCard(cornerRadius: 18, tintColor: palette.accent.opacity(0.06)) {
-                content
-            }
-            .background {
-                RoundedRectangle(cornerRadius: 18, style: .continuous)
-                    .fill(palette.backgroundBase.opacity(0.90))
-            }
-        } else {
-            GlassGroupedCard(index: index, count: count) {
-                content
-            }
+        GlassGroupedCard(
+            index: isExpanded ? 0 : index,
+            count: isExpanded ? 1 : count,
+            outerRadius: isExpanded ? 18 : 22,
+            innerRadius: 8,
+            tintColor: isExpanded ? palette.accent.opacity(0.06) : nil
+        ) {
+            content
+        }
+        .background {
+            RoundedRectangle(cornerRadius: 18, style: .continuous)
+                .fill(palette.backgroundBase.opacity(isExpanded ? 0.90 : 0.0))
         }
     }
 }
@@ -1279,160 +1238,106 @@ private struct GlassFolderInputModal: View {
     }
 
     var body: some View {
-        GlassCard(cornerRadius: 26) {
-            VStack(alignment: .leading, spacing: 16) {
-                HStack(spacing: 12) {
-                    AppleIconBadge(
-                        systemImage: systemImage,
-                        size: 38,
-                        cornerRadius: 11,
-                        filled: true
-                    )
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text(title)
-                            .font(.headline)
-                            .foregroundStyle(.primary)
-                        Text(subtitle)
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                            .lineLimit(1)
-                    }
-                    Spacer()
+        VStack(alignment: .leading, spacing: 16) {
+            HStack(spacing: 12) {
+                AppleIconBadge(
+                    systemImage: systemImage,
+                    size: 38,
+                    cornerRadius: 11,
+                    filled: true
+                )
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(title)
+                        .font(.headline)
+                        .foregroundStyle(.primary)
+                    Text(subtitle)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
                 }
+                Spacer()
+            }
 
-                HStack(spacing: 10) {
-                    Image(systemName: "folder.fill")
-                        .font(.body)
-                        .foregroundStyle(palette.accent)
+            HStack(spacing: 10) {
+                Image(systemName: "folder.fill")
+                    .font(.body)
+                    .foregroundStyle(palette.accent)
 
-                    TextField(placeholder, text: $name)
-                        .font(.body)
-                        .textInputAutocapitalization(.never)
-                        .autocorrectionDisabled(false)
-                        .submitLabel(.done)
-                        .focused($isInputFocused)
-                        .onSubmit {
-                            submitIfValid()
-                        }
-
-                    if !name.isEmpty {
-                        Button {
-                            name = ""
-                        } label: {
-                            Image(systemName: "xmark.circle.fill")
-                                .font(.body)
-                                .foregroundStyle(.secondary.opacity(0.75))
-                        }
-                        .buttonStyle(.plain)
-                    }
-                }
-                .padding(.horizontal, 14)
-                .padding(.vertical, 12)
-                .background {
-                    RoundedRectangle(cornerRadius: 15, style: .continuous)
-                        .fill(Color.primary.opacity(palette.isLight ? 0.055 : 0.12))
-                }
-                .overlay {
-                    RoundedRectangle(cornerRadius: 15, style: .continuous)
-                        .strokeBorder(
-                            isInputFocused
-                                ? palette.accent.opacity(0.75)
-                                : Color.primary.opacity(palette.isLight ? 0.12 : 0.20),
-                            lineWidth: isInputFocused ? 1.3 : 0.75
-                        )
-                }
-
-                HStack(spacing: 12) {
-                    Button {
-                        isInputFocused = false
-                        onCancel()
-                    } label: {
-                        Text("取消")
-                            .font(.subheadline.weight(.medium))
-                            .foregroundStyle(.primary)
-                            .frame(maxWidth: .infinity)
-                            .padding(.vertical, 11)
-                            .appleLiquidGlassCapsule()
-                    }
-                    .buttonStyle(GlassPressButtonStyle())
-
-                    Button {
+                TextField(placeholder, text: $name)
+                    .font(.body)
+                    .textInputAutocapitalization(.never)
+                    .autocorrectionDisabled(false)
+                    .submitLabel(.done)
+                    .focused($isInputFocused)
+                    .onSubmit {
                         submitIfValid()
-                    } label: {
-                        let confirmLabel = Text(confirmTitle)
-                            .font(.subheadline.weight(.semibold))
-                            .foregroundStyle(.white)
-                            .frame(maxWidth: .infinity)
-                            .padding(.vertical, 11)
-
-                        #if compiler(>=6.2)
-                        if #available(iOS 26.0, *) {
-                            let baseGlass: Glass = .regular.tint(palette.accent.opacity(trimmedName.isEmpty ? 0.34 : 0.88))
-                            confirmLabel
-                                .glassEffect(
-                                    trimmedName.isEmpty ? baseGlass : baseGlass.interactive(),
-                                    in: Capsule()
-                                )
-                        } else {
-                            confirmLabel
-                                .background {
-                                    Capsule()
-                                        .fill(
-                                            LinearGradient(
-                                                colors: [
-                                                    palette.accent.opacity(trimmedName.isEmpty ? 0.35 : 0.96),
-                                                    palette.accent.opacity(trimmedName.isEmpty ? 0.28 : 0.80)
-                                                ],
-                                                startPoint: .top,
-                                                endPoint: .bottom
-                                            )
-                                        )
-                                }
-                                .overlay {
-                                    Capsule()
-                                        .strokeBorder(.white.opacity(trimmedName.isEmpty ? 0.15 : 0.42), lineWidth: 0.75)
-                                }
-                                .shadow(
-                                    color: trimmedName.isEmpty ? .clear : palette.accent.opacity(0.28),
-                                    radius: 10,
-                                    x: 0,
-                                    y: 4
-                                )
-                        }
-                        #else
-                        confirmLabel
-                            .background {
-                                Capsule()
-                                    .fill(
-                                        LinearGradient(
-                                            colors: [
-                                                palette.accent.opacity(trimmedName.isEmpty ? 0.35 : 0.96),
-                                                palette.accent.opacity(trimmedName.isEmpty ? 0.28 : 0.80)
-                                            ],
-                                            startPoint: .top,
-                                            endPoint: .bottom
-                                        )
-                                    )
-                            }
-                            .overlay {
-                                Capsule()
-                                    .strokeBorder(.white.opacity(trimmedName.isEmpty ? 0.15 : 0.42), lineWidth: 0.75)
-                            }
-                            .shadow(
-                                color: trimmedName.isEmpty ? .clear : palette.accent.opacity(0.28),
-                                radius: 10,
-                                x: 0,
-                                y: 4
-                            )
-                        #endif
                     }
-                    .buttonStyle(GlassPressButtonStyle())
-                    .disabled(trimmedName.isEmpty)
+
+                if !name.isEmpty {
+                    Button {
+                        name = ""
+                    } label: {
+                        Image(systemName: "xmark.circle.fill")
+                            .font(.body)
+                            .foregroundStyle(.secondary.opacity(0.75))
+                    }
+                    .buttonStyle(.plain)
                 }
             }
-            .padding(20)
+            .padding(.horizontal, 14)
+            .padding(.vertical, 12)
+            .background {
+                RoundedRectangle(cornerRadius: 15, style: .continuous)
+                    .fill(Color.primary.opacity(palette.isLight ? 0.055 : 0.12))
+            }
+            .overlay {
+                RoundedRectangle(cornerRadius: 15, style: .continuous)
+                    .strokeBorder(
+                        isInputFocused
+                            ? palette.accent.opacity(0.75)
+                            : Color.primary.opacity(palette.isLight ? 0.12 : 0.20),
+                        lineWidth: isInputFocused ? 1.3 : 0.75
+                    )
+            }
+
+            HStack(spacing: 12) {
+                Button {
+                    isInputFocused = false
+                    onCancel()
+                } label: {
+                    Text("取消")
+                        .font(.subheadline.weight(.medium))
+                        .foregroundStyle(.primary)
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 12)
+                        .background(Color.primary.opacity(palette.isLight ? 0.07 : 0.14), in: Capsule())
+                        .contentShape(Capsule())
+                }
+                .buttonStyle(.plain)
+
+                Button {
+                    submitIfValid()
+                } label: {
+                    Text(confirmTitle)
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(.white)
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 12)
+                        .background(
+                            palette.accent.opacity(trimmedName.isEmpty ? 0.35 : 1.0),
+                            in: Capsule()
+                        )
+                        .contentShape(Capsule())
+                }
+                .buttonStyle(.plain)
+                .disabled(trimmedName.isEmpty)
+            }
         }
-        .frame(maxWidth: 360)
+        .padding(22)
+        .task {
+            try? await Task.sleep(for: .milliseconds(160))
+            isInputFocused = true
+        }
     }
 
     private func submitIfValid() {
@@ -1455,9 +1360,8 @@ struct OpdsOnlineLibraryPane: View {
     @Environment(SettingsStore.self) private var settingsStore
     @Environment(\.appPalette) private var palette
 
-    var pinnedTopInsetHeight: CGFloat = 0
-    var listTopCollapsePadding: CGFloat = 0
-    var overlayHeaderHeight: CGFloat = 0
+    var heroTopSpacerHeight: CGFloat = 0
+    var emptyTopPadding: CGFloat = 0
     var onScrollOffsetChange: (CGFloat) -> Void = { _ in }
     var onOpenBook: (BookItem) -> Void
 
@@ -1674,7 +1578,7 @@ struct OpdsOnlineLibraryPane: View {
                     Spacer()
                 }
                 .padding(24)
-                .padding(.top, listTopCollapsePadding)
+                .padding(.top, emptyTopPadding)
             } else if isLoading || errorMsg != nil || entries.isEmpty {
                 VStack(spacing: 8) {
                     opdsControlsHeader
@@ -1715,61 +1619,63 @@ struct OpdsOnlineLibraryPane: View {
                         Spacer()
                     }
                 }
-                .padding(.top, listTopCollapsePadding)
+                .padding(.top, emptyTopPadding)
             } else {
                 ScrollView {
-                    LazyVStack(spacing: 8) {
+                    LazyVStack(spacing: 4) {
                         opdsControlsHeader
                             .padding(.top, 4)
+                            .padding(.bottom, 4)
 
-                        LazyVStack(spacing: 4) {
-                            let visibleEntries = displayedOpdsEntries
-                            if visibleEntries.isEmpty {
-                                VStack(spacing: 8) {
-                                    Text("当前目录没有匹配的书目")
-                                        .font(.caption)
-                                        .foregroundStyle(.secondary)
-                                    if !searchQuery.isEmpty {
-                                        GlassCapsuleChip(title: "清除搜索", selected: true) {
-                                            searchQuery = ""
-                                        }
+                        let visibleEntries = displayedOpdsEntries
+                        if visibleEntries.isEmpty {
+                            VStack(spacing: 8) {
+                                Text("当前目录没有匹配的书目")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                                if !searchQuery.isEmpty {
+                                    GlassCapsuleChip(title: "清除搜索", selected: true) {
+                                        searchQuery = ""
                                     }
-                                }
-                                .frame(maxWidth: .infinity)
-                                .padding(.vertical, 36)
-                            } else {
-                                ForEach(Array(visibleEntries.enumerated()), id: \.element.id) { idx, entry in
-                                    opdsEntryRow(entry: entry, index: idx, count: visibleEntries.count)
-                                }
-
-                                if searchQuery.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
-                                   let nextUrl = nextPageUrl {
-                                    Button {
-                                        loadMore(nextUrl: nextUrl)
-                                    } label: {
-                                        HStack(spacing: 6) {
-                                            if isLoadingMore {
-                                                ProgressView().controlSize(.mini)
-                                            }
-                                            Text(isLoadingMore ? "加载中..." : "加载更多")
-                                                .font(.subheadline.weight(.medium))
-                                        }
-                                        .frame(maxWidth: .infinity)
-                                        .padding(.vertical, 10)
-                                        .background(.ultraThinMaterial, in: Capsule())
-                                        .overlay(Capsule().strokeBorder(.white.opacity(0.32), lineWidth: 0.7))
-                                    }
-                                    .buttonStyle(GlassPressButtonStyle())
-                                    .disabled(isLoadingMore)
-                                    .padding(.top, 6)
                                 }
                             }
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 36)
+                            .padding(.horizontal, 16)
+                        } else {
+                            ForEach(Array(visibleEntries.enumerated()), id: \.element.id) { idx, entry in
+                                opdsEntryRow(entry: entry, index: idx, count: visibleEntries.count)
+                                    .padding(.horizontal, 16)
+                            }
+
+                            if searchQuery.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+                               let nextUrl = nextPageUrl {
+                                Button {
+                                    loadMore(nextUrl: nextUrl)
+                                } label: {
+                                    HStack(spacing: 6) {
+                                        if isLoadingMore {
+                                            ProgressView().controlSize(.mini)
+                                        }
+                                        Text(isLoadingMore ? "加载中..." : "加载更多")
+                                            .font(.subheadline.weight(.medium))
+                                    }
+                                    .frame(maxWidth: .infinity)
+                                    .padding(.vertical, 10)
+                                    .background(.ultraThinMaterial, in: Capsule())
+                                    .overlay(Capsule().strokeBorder(.white.opacity(0.32), lineWidth: 0.7))
+                                }
+                                .buttonStyle(GlassPressButtonStyle())
+                                .disabled(isLoadingMore)
+                                .padding(.horizontal, 16)
+                                .padding(.top, 6)
+                            }
                         }
-                        .padding(.horizontal, 16)
-                        .padding(.bottom, 12)
                     }
-                    .padding(.top, listTopCollapsePadding)
+                    .padding(.top, heroTopSpacerHeight)
+                    .padding(.bottom, 12)
                 }
+                .scrollBounceBehavior(.always)
                 .onScrollGeometryChange(for: CGFloat.self) { geo in
                     geo.contentOffset.y + geo.contentInsets.top
                 } action: { _, newOffset in

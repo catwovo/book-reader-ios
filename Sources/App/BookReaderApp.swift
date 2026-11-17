@@ -48,6 +48,9 @@ private struct RootContentView: View {
     var body: some View {
         let isReaderOpen = activeBook != nil && parsedBook != nil
         ZStack {
+            palette.backgroundBase
+                .ignoresSafeArea()
+
             Group {
                 #if compiler(>=6.2)
                 if #available(iOS 26.0, *) {
@@ -93,8 +96,6 @@ private struct RootContentView: View {
                 legacyTabShell
                 #endif
             }
-            .scaleEffect(isReaderOpen ? 0.96 : 1.0)
-            .opacity(isReaderOpen ? 0.86 : 1.0)
             .allowsHitTesting(!isReaderOpen)
             .accessibilityHidden(isReaderOpen)
             .zIndex(0)
