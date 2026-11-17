@@ -174,7 +174,7 @@ enum BookParser {
     static func detectActualFormat(data: Data, declaredFormat: String) -> String {
         let headCount = min(data.count, 1024)
         if headCount >= 5 {
-            let headStr = String(decoding: data.prefix(headCount), as: ISOLatin1.self)
+            let headStr = String(data: data.prefix(headCount), encoding: .isoLatin1) ?? String(decoding: data.prefix(headCount), as: UTF8.self)
             if headStr.contains("%PDF-") { return "PDF" }
         }
         if headCount >= 68 {
@@ -1028,7 +1028,6 @@ enum BookParser {
         } else {
             rawTocItems = navItems
         }
-        let tocByLowerPath = Dictionary(grouping: rawTocItems) { $0.path.lowercased() }
 
         let orderedPaths: [String]
         if !spinePaths.isEmpty {

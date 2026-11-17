@@ -178,6 +178,12 @@ private final class TranslationCacheStore: @unchecked Sendable {
     }()
 
     private init() {}
+
+    func withLock<T>(_ body: () -> T) -> T {
+        lock.lock()
+        defer { lock.unlock() }
+        return body()
+    }
 }
 
 // MARK: - Translation Service
@@ -196,12 +202,11 @@ final class TranslationService {
     private init() {}
 
     nonisolated static func clearMemoryCaches() {
-        let store = TranslationCacheStore.shared
-        store.lock.lock()
-        store.sentenceMemoryCache.removeAll()
-        store.sentenceSourceMemoryCache.removeAll()
-        store.wordEnMemoryCache.removeAll()
-        store.lock.unlock()
+        TranslationCacheStore.shared.withLock {
+            TranslationCacheStore.shared.sentenceMemoryCache.removeAll()
+            TranslationCacheStore.shared.sentenceSourceMemoryCache.removeAll()
+            TranslationCacheStore.shared.wordEnMemoryCache.removeAll()
+        }
     }
 
     nonisolated static func isErrorPlaceholder(_ text: String) -> Bool {
@@ -250,10 +255,7 @@ final class TranslationService {
         let primary = resolveEffectiveSentenceEngine(settings)
         let key = buildSentenceCacheKey(engine: primary, settings: settings, cleanText: clean)
         let store = TranslationCacheStore.shared
-        store.lock.lock()
-        let hit = store.sentenceSourceMemoryCache[key]
-        store.lock.unlock()
-        if let hit { return hit }
+        if let hit = store.withLock({ store.sentenceSourceMemoryCache[key] }) { return hit }
         switch primary {
         case "ai": return "AI 精译"
         case "online": return "在线翻译"
@@ -267,20 +269,17 @@ final class TranslationService {
         let primary = resolveEffectiveSentenceEngine(settings)
         let key = buildSentenceCacheKey(engine: primary, settings: settings, cleanText: clean)
         let store = TranslationCacheStore.shared
-        store.lock.lock()
-        let hit = store.sentenceMemoryCache[key]
-        store.lock.unlock()
-        return hit
+        return store.withLock { store.sentenceMemoryCache[key] }
     }
 
     nonisolated private static func putMemorySentence(key: String, text: String, source: String) {
         let store = TranslationCacheStore.shared
-        store.lock.lock()
-        if store.sentenceMemoryCache.count > 600 { store.sentenceMemoryCache.removeAll() }
-        if store.sentenceSourceMemoryCache.count > 600 { store.sentenceSourceMemoryCache.removeAll() }
-        store.sentenceMemoryCache[key] = text
-        store.sentenceSourceMemoryCache[key] = source
-        store.lock.unlock()
+        store.withLock {
+            if store.sentenceMemoryCache.count > 600 { store.sentenceMemoryCache.removeAll() }
+            if store.sentenceSourceMemoryCache.count > 600 { store.sentenceSourceMemoryCache.removeAll() }
+            store.sentenceMemoryCache[key] = text
+            store.sentenceSourceMemoryCache[key] = source
+        }
     }
 
     nonisolated static func getCachedSentenceTranslation(
@@ -293,10 +292,7 @@ final class TranslationService {
         let primary = resolveEffectiveSentenceEngine(settings)
         let key = buildSentenceCacheKey(engine: primary, settings: settings, cleanText: clean)
         let store = TranslationCacheStore.shared
-        store.lock.lock()
-        let memHit = store.sentenceMemoryCache[key]
-        store.lock.unlock()
-        if let memHit { return memHit }
+        if let memHit = store.withLock({ store.sentenceMemoryCache[key] }) { return memHit }
 
         if let dbHit = db.getCachedTranslation(key) {
             let label = primary == "ai" ? "AI 精译" : (primary == "online" ? "在线翻译" : "Apple 离线")
@@ -313,15 +309,12 @@ final class TranslationService {
         guard !clean.isEmpty else { return nil }
         let key = "zh2en_w2:\(clean)"
         let store = TranslationCacheStore.shared
-        store.lock.lock()
-        let mem = store.wordEnMemoryCache[key]
-        store.lock.unlock()
-        if let mem { return mem }
+        if let mem = store.withLock({ store.wordEnMemoryCache[key] }) { return mem }
         if let hit = db.getCachedTranslation(key) {
-            store.lock.lock()
-            if store.wordEnMemoryCache.count > 400 { store.wordEnMemoryCache.removeAll() }
-            store.wordEnMemoryCache[key] = hit
-            store.lock.unlock()
+            store.withLock {
+                if store.wordEnMemoryCache.count > 400 { store.wordEnMemoryCache.removeAll() }
+                store.wordEnMemoryCache[key] = hit
+            }
             return hit
         }
         return nil
@@ -341,20 +334,20 @@ final class TranslationService {
         let store = TranslationCacheStore.shared
         if let onlineHit = await translateWithOnlineEngines(cleanText: clean, toEnglish: true)?.1, !onlineHit.isEmpty {
             let key = "zh2en_w2:\(clean)"
-            store.lock.lock()
-            if store.wordEnMemoryCache.count > 400 { store.wordEnMemoryCache.removeAll() }
-            store.wordEnMemoryCache[key] = onlineHit
-            store.lock.unlock()
+            store.withLock {
+                if store.wordEnMemoryCache.count > 400 { store.wordEnMemoryCache.removeAll() }
+                store.wordEnMemoryCache[key] = onlineHit
+            }
             db.saveCachedTranslation(source: key, translated: onlineHit)
             return onlineHit
         }
 
         if let appleTranslator, let appleHit = try? await appleTranslator(clean, true), !appleHit.isEmpty {
             let key = "zh2en_w2:\(clean)"
-            store.lock.lock()
-            if store.wordEnMemoryCache.count > 400 { store.wordEnMemoryCache.removeAll() }
-            store.wordEnMemoryCache[key] = appleHit
-            store.lock.unlock()
+            store.withLock {
+                if store.wordEnMemoryCache.count > 400 { store.wordEnMemoryCache.removeAll() }
+                store.wordEnMemoryCache[key] = appleHit
+            }
             db.saveCachedTranslation(source: key, translated: appleHit)
             return appleHit
         }
@@ -384,10 +377,7 @@ final class TranslationService {
         func runOnline() async -> String? {
             let key = buildSentenceCacheKey(engine: "online", settings: settings, cleanText: clean)
             if !forceRefresh {
-                store.lock.lock()
-                let mem = store.sentenceMemoryCache[key]
-                store.lock.unlock()
-                if let mem { return mem }
+                if let mem = store.withLock({ store.sentenceMemoryCache[key] }) { return mem }
                 if let hit = db.getCachedTranslation(key) {
                     putMemorySentence(key: key, text: hit, source: "在线翻译")
                     return hit
@@ -404,10 +394,7 @@ final class TranslationService {
         func runAi() async -> String? {
             let key = buildSentenceCacheKey(engine: "ai", settings: settings, cleanText: clean)
             if !forceRefresh {
-                store.lock.lock()
-                let mem = store.sentenceMemoryCache[key]
-                store.lock.unlock()
-                if let mem { return mem }
+                if let mem = store.withLock({ store.sentenceMemoryCache[key] }) { return mem }
                 if let hit = db.getCachedTranslation(key) {
                     putMemorySentence(key: key, text: hit, source: "AI 精译")
                     return hit
@@ -431,10 +418,7 @@ final class TranslationService {
         func runAppleOffline() async -> String {
             let key = buildSentenceCacheKey(engine: "apple", settings: settings, cleanText: clean)
             if !forceRefresh {
-                store.lock.lock()
-                let mem = store.sentenceMemoryCache[key]
-                store.lock.unlock()
-                if let mem { return mem }
+                if let mem = store.withLock({ store.sentenceMemoryCache[key] }) { return mem }
                 if let hit = db.getCachedTranslation(key) {
                     putMemorySentence(key: key, text: hit, source: "Apple 离线")
                     return hit
@@ -471,10 +455,10 @@ final class TranslationService {
                     let fast = await runOnline()
                     if let fast, !fast.isEmpty, !Task.isCancelled {
                         let onlineKey = buildSentenceCacheKey(engine: "online", settings: settings, cleanText: clean)
-                        store.lock.lock()
-                        let src = store.sentenceSourceMemoryCache[onlineKey] ?? "在线翻译"
-                        store.sentenceSourceMemoryCache[aiKey] = src
-                        store.lock.unlock()
+                        store.withLock {
+                            let src = store.sentenceSourceMemoryCache[onlineKey] ?? "在线翻译"
+                            store.sentenceSourceMemoryCache[aiKey] = src
+                        }
                         onFastPreview(fast)
                     }
                     return fast
@@ -493,10 +477,10 @@ final class TranslationService {
                 if let aiHit = await runAi(), !aiHit.isEmpty { return aiHit }
                 if let onlineHit = await runOnline(), !onlineHit.isEmpty {
                     let onlineKey = buildSentenceCacheKey(engine: "online", settings: settings, cleanText: clean)
-                    store.lock.lock()
-                    let src = store.sentenceSourceMemoryCache[onlineKey] ?? "在线翻译"
-                    store.sentenceSourceMemoryCache[aiKey] = src
-                    store.lock.unlock()
+                    store.withLock {
+                        let src = store.sentenceSourceMemoryCache[onlineKey] ?? "在线翻译"
+                        store.sentenceSourceMemoryCache[aiKey] = src
+                    }
                     return onlineHit
                 }
             }
@@ -518,9 +502,9 @@ final class TranslationService {
             guard allowOfflineFallback else { return "" }
             let off = await runAppleOffline()
             if isErrorPlaceholder(off) {
-                store.lock.lock()
-                store.sentenceSourceMemoryCache[onlineKey] = "在线翻译失败"
-                store.lock.unlock()
+                store.withLock {
+                    store.sentenceSourceMemoryCache[onlineKey] = "在线翻译失败"
+                }
                 return "（在线翻译失败，请检查网络连接后点击右侧刷新重试）"
             }
             putMemorySentence(key: onlineKey, text: off, source: "在线失败·已回退 Apple 离线")
@@ -529,9 +513,9 @@ final class TranslationService {
         default:
             let appleKey = buildSentenceCacheKey(engine: "apple", settings: settings, cleanText: clean)
             let off = await runAppleOffline()
-            store.lock.lock()
-            store.sentenceSourceMemoryCache[appleKey] = isErrorPlaceholder(off) ? "离线未就绪" : "Apple 离线"
-            store.lock.unlock()
+            store.withLock {
+                store.sentenceSourceMemoryCache[appleKey] = isErrorPlaceholder(off) ? "离线未就绪" : "Apple 离线"
+            }
             return off
         }
     }
@@ -541,16 +525,11 @@ final class TranslationService {
     nonisolated private static func getBingWebSession(forceRefresh: Bool) async -> TranslationCacheStore.BingWebSession? {
         let store = TranslationCacheStore.shared
         if !forceRefresh {
-            store.lock.lock()
-            let existing = store.bingSession
-            store.lock.unlock()
-            if let existing, Date() < existing.expiresAt {
+            if let existing = store.withLock({ store.bingSession }), Date() < existing.expiresAt {
                 return existing
             }
         } else {
-            store.lock.lock()
-            store.bingSession = nil
-            store.lock.unlock()
+            store.withLock { store.bingSession = nil }
         }
 
         let ua = "Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Mobile/15E148 Safari/604.1"
@@ -593,9 +572,7 @@ final class TranslationService {
                 token: token,
                 expiresAt: Date().addingTimeInterval(safeTtlSec)
             )
-            store.lock.lock()
-            store.bingSession = created
-            store.lock.unlock()
+            store.withLock { store.bingSession = created }
             return created
         }
         return nil
@@ -637,9 +614,7 @@ final class TranslationService {
                 return nil
             }
             if [400, 401, 403, 429].contains(http.statusCode) {
-                store.lock.lock()
-                store.bingSession = nil
-                store.lock.unlock()
+                store.withLock { store.bingSession = nil }
                 continue
             }
             guard (200...299).contains(http.statusCode) else { return nil }
@@ -649,9 +624,7 @@ final class TranslationService {
                 let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
                 if !trimmed.isEmpty { return trimmed }
             } else {
-                store.lock.lock()
-                store.bingSession = nil
-                store.lock.unlock()
+                store.withLock { store.bingSession = nil }
             }
         }
         return nil
@@ -718,21 +691,23 @@ final class TranslationService {
     nonisolated private static func translateWithOnlineEngines(cleanText: String, toEnglish: Bool) async -> (String, String)? {
         let store = TranslationCacheStore.shared
         let now = Date()
-        store.lock.lock()
-        let bingReady = now >= store.bingCooldownUntil
-        let googleReady = now >= store.googleCooldownUntil
-        let myMemReady = now >= store.myMemoryCooldownUntil
-        store.lock.unlock()
+        let (bingReady, googleReady, myMemReady) = store.withLock {
+            (
+                now >= store.bingCooldownUntil,
+                now >= store.googleCooldownUntil,
+                now >= store.myMemoryCooldownUntil
+            )
+        }
 
         var engines: [(String, String, Bool)] = [] // id, label, delayed
         if bingReady { engines.append(("bing", "必应在线", false)) }
         if googleReady { engines.append(("google", "Google", false)) }
         if myMemReady { engines.append(("mymemory", "MyMemory", bingReady)) }
         if engines.isEmpty {
-            store.lock.lock()
-            store.bingCooldownUntil = .distantPast
-            store.myMemoryCooldownUntil = .distantPast
-            store.lock.unlock()
+            store.withLock {
+                store.bingCooldownUntil = .distantPast
+                store.myMemoryCooldownUntil = .distantPast
+            }
             engines = [("bing", "必应在线", false), ("mymemory", "MyMemory", true)]
         }
 
@@ -756,24 +731,24 @@ final class TranslationService {
             while let item = await group.next() {
                 guard let (id, label, res) = item else { continue }
                 if let res, !res.isEmpty {
-                    store.lock.lock()
-                    switch id {
-                    case "bing": store.bingCooldownUntil = .distantPast
-                    case "google": store.googleCooldownUntil = .distantPast
-                    default: store.myMemoryCooldownUntil = .distantPast
+                    store.withLock {
+                        switch id {
+                        case "bing": store.bingCooldownUntil = .distantPast
+                        case "google": store.googleCooldownUntil = .distantPast
+                        default: store.myMemoryCooldownUntil = .distantPast
+                        }
                     }
-                    store.lock.unlock()
                     group.cancelAll()
                     return (label, res)
                 } else {
                     let failSec: TimeInterval = (id == "google") ? 600 : (id == "bing" ? 90 : 180)
-                    store.lock.lock()
-                    switch id {
-                    case "bing": store.bingCooldownUntil = Date().addingTimeInterval(failSec)
-                    case "google": store.googleCooldownUntil = Date().addingTimeInterval(failSec)
-                    default: store.myMemoryCooldownUntil = Date().addingTimeInterval(failSec)
+                    store.withLock {
+                        switch id {
+                        case "bing": store.bingCooldownUntil = Date().addingTimeInterval(failSec)
+                        case "google": store.googleCooldownUntil = Date().addingTimeInterval(failSec)
+                        default: store.myMemoryCooldownUntil = Date().addingTimeInterval(failSec)
+                        }
                     }
-                    store.lock.unlock()
                 }
             }
             return nil

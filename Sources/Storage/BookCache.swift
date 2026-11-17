@@ -92,11 +92,11 @@ final class BookCache {
             return hit
         }
         await MainActor.run {
-            shared.cachingHints.insert(book.filePathHint)
+            _ = shared.cachingHints.insert(book.filePathHint)
         }
         defer {
             Task { @MainActor in
-                shared.cachingHints.remove(book.filePathHint)
+                _ = shared.cachingHints.remove(book.filePathHint)
             }
         }
         let parsed = try await Task.detached(priority: .userInitiated) {
@@ -129,18 +129,30 @@ final class BookCache {
         }
     }
 
+    private func lookupCoverState(_ hint: String) -> (hit: UIImage?, noCover: Bool) {
+        lock.lock()
+        defer { lock.unlock() }
+        if let mem = coverMemoryCache[hint] { return (mem, false) }
+        if noCoverSet.contains(hint) { return (nil, true) }
+        return (nil, false)
+    }
+
+    private func saveCoverState(_ hint: String, image: UIImage?) {
+        lock.lock()
+        defer { lock.unlock() }
+        if let image {
+            if coverMemoryCache.count > 48 { coverMemoryCache.removeAll() }
+            coverMemoryCache[hint] = image
+        } else {
+            noCoverSet.insert(hint)
+        }
+    }
+
     static func getCoverImage(for book: BookItem) async -> UIImage? {
         if book.filePathHint.isEmpty || book.filePathHint.hasPrefix("sample://") { return nil }
-        shared.lock.lock()
-        if let mem = shared.coverMemoryCache[book.filePathHint] {
-            shared.lock.unlock()
-            return mem
-        }
-        if shared.noCoverSet.contains(book.filePathHint) {
-            shared.lock.unlock()
-            return nil
-        }
-        shared.lock.unlock()
+        let cached = shared.lookupCoverState(book.filePathHint)
+        if let mem = cached.hit { return mem }
+        if cached.noCover { return nil }
 
         let coverUrl = coverFileUrl(for: book)
         let markerUrl = noCoverMarkerUrl(for: book)
@@ -163,14 +175,7 @@ final class BookCache {
             return nil
         }.value
 
-        shared.lock.lock()
-        if let diskImage {
-            if shared.coverMemoryCache.count > 48 { shared.coverMemoryCache.removeAll() }
-            shared.coverMemoryCache[book.filePathHint] = diskImage
-        } else {
-            shared.noCoverSet.insert(book.filePathHint)
-        }
-        shared.lock.unlock()
+        shared.saveCoverState(book.filePathHint, image: diskImage)
         return diskImage
     }
 

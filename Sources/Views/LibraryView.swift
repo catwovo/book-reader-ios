@@ -71,139 +71,15 @@ struct LibraryView: View {
 
     var body: some View {
         NavigationStack {
-            ZStack {
-                AmbientGlassBackdrop(themeMode: settingsStore.settings.themeMode)
+            attachBookSheets(to: attachFolderAlerts(to: mainShellView))
+        }
+    }
 
-                VStack(spacing: 0) {
-                    // 1. Hero Continue Reading Carousel (always visible above collection tabs)
-                    if !recentBooks.isEmpty {
-                        VStack(spacing: 8) {
-                            TabView(selection: $heroPageIndex) {
-                                ForEach(Array(recentBooks.enumerated()), id: \.element.id) { idx, book in
-                                    HeroContinueCard(
-                                        book: book,
-                                        isCaching: BookCache.shared.cachingHints.contains(book.filePathHint),
-                                        onOpen: { onOpenBook(book) },
-                                        onDelete: { deletingBook = book }
-                                    )
-                                    .padding(.horizontal, 16)
-                                    .tag(idx)
-                                }
-                            }
-                            .tabViewStyle(.page(indexDisplayMode: .never))
-                            .frame(height: 174)
-
-                            if recentBooks.count > 1 {
-                                MinimalPagerDots(
-                                    pageCount: recentBooks.count,
-                                    currentPage: min(heroPageIndex, recentBooks.count - 1),
-                                    onSelectPage: { target in
-                                        withAnimation(AppMotion.tabSpring) {
-                                            heroPageIndex = target
-                                        }
-                                    }
-                                )
-                            }
-                        }
-                        .padding(.top, 4)
-                    }
-
-                    // 2. Section label & Folder action icons
-                    HStack {
-                        Text(collectionTab == 0 ? "藏书目录" : "OPDS 书源")
-                            .font(.caption.weight(.semibold))
-                            .foregroundStyle(.secondary)
-
-                        Spacer()
-
-                        if collectionTab == 0 {
-                            HStack(spacing: 8) {
-                                if !expandedFolderIds.isEmpty {
-                                    Button {
-                                        withAnimation(AppMotion.panelSpring) {
-                                            expandedFolderIds.removeAll()
-                                        }
-                                    } label: {
-                                        Image(systemName: "chevron.up")
-                                            .font(.caption.bold())
-                                            .frame(width: 32, height: 32)
-                                            .background(.ultraThinMaterial, in: Circle())
-                                            .overlay(Circle().strokeBorder(.white.opacity(0.32), lineWidth: 0.7))
-                                    }
-                                    .buttonStyle(GlassPressButtonStyle())
-                                }
-
-                                Button {
-                                    newFolderName = ""
-                                    showNewFolderAlert = true
-                                } label: {
-                                    Image(systemName: "folder.badge.plus")
-                                        .font(.subheadline)
-                                        .frame(width: 32, height: 32)
-                                        .background(palette.accent.opacity(0.15), in: Circle())
-                                        .foregroundStyle(palette.accent)
-                                }
-                                .buttonStyle(GlassPressButtonStyle())
-
-                                Button {
-                                    importTargetFolderId = nil
-                                    showFileImporter = true
-                                } label: {
-                                    Image(systemName: "plus")
-                                        .font(.subheadline.bold())
-                                        .frame(width: 32, height: 32)
-                                        .background(palette.accent.opacity(0.15), in: Circle())
-                                        .foregroundStyle(palette.accent)
-                                }
-                                .buttonStyle(GlassPressButtonStyle())
-                            }
-                        }
-                    }
-                    .padding(.horizontal, 16)
-                    .padding(.top, 8)
-                    .padding(.bottom, 6)
-
-                    // 3. Swipeable Pager (本地藏书 / 在线书库)
-                    TabView(selection: $collectionTab) {
-                        localShelfView
-                            .tag(0)
-
-                        OpdsOnlineLibraryPane(onOpenBook: onOpenBook)
-                            .tag(1)
-                    }
-                    .tabViewStyle(.page(indexDisplayMode: .never))
-                }
-            }
+    private func attachFolderAlerts<Content: View>(to content: Content) -> some View {
+        content
             .navigationBarTitleDisplayMode(.inline)
             .toolbarBackground(.ultraThinMaterial, for: .navigationBar)
-            .toolbar {
-                ToolbarItem(placement: .topBarLeading) {
-                    HStack(spacing: 8) {
-                        Text("书架")
-                            .font(.title2.bold())
-                        if !db.books.isEmpty {
-                            MinimalTagPill(
-                                text: "\(db.books.count) 本",
-                                tintColor: palette.accent.opacity(0.14),
-                                textColor: palette.accent
-                            )
-                        }
-                    }
-                }
-                ToolbarItem(placement: .topBarTrailing) {
-                    Picker("书库", selection: Binding(
-                        get: { collectionTab },
-                        set: { next in
-                            withAnimation(AppMotion.tabSpring) { collectionTab = next }
-                        }
-                    )) {
-                        Text("本地藏书").tag(0)
-                        Text("在线书库").tag(1)
-                    }
-                    .pickerStyle(.segmented)
-                    .frame(width: 174)
-                }
-            }
+            .toolbar { libraryToolbar }
             .fileImporter(
                 isPresented: $showFileImporter,
                 allowedContentTypes: supportedBookContentTypes,
@@ -257,6 +133,10 @@ struct LibraryView: View {
                          : "确定删除空文件夹「\(target.name)」吗？")
                 }
             }
+    }
+
+    private func attachBookSheets<Content: View>(to content: Content) -> some View {
+        content
             .alert("移除图书", isPresented: Binding(
                 get: { deletingBook != nil },
                 set: { if !$0 { deletingBook = nil } }
@@ -282,7 +162,7 @@ struct LibraryView: View {
                     onConfirm: { selectedIds in
                         db.moveBooks(selectedIds, toFolder: folder.id)
                         withAnimation(AppMotion.panelSpring) {
-                            expandedFolderIds.insert(folder.id)
+                            _ = expandedFolderIds.insert(folder.id)
                         }
                     }
                 )
@@ -305,6 +185,152 @@ struct LibraryView: View {
             .onChange(of: db.folders.map(\.id)) { _, validIds in
                 expandedFolderIds = expandedFolderIds.intersection(Set(validIds))
             }
+    }
+
+    @ViewBuilder
+    private var mainShellView: some View {
+        ZStack {
+            AmbientGlassBackdrop(themeMode: settingsStore.settings.themeMode)
+
+            VStack(spacing: 0) {
+                heroContinueSection
+                sectionHeaderBar
+                collectionPager
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var heroContinueSection: some View {
+        if !recentBooks.isEmpty {
+            VStack(spacing: 8) {
+                TabView(selection: $heroPageIndex) {
+                    ForEach(Array(recentBooks.enumerated()), id: \.element.id) { idx, book in
+                        HeroContinueCard(
+                            book: book,
+                            isCaching: BookCache.shared.cachingHints.contains(book.filePathHint),
+                            onOpen: { onOpenBook(book) },
+                            onDelete: { deletingBook = book }
+                        )
+                        .padding(.horizontal, 16)
+                        .tag(idx)
+                    }
+                }
+                .tabViewStyle(.page(indexDisplayMode: .never))
+                .frame(height: 174)
+
+                if recentBooks.count > 1 {
+                    MinimalPagerDots(
+                        pageCount: recentBooks.count,
+                        currentPage: min(heroPageIndex, recentBooks.count - 1),
+                        onSelectPage: { target in
+                            withAnimation(AppMotion.tabSpring) {
+                                heroPageIndex = target
+                            }
+                        }
+                    )
+                }
+            }
+            .padding(.top, 4)
+        }
+    }
+
+    @ViewBuilder
+    private var sectionHeaderBar: some View {
+        HStack {
+            Text(collectionTab == 0 ? "藏书目录" : "OPDS 书源")
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.secondary)
+
+            Spacer()
+
+            if collectionTab == 0 {
+                HStack(spacing: 8) {
+                    if !expandedFolderIds.isEmpty {
+                        Button {
+                            withAnimation(AppMotion.panelSpring) {
+                                expandedFolderIds.removeAll()
+                            }
+                        } label: {
+                            Image(systemName: "chevron.up")
+                                .font(.caption.bold())
+                                .frame(width: 32, height: 32)
+                                .background(.ultraThinMaterial, in: Circle())
+                                .overlay(Circle().strokeBorder(.white.opacity(0.32), lineWidth: 0.7))
+                        }
+                        .buttonStyle(GlassPressButtonStyle())
+                    }
+
+                    Button {
+                        newFolderName = ""
+                        showNewFolderAlert = true
+                    } label: {
+                        Image(systemName: "folder.badge.plus")
+                            .font(.subheadline)
+                            .frame(width: 32, height: 32)
+                            .background(palette.accent.opacity(0.15), in: Circle())
+                            .foregroundStyle(palette.accent)
+                    }
+                    .buttonStyle(GlassPressButtonStyle())
+
+                    Button {
+                        importTargetFolderId = nil
+                        showFileImporter = true
+                    } label: {
+                        Image(systemName: "plus")
+                            .font(.subheadline.bold())
+                            .frame(width: 32, height: 32)
+                            .background(palette.accent.opacity(0.15), in: Circle())
+                            .foregroundStyle(palette.accent)
+                    }
+                    .buttonStyle(GlassPressButtonStyle())
+                }
+            }
+        }
+        .padding(.horizontal, 16)
+        .padding(.top, 8)
+        .padding(.bottom, 6)
+    }
+
+    @ViewBuilder
+    private var collectionPager: some View {
+        TabView(selection: $collectionTab) {
+            localShelfView
+                .tag(0)
+
+            OpdsOnlineLibraryPane(onOpenBook: onOpenBook)
+                .tag(1)
+        }
+        .tabViewStyle(.page(indexDisplayMode: .never))
+    }
+
+    @ToolbarContentBuilder
+    private var libraryToolbar: some ToolbarContent {
+        ToolbarItem(placement: .topBarLeading) {
+            HStack(spacing: 8) {
+                Text("书架")
+                    .font(.title2.bold())
+                if !db.books.isEmpty {
+                    MinimalTagPill(
+                        text: "\(db.books.count) 本",
+                        tintColor: palette.accent.opacity(0.14),
+                        textColor: palette.accent
+                    )
+                }
+            }
+        }
+        ToolbarItem(placement: .topBarTrailing) {
+            Picker("书库", selection: Binding(
+                get: { collectionTab },
+                set: { next in
+                    withAnimation(AppMotion.tabSpring) { collectionTab = next }
+                }
+            )) {
+                Text("本地藏书").tag(0)
+                Text("在线书库").tag(1)
+            }
+            .pickerStyle(.segmented)
+            .frame(width: 174)
         }
     }
 
@@ -369,15 +395,15 @@ struct LibraryView: View {
                                 onToggleExpand: {
                                     withAnimation(AppMotion.panelSpring) {
                                         if isExpanded {
-                                            expandedFolderIds.remove(folder.id)
+                                            _ = expandedFolderIds.remove(folder.id)
                                         } else {
-                                            expandedFolderIds.insert(folder.id)
+                                            _ = expandedFolderIds.insert(folder.id)
                                         }
                                     }
                                 },
                                 onImportHere: {
                                     withAnimation(AppMotion.panelSpring) {
-                                        expandedFolderIds.insert(folder.id)
+                                        _ = expandedFolderIds.insert(folder.id)
                                     }
                                     importTargetFolderId = folder.id
                                     showFileImporter = true
@@ -1446,13 +1472,14 @@ struct OpdsOnlineLibraryPane: View {
             await MainActor.run {
                 switch res {
                 case .success(let dl):
-                    let book = db.addBook(
+                    if let book = db.addBook(
                         title: dl.title,
                         bookmarkData: nil,
                         filePathHint: dl.uriString,
                         format: dl.format
-                    )
-                    BookCache.precacheMissingSequentially(books: [book], db: db)
+                    ) {
+                        BookCache.precacheMissingSequentially(books: [book], db: db)
+                    }
                     bannerIsError = false
                     bannerMsg = "已下载并加入本地藏书：《\(dl.title)》"
                 case .failure(let err):

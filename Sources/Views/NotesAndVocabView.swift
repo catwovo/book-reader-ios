@@ -55,7 +55,7 @@ struct NotesAndVocabView: View {
     }
 
     private func isChineseVocab(_ item: VocabItem) -> Bool {
-        item.word.unicodeScalars.contains { TextTokenizer.isChineseChar($0) }
+        item.word.contains { TextTokenizer.isChineseChar($0) }
     }
 
     private var zhCount: Int {
