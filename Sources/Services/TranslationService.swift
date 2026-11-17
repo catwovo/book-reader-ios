@@ -159,4 +159,34 @@ enum TranslationService {
         if cols.count < 4 { cols.append(cur) }
         return cols
     }
+
+    static func fetchEnglishDefinition(for word: String) async -> String? {
+        let clean = word.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard !clean.isEmpty,
+              let url = URL(string: "https://api.dictionaryapi.dev/api/v2/entries/en/\(clean)") else {
+            return nil
+        }
+        var req = URLRequest(url: url)
+        req.timeoutInterval = 8
+        do {
+            let (data, resp) = try await URLSession.shared.data(for: req)
+            guard let http = resp as? HTTPURLResponse, (200...299).contains(http.statusCode),
+                  let arr = try JSONSerialization.jsonObject(with: data) as? [[String: Any]],
+                  let first = arr.first,
+                  let meanings = first["meanings"] as? [[String: Any]] else {
+                return nil
+            }
+            var lines: [String] = []
+            for m in meanings.prefix(2) {
+                let pos = m["partOfSpeech"] as? String ?? ""
+                if let defs = m["definitions"] as? [[String: Any]],
+                   let defText = defs.first?["definition"] as? String {
+                    lines.append(pos.isEmpty ? defText : "[\(pos)] \(defText)")
+                }
+            }
+            return lines.isEmpty ? nil : lines.joined(separator: "\n")
+        } catch {
+            return nil
+        }
+    }
 }

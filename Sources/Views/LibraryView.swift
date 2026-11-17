@@ -17,18 +17,22 @@ struct LibraryView: View {
 
     var onOpenBook: (BookItem) -> Void
 
-    @State private var selectedFolderId: Int64? = nil
+    @State private var heroPageIndex = 0
+    @State private var collectionTab = 0 // 0 = 藏书目录, 1 = OPDS 书源
+    @State private var expandedFolderIds: Set<Int64> = []
+
     @State private var showFileImporter = false
     @State private var showNewFolderAlert = false
     @State private var newFolderName = ""
-    @State private var showOpdsSheet = false
+    @State private var activeOpdsSource: OpdsSource? = nil
     @State private var showWebDavSheet = false
 
-    private var filteredBooks: [BookItem] {
-        if let fid = selectedFolderId {
-            return db.books.filter { $0.folderId == fid }
-        }
-        return db.books
+    private var recentBooks: [BookItem] {
+        Array(db.books.prefix(5))
+    }
+
+    private var unfolderedBooks: [BookItem] {
+        db.books.filter { $0.folderId == nil }
     }
 
     var body: some View {
@@ -38,73 +42,84 @@ struct LibraryView: View {
 
                 ScrollView {
                     VStack(alignment: .leading, spacing: 14) {
-                        if !db.folders.isEmpty {
-                            ScrollView(.horizontal, showsIndicators: false) {
-                                HStack(spacing: 8) {
-                                    folderPill(title: "全部", id: nil)
-                                    ForEach(db.folders) { folder in
-                                        folderPill(title: folder.name, id: folder.id)
-                                            .contextMenu {
-                                                Button(role: .destructive) {
-                                                    db.deleteFolder(id: folder.id)
-                                                    if selectedFolderId == folder.id { selectedFolderId = nil }
-                                                } label: {
-                                                    Label("删除文件夹", systemImage: "trash")
-                                                }
-                                            }
+                        // 1. Hero Continue Reading Carousel
+                        if !recentBooks.isEmpty {
+                            VStack(spacing: 8) {
+                                TabView(selection: $heroPageIndex) {
+                                    ForEach(Array(recentBooks.enumerated()), id: \.element.id) { idx, book in
+                                        HeroContinueCard(book: book) {
+                                            onOpenBook(book)
+                                        }
+                                        .padding(.horizontal, 16)
+                                        .tag(idx)
                                     }
                                 }
-                                .padding(.horizontal, 16)
-                                .padding(.vertical, 4)
+                                .tabViewStyle(.page(indexDisplayMode: .never))
+                                .frame(height: 158)
+
+                                if recentBooks.count > 1 {
+                                    HStack(spacing: 6) {
+                                        ForEach(0..<recentBooks.count, id: \.self) { idx in
+                                            Capsule()
+                                                .fill(idx == heroPageIndex ? Color.accentColor : Color.secondary.opacity(0.35))
+                                                .frame(width: idx == heroPageIndex ? 18 : 6, height: 6)
+                                                .animation(.spring(response: 0.3), value: heroPageIndex)
+                                        }
+                                    }
+                                }
                             }
                         }
 
-                        if filteredBooks.isEmpty {
-                            ContentUnavailableView(
-                                "书架暂无图书",
-                                systemImage: "books.vertical",
-                                description: Text("点击右上角 + 导入本地 EPUB、TXT、PDF、MOBI 或 AZW3")
-                            )
-                            .padding(.top, 60)
-                        } else {
-                            LazyVStack(spacing: 12) {
-                                ForEach(filteredBooks) { book in
-                                    Button {
-                                        onOpenBook(book)
-                                    } label: {
-                                        GlassCard(cornerRadius: 20) {
-                                            BookRowView(book: book)
-                                                .padding(16)
+                        // 2. Collection Tab Switcher (藏书目录 / OPDS 书源)
+                        HStack {
+                            Picker("书库分类", selection: $collectionTab) {
+                                Text("藏书目录").tag(0)
+                                Text("OPDS 书源").tag(1)
+                            }
+                            .pickerStyle(.segmented)
+                            .frame(maxWidth: 230)
+
+                            Spacer()
+
+                            if collectionTab == 0 {
+                                HStack(spacing: 8) {
+                                    if !expandedFolderIds.isEmpty {
+                                        Button {
+                                            withAnimation(.spring) { expandedFolderIds.removeAll() }
+                                        } label: {
+                                            Image(systemName: "chevron.up")
+                                                .font(.caption.bold())
+                                                .frame(width: 34, height: 34)
+                                                .background(.ultraThinMaterial, in: Circle())
+                                                .overlay(Circle().strokeBorder(.white.opacity(0.35), lineWidth: 0.7))
                                         }
+                                        .buttonStyle(.plain)
+                                    }
+                                    Button {
+                                        newFolderName = ""
+                                        showNewFolderAlert = true
+                                    } label: {
+                                        Image(systemName: "folder.badge.plus")
+                                            .font(.subheadline)
+                                            .frame(width: 34, height: 34)
+                                            .background(Color.accentColor.opacity(0.16), in: Circle())
+                                            .foregroundStyle(Color.accentColor)
                                     }
                                     .buttonStyle(.plain)
-                                    .contextMenu {
-                                        if !db.folders.isEmpty {
-                                            Menu("移动到文件夹") {
-                                                Button("移出文件夹") {
-                                                    db.moveBook(book.id, toFolder: nil)
-                                                }
-                                                ForEach(db.folders) { f in
-                                                    Button(f.name) {
-                                                        db.moveBook(book.id, toFolder: f.id)
-                                                    }
-                                                }
-                                            }
-                                        }
-                                        if book.filePathHint != "sample://art_of_slow_reading" {
-                                            Button(role: .destructive) {
-                                                db.deleteBook(id: book.id)
-                                            } label: {
-                                                Label("从书架移除", systemImage: "trash")
-                                            }
-                                        }
-                                    }
                                 }
                             }
-                            .padding(.horizontal, 16)
+                        }
+                        .padding(.horizontal, 16)
+                        .padding(.top, 4)
+
+                        // 3. Page Content
+                        if collectionTab == 0 {
+                            catalogSection
+                        } else {
+                            opdsSourcesSection
                         }
                     }
-                    .padding(.vertical, 12)
+                    .padding(.vertical, 10)
                 }
             }
             .navigationTitle("书架")
@@ -116,11 +131,6 @@ struct LibraryView: View {
                             showFileImporter = true
                         } label: {
                             Label("从「文件」关联本地图书", systemImage: "folder")
-                        }
-                        Button {
-                            showOpdsSheet = true
-                        } label: {
-                            Label("OPDS 在线书库", systemImage: "globe")
                         }
                         Button {
                             showWebDavSheet = true
@@ -157,7 +167,7 @@ struct LibraryView: View {
                             bookmarkData: bookmark,
                             filePathHint: url.absoluteString,
                             format: ext.isEmpty ? "TXT" : ext,
-                            folderId: selectedFolderId
+                            folderId: nil
                         )
                     }
                 }
@@ -169,34 +179,212 @@ struct LibraryView: View {
                 }
                 Button("取消", role: .cancel) {}
             }
-            .sheet(isPresented: $showOpdsSheet) {
-                OpdsBrowserSheet(selectedFolderId: selectedFolderId)
+            .sheet(item: $activeOpdsSource) { src in
+                OpdsBrowserSheet(source: src)
             }
             .sheet(isPresented: $showWebDavSheet) {
-                WebDavBrowserSheet(selectedFolderId: selectedFolderId)
+                WebDavBrowserSheet()
             }
         }
     }
 
-    private func folderPill(title: String, id: Int64?) -> some View {
-        let isSelected = selectedFolderId == id
-        return Button {
-            withAnimation(.snappy) { selectedFolderId = id }
-        } label: {
-            Text(title)
-                .font(.subheadline.weight(isSelected ? .semibold : .regular))
-                .padding(.horizontal, 14)
-                .padding(.vertical, 7)
-                .background {
-                    if isSelected {
-                        Capsule().fill(Color.accentColor)
-                    } else {
-                        Capsule().fill(.ultraThinMaterial)
+    @ViewBuilder
+    private var catalogSection: some View {
+        if db.books.isEmpty && db.folders.isEmpty {
+            ContentUnavailableView(
+                "书架暂无图书",
+                systemImage: "books.vertical",
+                description: Text("点击右上角 + 关联本地 EPUB、TXT、PDF、MOBI 或 AZW3")
+            )
+            .padding(.top, 50)
+        } else {
+            LazyVStack(spacing: 12) {
+                // Collapsible Folders
+                ForEach(db.folders) { folder in
+                    let folderBooks = db.books.filter { $0.folderId == folder.id }
+                    let isExpanded = expandedFolderIds.contains(folder.id)
+
+                    VStack(spacing: 4) {
+                        Button {
+                            withAnimation(.spring(response: 0.3, dampingFraction: 0.8)) {
+                                if isExpanded {
+                                    expandedFolderIds.remove(folder.id)
+                                } else {
+                                    expandedFolderIds.insert(folder.id)
+                                }
+                            }
+                        } label: {
+                            GlassCard(cornerRadius: 18) {
+                                HStack {
+                                    Image(systemName: isExpanded ? "folder.fill" : "folder")
+                                        .foregroundStyle(Color.accentColor)
+                                        .font(.title3)
+                                    Text(folder.name)
+                                        .font(.headline)
+                                    Spacer()
+                                    Text("\(folderBooks.count) 本")
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                    Image(systemName: "chevron.right")
+                                        .font(.caption.bold())
+                                        .foregroundStyle(.secondary)
+                                        .rotationEffect(.degrees(isExpanded ? 90 : 0))
+                                }
+                                .padding(14)
+                            }
+                        }
+                        .buttonStyle(GlassPressButtonStyle())
+                        .contextMenu {
+                            Button(role: .destructive) {
+                                db.deleteFolder(id: folder.id)
+                            } label: {
+                                Label("删除文件夹（保留图书）", systemImage: "trash")
+                            }
+                        }
+
+                        if isExpanded && !folderBooks.isEmpty {
+                            VStack(spacing: 3) {
+                                ForEach(Array(folderBooks.enumerated()), id: \.element.id) { idx, book in
+                                    shelfBookRow(book: book, index: idx, count: folderBooks.count)
+                                }
+                            }
+                            .padding(.leading, 12)
+                        }
                     }
                 }
-                .foregroundStyle(isSelected ? .white : .primary)
+
+                // Unfoldered Books (Grouped Asymmetric Glass Cards)
+                if !unfolderedBooks.isEmpty {
+                    VStack(spacing: 3) {
+                        ForEach(Array(unfolderedBooks.enumerated()), id: \.element.id) { idx, book in
+                            shelfBookRow(book: book, index: idx, count: unfolderedBooks.count)
+                        }
+                    }
+                }
+            }
+            .padding(.horizontal, 16)
         }
-        .buttonStyle(.plain)
+    }
+
+    private func shelfBookRow(book: BookItem, index: Int, count: Int) -> some View {
+        Button {
+            onOpenBook(book)
+        } label: {
+            GlassGroupedCard(index: index, count: count) {
+                BookRowView(book: book)
+                    .padding(14)
+            }
+        }
+        .buttonStyle(GlassPressButtonStyle())
+        .contextMenu {
+            if !db.folders.isEmpty {
+                Menu("移动到文件夹") {
+                    Button("移出文件夹") {
+                        db.moveBook(book.id, toFolder: nil)
+                    }
+                    ForEach(db.folders) { f in
+                        Button(f.name) {
+                            db.moveBook(book.id, toFolder: f.id)
+                        }
+                    }
+                }
+            }
+            if book.filePathHint != "sample://art_of_slow_reading" {
+                Button(role: .destructive) {
+                    db.deleteBook(id: book.id)
+                } label: {
+                    Label("从书架移除", systemImage: "trash")
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var opdsSourcesSection: some View {
+        let sources = settingsStore.settings.opdsSources
+        if sources.isEmpty {
+            ContentUnavailableView(
+                "尚未添加 OPDS 书源",
+                systemImage: "globe",
+                description: Text("请前往「设置 → 导入与 OPDS 书源」添加 Calibre 或在线 OPDS 书源")
+            )
+            .padding(.top, 50)
+        } else {
+            LazyVStack(spacing: 3) {
+                ForEach(Array(sources.enumerated()), id: \.element.id) { idx, src in
+                    Button {
+                        activeOpdsSource = src
+                    } label: {
+                        GlassGroupedCard(index: idx, count: sources.count) {
+                            HStack {
+                                Image(systemName: "globe")
+                                    .foregroundStyle(Color.accentColor)
+                                    .font(.title3)
+                                VStack(alignment: .leading, spacing: 3) {
+                                    Text(src.name).font(.headline)
+                                    Text(src.url).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                                }
+                                Spacer()
+                                Image(systemName: "chevron.right")
+                                    .font(.caption.bold())
+                                    .foregroundStyle(.secondary)
+                            }
+                            .padding(14)
+                        }
+                    }
+                    .buttonStyle(GlassPressButtonStyle())
+                }
+            }
+            .padding(.horizontal, 16)
+        }
+    }
+}
+
+private struct HeroContinueCard: View {
+    let book: BookItem
+    var onOpen: () -> Void
+
+    var body: some View {
+        Button(action: onOpen) {
+            GlassCard(cornerRadius: 24, tintColor: Color.accentColor.opacity(0.12)) {
+                VStack(alignment: .leading, spacing: 10) {
+                    HStack {
+                        Label("继续精读", systemImage: "book.pages.fill")
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(Color.accentColor)
+                        Spacer()
+                        Text(book.format)
+                            .font(.caption2.bold())
+                            .padding(.horizontal, 8)
+                            .padding(.vertical, 3)
+                            .background(Color.accentColor.opacity(0.16))
+                            .foregroundStyle(Color.accentColor)
+                            .clipShape(Capsule())
+                    }
+
+                    Text(book.title)
+                        .font(.title3.bold())
+                        .lineLimit(2)
+                        .multilineTextAlignment(.leading)
+
+                    Spacer(minLength: 2)
+
+                    ProgressView(value: book.progressRatio)
+                        .tint(.accentColor)
+
+                    HStack {
+                        Label("已读 \(formatDuration(book.readingSeconds))", systemImage: "clock")
+                        Spacer()
+                        Text("进度 \(Int(book.progressRatio * 100))%")
+                    }
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                }
+                .padding(18)
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
+            }
+        }
+        .buttonStyle(GlassPressButtonStyle())
     }
 }
 
@@ -204,17 +392,17 @@ private struct BookRowView: View {
     let book: BookItem
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
+        VStack(alignment: .leading, spacing: 8) {
             HStack(alignment: .top) {
                 Text(book.title)
-                    .font(.headline)
+                    .font(.subheadline.weight(.semibold))
                     .lineLimit(2)
                     .multilineTextAlignment(.leading)
                 Spacer()
                 Text(book.format)
                     .font(.caption2.weight(.bold))
-                    .padding(.horizontal, 9)
-                    .padding(.vertical, 4)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 3)
                     .background(Color.accentColor.opacity(0.15))
                     .foregroundStyle(Color.accentColor)
                     .clipShape(Capsule())
@@ -228,22 +416,19 @@ private struct BookRowView: View {
                 Spacer()
                 Text("\(Int(book.progressRatio * 100))%")
             }
-            .font(.caption)
+            .font(.caption2)
             .foregroundStyle(.secondary)
         }
     }
 }
 
-// MARK: - OPDS Browser Sheet (Supports Multi-Source Switching)
+// MARK: - OPDS Browser Sheet
 private struct OpdsBrowserSheet: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(DatabaseManager.self) private var db
-    @Environment(SettingsStore.self) private var settingsStore
-    let selectedFolderId: Int64?
+    let source: OpdsSource
 
     @State private var currentUrl: String = ""
-    @State private var activeUser: String = ""
-    @State private var activePass: String = ""
     @State private var entries: [OpdsEntry] = []
     @State private var loading = false
     @State private var errorMsg: String?
@@ -251,34 +436,11 @@ private struct OpdsBrowserSheet: View {
     var body: some View {
         NavigationStack {
             List {
-                if !settingsStore.settings.opdsSources.isEmpty {
-                    Section("已保存书源") {
-                        ScrollView(.horizontal, showsIndicators: false) {
-                            HStack(spacing: 8) {
-                                ForEach(settingsStore.settings.opdsSources) { src in
-                                    Button(src.name) {
-                                        currentUrl = src.url
-                                        activeUser = src.username
-                                        activePass = src.password
-                                        loadFeed()
-                                    }
-                                    .buttonStyle(.bordered)
-                                    .controlSize(.small)
-                                }
-                            }
-                        }
-                    }
-                }
-
                 if let errorMsg {
                     Text(errorMsg).foregroundStyle(.red).font(.footnote)
                 }
                 if entries.isEmpty && !loading {
-                    ContentUnavailableView(
-                        "OPDS 书库",
-                        systemImage: "globe",
-                        description: Text("请在「设置 → OPDS 书源管理」添加书源，或点击右上角刷新")
-                    )
+                    ContentUnavailableView("暂无内容", systemImage: "globe")
                 } else {
                     ForEach(entries) { entry in
                         Button {
@@ -305,7 +467,7 @@ private struct OpdsBrowserSheet: View {
                     }
                 }
             }
-            .navigationTitle("OPDS 在线书库")
+            .navigationTitle(source.name)
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) {
@@ -316,16 +478,8 @@ private struct OpdsBrowserSheet: View {
                 }
             }
             .onAppear {
-                if let first = settingsStore.settings.opdsSources.first {
-                    currentUrl = first.url
-                    activeUser = first.username
-                    activePass = first.password
-                } else {
-                    currentUrl = settingsStore.settings.opdsUrl
-                    activeUser = settingsStore.settings.opdsUsername
-                    activePass = settingsStore.settings.opdsPassword
-                }
-                if !currentUrl.isEmpty { loadFeed() }
+                currentUrl = source.url
+                loadFeed()
             }
         }
     }
@@ -337,8 +491,8 @@ private struct OpdsBrowserSheet: View {
             do {
                 entries = try await NetworkBookService.fetchOpdsFeed(
                     urlString: currentUrl,
-                    username: activeUser,
-                    password: activePass
+                    username: source.username,
+                    password: source.password
                 )
             } catch {
                 errorMsg = error.localizedDescription
@@ -355,10 +509,10 @@ private struct OpdsBrowserSheet: View {
                 let dest = try await NetworkBookService.downloadBookToLocal(
                     urlString: entry.linkUrl,
                     suggestedName: "\(entry.title).\(ext)",
-                    username: activeUser,
-                    password: activePass
+                    username: source.username,
+                    password: source.password
                 )
-                db.addBook(title: entry.title, bookmarkData: nil, filePathHint: dest.absoluteString, format: entry.formatHint, folderId: selectedFolderId)
+                db.addBook(title: entry.title, bookmarkData: nil, filePathHint: dest.absoluteString, format: entry.formatHint)
                 dismiss()
             } catch {
                 errorMsg = error.localizedDescription
@@ -373,7 +527,6 @@ private struct WebDavBrowserSheet: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(DatabaseManager.self) private var db
     @Environment(SettingsStore.self) private var settingsStore
-    let selectedFolderId: Int64?
 
     @State private var currentUrl: String = ""
     @State private var entries: [WebDavEntry] = []
@@ -463,7 +616,7 @@ private struct WebDavBrowserSheet: View {
                 )
                 let ext = dest.pathExtension.uppercased()
                 let title = dest.deletingPathExtension().lastPathComponent
-                db.addBook(title: title, bookmarkData: nil, filePathHint: dest.absoluteString, format: ext, folderId: selectedFolderId)
+                db.addBook(title: title, bookmarkData: nil, filePathHint: dest.absoluteString, format: ext)
                 dismiss()
             } catch {
                 errorMsg = error.localizedDescription

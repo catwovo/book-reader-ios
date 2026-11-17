@@ -7,6 +7,8 @@ struct WordCardData: Equatable {
     let lemma: String
     let phonetic: String
     let translation: String
+    var englishTranslation: String
+    var englishLoading: Bool
     let lookupCount: Int
     let contextSentence: String
 }
@@ -62,6 +64,12 @@ struct ReaderView: View {
         return units[unitIndex]
     }
 
+    private var currentSentenceNote: SentenceNote? {
+        let target = focusSentenceText()
+        guard !target.isEmpty else { return nil }
+        return db.notes.first(where: { $0.bookId == book.id && $0.sentenceText == target })
+    }
+
     private var lookedUpMap: [String: Int] {
         var map: [String: Int] = [:]
         for v in db.vocabList {
@@ -72,387 +80,446 @@ struct ReaderView: View {
     }
 
     var body: some View {
-        NavigationStack {
-            ZStack {
-                AmbientGlassBackdrop()
+        ZStack(alignment: .bottom) {
+            AmbientGlassBackdrop()
 
-                if pdfOriginalMode, let data = pdfData {
-                    PdfOriginalPageView(data: data)
-                        .ignoresSafeArea(edges: .bottom)
-                } else {
-                    GeometryReader { totalGeo in
-                        let topHeight = totalGeo.size.height * settings.readingZoneRatio
-                        let bottomHeight = Swift.max(180, totalGeo.size.height - topHeight)
+            if pdfOriginalMode, let data = pdfData {
+                PdfOriginalPageView(data: data)
+                    .ignoresSafeArea()
+            } else {
+                GeometryReader { totalGeo in
+                    let topHeight = totalGeo.size.height * settings.readingZoneRatio
+                    let bottomHeight = Swift.max(180, totalGeo.size.height - topHeight)
 
-                        VStack(spacing: 0) {
-                            let progress = units.isEmpty ? 0.0 : Double(unitIndex + 1) / Double(units.count)
-                            ProgressView(value: progress)
-                                .tint(.accentColor)
+                    VStack(spacing: 0) {
+                        let progress = units.isEmpty ? 0.0 : Double(unitIndex + 1) / Double(units.count)
+                        ProgressView(value: progress)
+                            .tint(.accentColor)
 
-                            // TOP HALF: Progressive Reading Zone
-                            GeometryReader { geo in
-                                ScrollView {
-                                    VStack(alignment: .leading, spacing: 10) {
-                                        if settings.readingPositionBias > 0.05 {
+                        // TOP HALF: Progressive Reading Zone
+                        GeometryReader { geo in
+                            ScrollView {
+                                VStack(alignment: .leading, spacing: 10) {
+                                    if settings.readingPositionBias > 0.05 {
+                                        Spacer()
+                                            .frame(height: Swift.max(0, (topHeight - 160) * settings.readingPositionBias))
+                                    }
+
+                                    Text(unitIndex > 0 ? "↑ 已读滚出：\(units[unitIndex - 1].text)" : "轻触单词查词 · 轻点下半屏推进")
+                                        .font(.caption2)
+                                        .foregroundStyle(.secondary.opacity(0.65))
+                                        .lineLimit(1)
+
+                                    let endIdx = Swift.min(units.count, unitIndex + 1 + settings.visibleCount)
+                                    let slice = unitIndex < endIdx ? Array(units[unitIndex..<endIdx]) : []
+
+                                    ForEach(Array(slice.enumerated()), id: \.element.id) { idx, unit in
+                                        let isFocus = idx == 0
+                                        let rowOpacity = isFocus ? 1.0 : Swift.max(0.35, 0.85 - Double(idx - 1) * 0.18)
+                                        let focusBg = Color(hexInt64: settings.readerFocusColorHex)
+                                            ?? Color.accentColor.opacity(0.14)
+
+                                        TokenizedLineView(
+                                            unit: unit,
+                                            fontSize: settings.fontSize,
+                                            lineSpacing: CGFloat((settings.lineSpacingMultiplier - 1.0) * settings.fontSize),
+                                            isFocus: isFocus,
+                                            underlineEnabled: settings.underlineLookedUpWords,
+                                            lookedUpMap: lookedUpMap,
+                                            selectedWord: wordCard?.word,
+                                            onWordTap: { token in
+                                                lookupWord(token: token, in: unit)
+                                            }
+                                        )
+                                        .padding(.horizontal, 14)
+                                        .padding(.vertical, 10)
+                                        .frame(maxWidth: .infinity, alignment: .leading)
+                                        .background {
+                                            if isFocus {
+                                                RoundedRectangle(cornerRadius: 14, style: .continuous)
+                                                    .fill(.ultraThinMaterial)
+                                                    .overlay(
+                                                        RoundedRectangle(cornerRadius: 14, style: .continuous)
+                                                            .fill(focusBg)
+                                                    )
+                                                    .overlay(
+                                                        RoundedRectangle(cornerRadius: 14, style: .continuous)
+                                                            .strokeBorder(.white.opacity(0.35), lineWidth: 0.7)
+                                                    )
+                                            }
+                                        }
+                                        .opacity(rowOpacity)
+                                    }
+                                }
+                                .padding(.horizontal, 18)
+                                .padding(.vertical, 12)
+                            }
+                            .onAppear { stageWidth = geo.size.width }
+                            .onChange(of: geo.size.width) { _, newW in stageWidth = newW }
+                        }
+                        .frame(height: topHeight)
+                        .background(Color(hexInt64: settings.readerBgColorHex) ?? Color.clear)
+
+                        // Glass Divider Pill
+                        Capsule()
+                            .fill(.secondary.opacity(0.35))
+                            .frame(width: 40, height: 4)
+                            .padding(.vertical, 4)
+
+                        // BOTTOM HALF: Glass Cards + Tap-to-Advance
+                        ScrollView {
+                            VStack(spacing: 12) {
+                                // Sentence Translation + Inline Note Glass Card
+                                GlassCard(
+                                    cornerRadius: 18,
+                                    tintColor: Color(hexInt64: settings.readerSentenceCardColorHex)
+                                ) {
+                                    VStack(alignment: .leading, spacing: 8) {
+                                        HStack {
+                                            Label(
+                                                settings.sentenceTranslateEngine == "ai" ? "AI 整句翻译" : "Apple 离线翻译",
+                                                systemImage: "translate"
+                                            )
+                                            .font(.caption.weight(.semibold))
+                                            .foregroundStyle(Color.accentColor)
                                             Spacer()
-                                                .frame(height: Swift.max(0, (topHeight - 160) * settings.readingPositionBias))
+                                            Button {
+                                                noteDraft = currentSentenceNote?.noteText ?? ""
+                                                showNoteEditor = true
+                                            } label: {
+                                                Label(currentSentenceNote == nil ? "记笔记" : "已记笔记", systemImage: currentSentenceNote == nil ? "bookmark" : "bookmark.fill")
+                                                    .font(.caption)
+                                            }
+                                            .buttonStyle(.bordered)
+                                            .controlSize(.mini)
+
+                                            Button {
+                                                triggerAiAnalysis(sentence: focusSentenceText(), word: nil)
+                                            } label: {
+                                                Label("AI 精讲", systemImage: "sparkles")
+                                                    .font(.caption)
+                                            }
+                                            .buttonStyle(.borderedProminent)
+                                            .controlSize(.mini)
                                         }
 
-                                        Text(unitIndex > 0 ? "↑ 已读滚出：\(units[unitIndex - 1].text)" : "轻触单词查词 · 轻点下半屏推进")
-                                            .font(.caption2)
-                                            .foregroundStyle(.secondary.opacity(0.65))
-                                            .lineLimit(1)
-
-                                        let endIdx = Swift.min(units.count, unitIndex + 1 + settings.visibleCount)
-                                        let slice = unitIndex < endIdx ? Array(units[unitIndex..<endIdx]) : []
-
-                                        ForEach(Array(slice.enumerated()), id: \.element.id) { idx, unit in
-                                            let isFocus = idx == 0
-                                            let rowOpacity = isFocus ? 1.0 : Swift.max(0.35, 0.85 - Double(idx - 1) * 0.18)
-                                            let focusBg = Color(hexInt64: settings.readerFocusColorHex)
-                                                ?? Color.accentColor.opacity(0.14)
-
-                                            TokenizedLineView(
-                                                unit: unit,
-                                                fontSize: settings.fontSize,
-                                                lineSpacing: CGFloat((settings.lineSpacingMultiplier - 1.0) * settings.fontSize),
-                                                isFocus: isFocus,
-                                                underlineEnabled: settings.underlineLookedUpWords,
-                                                lookedUpMap: lookedUpMap,
-                                                selectedWord: wordCard?.word,
-                                                onWordTap: { token in
-                                                    lookupWord(token: token, in: unit)
-                                                }
-                                            )
-                                            .padding(.horizontal, 14)
-                                            .padding(.vertical, 10)
-                                            .frame(maxWidth: .infinity, alignment: .leading)
-                                            .background {
-                                                if isFocus {
-                                                    RoundedRectangle(cornerRadius: 14, style: .continuous)
-                                                        .fill(.ultraThinMaterial)
-                                                        .overlay(
-                                                            RoundedRectangle(cornerRadius: 14, style: .continuous)
-                                                                .fill(focusBg)
-                                                        )
-                                                        .overlay(
-                                                            RoundedRectangle(cornerRadius: 14, style: .continuous)
-                                                                .strokeBorder(.white.opacity(0.35), lineWidth: 0.7)
-                                                        )
-                                                }
+                                        if translatingSentence {
+                                            HStack(spacing: 8) {
+                                                ProgressView().controlSize(.small)
+                                                Text("正在翻译...").font(.footnote).foregroundStyle(.secondary)
                                             }
-                                            .opacity(rowOpacity)
+                                        } else {
+                                            Text(sentenceTranslation.isEmpty ? "（已关闭自动翻译，点击「AI 精讲」或开启自动翻译）" : sentenceTranslation)
+                                                .font(.subheadline)
+                                                .textSelection(.enabled)
+                                        }
+
+                                        if let savedNote = currentSentenceNote, !savedNote.noteText.isEmpty {
+                                            Text("笔记：\(savedNote.noteText)")
+                                                .font(.caption)
+                                                .padding(8)
+                                                .frame(maxWidth: .infinity, alignment: .leading)
+                                                .background(Color.accentColor.opacity(0.10))
+                                                .clipShape(RoundedRectangle(cornerRadius: 8))
+                                                .onTapGesture {
+                                                    noteDraft = savedNote.noteText
+                                                    showNoteEditor = true
+                                                }
                                         }
                                     }
-                                    .padding(.horizontal, 18)
-                                    .padding(.vertical, 12)
+                                    .padding(14)
                                 }
-                                .onAppear { stageWidth = geo.size.width }
-                                .onChange(of: geo.size.width) { _, newW in stageWidth = newW }
-                            }
-                            .frame(height: topHeight)
-                            .background(Color(hexInt64: settings.readerBgColorHex) ?? Color.clear)
 
-                            // Glass Divider Pill
-                            Capsule()
-                                .fill(.secondary.opacity(0.35))
-                                .frame(width: 40, height: 4)
-                                .padding(.vertical, 4)
-
-                            // BOTTOM HALF: Glass Cards + Tap-to-Advance
-                            ScrollView {
-                                VStack(spacing: 12) {
-                                    // Sentence Translation Glass Card
+                                // Word Definition Glass Card (ZH + EN Bilingual)
+                                if let card = wordCard {
                                     GlassCard(
                                         cornerRadius: 18,
-                                        tintColor: Color(hexInt64: settings.readerSentenceCardColorHex)
+                                        tintColor: Color(hexInt64: settings.readerWordCardColorHex) ?? Color.accentColor.opacity(0.08)
                                     ) {
                                         VStack(alignment: .leading, spacing: 8) {
                                             HStack {
-                                                Label(
-                                                    settings.sentenceTranslateEngine == "ai" ? "AI 整句翻译" : "Apple 离线翻译",
-                                                    systemImage: "translate"
-                                                )
-                                                .font(.caption.weight(.semibold))
-                                                .foregroundStyle(Color.accentColor)
+                                                Text(card.word)
+                                                    .font(.title3.bold())
+                                                    .foregroundStyle(Color.accentColor)
+                                                Text(card.phonetic)
+                                                    .font(.caption)
+                                                    .foregroundStyle(.secondary)
+                                                Button {
+                                                    speech.speak(card.word)
+                                                } label: {
+                                                    Image(systemName: "speaker.wave.2.fill")
+                                                        .font(.caption)
+                                                }
                                                 Spacer()
-                                                Button {
-                                                    noteDraft = ""
-                                                    showNoteEditor = true
-                                                } label: {
-                                                    Label("记笔记", systemImage: "bookmark")
-                                                        .font(.caption)
-                                                }
-                                                .buttonStyle(.bordered)
-                                                .controlSize(.mini)
-
-                                                Button {
-                                                    triggerAiAnalysis(sentence: focusSentenceText(), word: nil)
-                                                } label: {
-                                                    Label("AI 精讲", systemImage: "sparkles")
-                                                        .font(.caption)
-                                                }
-                                                .buttonStyle(.borderedProminent)
-                                                .controlSize(.mini)
+                                                Text("已查 \(card.lookupCount) 次")
+                                                    .font(.caption2.weight(.semibold))
+                                                    .padding(.horizontal, 8)
+                                                    .padding(.vertical, 3)
+                                                    .background(Color.accentColor.opacity(0.16))
+                                                    .clipShape(Capsule())
                                             }
 
-                                            if translatingSentence {
-                                                HStack(spacing: 8) {
-                                                    ProgressView().controlSize(.small)
-                                                    Text("正在翻译...").font(.footnote).foregroundStyle(.secondary)
+                                            Text(card.translation)
+                                                .font(.subheadline)
+                                                .textSelection(.enabled)
+
+                                            if card.englishLoading {
+                                                HStack(spacing: 6) {
+                                                    ProgressView().controlSize(.mini)
+                                                    Text("获取英文释义...").font(.caption2).foregroundStyle(.secondary)
                                                 }
+                                            } else if !card.englishTranslation.isEmpty {
+                                                Text(card.englishTranslation)
+                                                    .font(.caption)
+                                                    .foregroundStyle(.secondary)
+                                                    .padding(8)
+                                                    .frame(maxWidth: .infinity, alignment: .leading)
+                                                    .background(Color.secondary.opacity(0.08))
+                                                    .clipShape(RoundedRectangle(cornerRadius: 8))
+                                            }
+
+                                            Button {
+                                                triggerAiAnalysis(sentence: card.contextSentence, word: card.word)
+                                            } label: {
+                                                Label("AI 语境释义", systemImage: "sparkles")
+                                                    .font(.caption)
+                                            }
+                                            .buttonStyle(.bordered)
+                                            .controlSize(.small)
+                                        }
+                                        .padding(14)
+                                    }
+                                }
+
+                                // AI Explanation Glass Card
+                                if aiLoading || !aiResult.isEmpty {
+                                    GlassCard(cornerRadius: 18) {
+                                        VStack(alignment: .leading, spacing: 8) {
+                                            HStack {
+                                                Label("AI 深度解析", systemImage: "sparkles")
+                                                    .font(.caption.weight(.semibold))
+                                                    .foregroundStyle(Color.accentColor)
+                                                Spacer()
+                                                Button("收起") { aiResult = "" }
+                                                    .font(.caption)
+                                            }
+                                            if aiLoading {
+                                                ProgressView().controlSize(.small)
                                             } else {
-                                                Text(sentenceTranslation.isEmpty ? "（已关闭自动翻译，点击「AI 精讲」或开启自动翻译）" : sentenceTranslation)
-                                                    .font(.subheadline)
+                                                Text(aiResult)
+                                                    .font(.footnote)
                                                     .textSelection(.enabled)
                                             }
                                         }
                                         .padding(14)
                                     }
-
-                                    // Word Definition Glass Card
-                                    if let card = wordCard {
-                                        GlassCard(
-                                            cornerRadius: 18,
-                                            tintColor: Color(hexInt64: settings.readerWordCardColorHex) ?? Color.accentColor.opacity(0.08)
-                                        ) {
-                                            VStack(alignment: .leading, spacing: 8) {
-                                                HStack {
-                                                    Text(card.word)
-                                                        .font(.title3.bold())
-                                                        .foregroundStyle(Color.accentColor)
-                                                    Text(card.phonetic)
-                                                        .font(.caption)
-                                                        .foregroundStyle(.secondary)
-                                                    Button {
-                                                        speech.speak(card.word)
-                                                    } label: {
-                                                        Image(systemName: "speaker.wave.2.fill")
-                                                            .font(.caption)
-                                                    }
-                                                    Spacer()
-                                                    Text("已查 \(card.lookupCount) 次")
-                                                        .font(.caption2.weight(.semibold))
-                                                        .padding(.horizontal, 8)
-                                                        .padding(.vertical, 3)
-                                                        .background(Color.accentColor.opacity(0.16))
-                                                        .clipShape(Capsule())
-                                                }
-
-                                                Text(card.translation)
-                                                    .font(.subheadline)
-                                                    .textSelection(.enabled)
-
-                                                Button {
-                                                    triggerAiAnalysis(sentence: card.contextSentence, word: card.word)
-                                                } label: {
-                                                    Label("AI 语境释义", systemImage: "sparkles")
-                                                        .font(.caption)
-                                                }
-                                                .buttonStyle(.bordered)
-                                                .controlSize(.small)
-                                            }
-                                            .padding(14)
-                                        }
-                                    }
-
-                                    // AI Explanation Glass Card
-                                    if aiLoading || !aiResult.isEmpty {
-                                        GlassCard(cornerRadius: 18) {
-                                            VStack(alignment: .leading, spacing: 8) {
-                                                HStack {
-                                                    Label("AI 深度解析", systemImage: "sparkles")
-                                                        .font(.caption.weight(.semibold))
-                                                        .foregroundStyle(Color.accentColor)
-                                                    Spacer()
-                                                    Button("收起") { aiResult = "" }
-                                                        .font(.caption)
-                                                }
-                                                if aiLoading {
-                                                    ProgressView().controlSize(.small)
-                                                } else {
-                                                    Text(aiResult)
-                                                        .font(.footnote)
-                                                        .textSelection(.enabled)
-                                                }
-                                            }
-                                            .padding(14)
-                                        }
-                                    }
-
-                                    // Tap Blank Area to Advance
-                                    VStack(spacing: 4) {
-                                        Text("轻点此处推进下一\(settings.stepMode == .sentence ? "句" : "行")")
-                                            .font(.footnote.weight(.medium))
-                                        Text("向上轻扫退回上一\(settings.stepMode == .sentence ? "句" : "行")")
-                                            .font(.caption2)
-                                    }
-                                    .foregroundStyle(.secondary.opacity(0.75))
-                                    .frame(maxWidth: .infinity)
-                                    .frame(height: 110)
-                                    .contentShape(Rectangle())
-                                    .onTapGesture { stepNext() }
                                 }
-                                .padding(16)
+
+                                // Tap Blank Area to Advance
+                                VStack(spacing: 4) {
+                                    Text("轻点此处推进下一\(settings.stepMode == .sentence ? "句" : "行")")
+                                        .font(.footnote.weight(.medium))
+                                    Text("向上轻扫退回上一\(settings.stepMode == .sentence ? "句" : "行")")
+                                        .font(.caption2)
+                                }
+                                .foregroundStyle(.secondary.opacity(0.75))
+                                .frame(maxWidth: .infinity)
+                                .frame(height: 150)
+                                .contentShape(Rectangle())
+                                .onTapGesture { stepNext() }
                             }
-                            .frame(height: bottomHeight)
-                            .background(Color(hexInt64: settings.readerBottomBgColorHex) ?? Color.clear)
-                            .contentShape(Rectangle())
-                            .onTapGesture { stepNext() }
-                            .gesture(
-                                DragGesture(minimumDistance: 36)
-                                    .onEnded { value in
-                                        if value.translation.height < -50 {
-                                            stepPrev()
-                                        }
+                            .padding(.horizontal, 16)
+                            .padding(.top, 12)
+                            .padding(.bottom, 76)
+                        }
+                        .frame(height: bottomHeight)
+                        .background(Color(hexInt64: settings.readerBottomBgColorHex) ?? Color.clear)
+                        .contentShape(Rectangle())
+                        .onTapGesture { stepNext() }
+                        .gesture(
+                            DragGesture(minimumDistance: 36)
+                                .onEnded { value in
+                                    if value.translation.height < -50 {
+                                        stepPrev()
                                     }
-                            )
-                        }
-                    }
-                }
-            }
-            .navigationTitle(book.title)
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbarBackground(.ultraThinMaterial, for: .navigationBar)
-            .toolbar {
-                ToolbarItem(placement: .topBarLeading) {
-                    Button {
-                        onBack()
-                    } label: {
-                        Image(systemName: "chevron.left")
-                    }
-                }
-                ToolbarItemGroup(placement: .topBarTrailing) {
-                    if book.format.uppercased() == "PDF" {
-                        Button {
-                            togglePdfOriginalMode()
-                        } label: {
-                            Image(systemName: pdfOriginalMode ? "text.alignleft" : "doc.richtext")
-                        }
-                    }
-                    Button {
-                        showTocSheet = true
-                    } label: {
-                        Image(systemName: "list.bullet")
-                    }
-                    Button {
-                        showPrefsSheet = true
-                    } label: {
-                        Image(systemName: "slider.horizontal.3")
-                    }
-                }
-            }
-            .translationTask(translationConfig) { session in
-                let target = focusSentenceText()
-                guard !target.isEmpty else { return }
-                if let cached = db.getCachedTranslation(target) {
-                    sentenceTranslation = cached
-                    translatingSentence = false
-                    return
-                }
-                do {
-                    let response = try await session.translate(target)
-                    db.saveCachedTranslation(source: target, translated: response.targetText)
-                    sentenceTranslation = response.targetText
-                } catch {
-                    sentenceTranslation = "（请联网首次下载 Apple 英文→中文离线翻译包，或点击「AI 精讲」）"
-                }
-                translatingSentence = false
-            }
-            .onAppear {
-                chapterIndex = (initialChapter ?? book.currentChapter).clamped(to: 0...Swift.max(0, parsedBook.chapters.count - 1))
-                unitIndex = Swift.max(0, initialUnit ?? book.currentIndex)
-                triggerAutoTranslation()
-            }
-            .onChange(of: unitIndex) { _, _ in triggerAutoTranslation() }
-            .onChange(of: chapterIndex) { _, _ in triggerAutoTranslation() }
-            .task(id: book.id) {
-                while !Task.isCancelled {
-                    try? await Task.sleep(for: .seconds(5))
-                    if Date().timeIntervalSince(lastInteractionDate) <= 60 {
-                        db.updateBookProgress(
-                            bookId: book.id,
-                            bookTitle: book.title,
-                            chapter: chapterIndex,
-                            index: unitIndex,
-                            total: Swift.max(1, units.count),
-                            deltaSeconds: 5,
-                            unitsDelta: 0
+                                }
                         )
                     }
                 }
             }
-            .sheet(isPresented: $showTocSheet) {
-                NavigationStack {
-                    List {
-                        ForEach(Array(parsedBook.chapters.enumerated()), id: \.offset) { idx, chap in
-                            Button {
-                                chapterIndex = idx
-                                unitIndex = 0
-                                db.updateBookProgress(bookId: book.id, bookTitle: book.title, chapter: idx, index: 0, total: Swift.max(1, units.count), deltaSeconds: 0, unitsDelta: 0)
-                                showTocSheet = false
-                            } label: {
-                                HStack {
-                                    Text(chap.title)
-                                        .fontWeight(idx == chapterIndex ? .bold : .regular)
-                                    Spacer()
-                                    if idx == chapterIndex {
-                                        Image(systemName: "checkmark").foregroundStyle(Color.accentColor)
-                                    }
+
+            // Floating Apple Liquid Glass Bottom TOC Pill
+            HStack(spacing: 16) {
+                Button {
+                    onBack()
+                } label: {
+                    Image(systemName: "chevron.left")
+                        .font(.subheadline.weight(.semibold))
+                }
+
+                Divider().frame(height: 16)
+
+                Button {
+                    showTocSheet = true
+                } label: {
+                    HStack(spacing: 6) {
+                        Image(systemName: "list.bullet")
+                        Text(parsedBook.chapters.getOrNil(chapterIndex)?.title ?? book.title)
+                            .lineLimit(1)
+                            .frame(maxWidth: 130, alignment: .leading)
+                        Text("\(unitIndex + 1)/\(Swift.max(1, units.count))")
+                            .monospacedDigit()
+                            .foregroundStyle(.secondary)
+                    }
+                    .font(.caption.weight(.medium))
+                }
+
+                Divider().frame(height: 16)
+
+                if book.format.uppercased() == "PDF" {
+                    Button {
+                        togglePdfOriginalMode()
+                    } label: {
+                        Image(systemName: pdfOriginalMode ? "text.alignleft" : "doc.richtext")
+                            .font(.subheadline)
+                    }
+                }
+
+                Button {
+                    showPrefsSheet = true
+                } label: {
+                    Image(systemName: "slider.horizontal.3")
+                        .font(.subheadline)
+                }
+            }
+            .foregroundStyle(.primary)
+            .padding(.horizontal, 18)
+            .padding(.vertical, 11)
+            .background(.ultraThinMaterial, in: Capsule())
+            .overlay {
+                Capsule()
+                    .strokeBorder(
+                        LinearGradient(
+                            colors: [.white.opacity(0.55), .white.opacity(0.12)],
+                            startPoint: .topLeading,
+                            endPoint: .bottomTrailing
+                        ),
+                        lineWidth: 0.8
+                    )
+            }
+            .shadow(color: .black.opacity(0.16), radius: 16, y: 6)
+            .padding(.bottom, 10)
+        }
+        .translationTask(translationConfig) { session in
+            let target = focusSentenceText()
+            guard !target.isEmpty else { return }
+            if let cached = db.getCachedTranslation(target) {
+                sentenceTranslation = cached
+                translatingSentence = false
+                return
+            }
+            do {
+                let response = try await session.translate(target)
+                db.saveCachedTranslation(source: target, translated: response.targetText)
+                sentenceTranslation = response.targetText
+            } catch {
+                sentenceTranslation = "（请联网首次下载 Apple 英文→中文离线翻译包，或点击「AI 精讲」）"
+            }
+            translatingSentence = false
+        }
+        .onAppear {
+            chapterIndex = (initialChapter ?? book.currentChapter).clamped(to: 0...Swift.max(0, parsedBook.chapters.count - 1))
+            unitIndex = Swift.max(0, initialUnit ?? book.currentIndex)
+            triggerAutoTranslation()
+        }
+        .onChange(of: unitIndex) { _, _ in triggerAutoTranslation() }
+        .onChange(of: chapterIndex) { _, _ in triggerAutoTranslation() }
+        .task(id: book.id) {
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .seconds(5))
+                if Date().timeIntervalSince(lastInteractionDate) <= 60 {
+                    db.updateBookProgress(
+                        bookId: book.id,
+                        bookTitle: book.title,
+                        chapter: chapterIndex,
+                        index: unitIndex,
+                        total: Swift.max(1, units.count),
+                        deltaSeconds: 5,
+                        unitsDelta: 0
+                    )
+                }
+            }
+        }
+        .sheet(isPresented: $showTocSheet) {
+            NavigationStack {
+                List {
+                    ForEach(Array(parsedBook.chapters.enumerated()), id: \.offset) { idx, chap in
+                        Button {
+                            chapterIndex = idx
+                            unitIndex = 0
+                            db.updateBookProgress(bookId: book.id, bookTitle: book.title, chapter: idx, index: 0, total: Swift.max(1, units.count), deltaSeconds: 0, unitsDelta: 0)
+                            showTocSheet = false
+                        } label: {
+                            HStack {
+                                Text(chap.title)
+                                    .fontWeight(idx == chapterIndex ? .bold : .regular)
+                                Spacer()
+                                if idx == chapterIndex {
+                                    Image(systemName: "checkmark").foregroundStyle(Color.accentColor)
                                 }
                             }
-                            .tint(.primary)
                         }
+                        .tint(.primary)
                     }
-                    .navigationTitle("章节目录")
-                    .navigationBarTitleDisplayMode(.inline)
-                    .toolbar {
-                        ToolbarItem(placement: .topBarTrailing) {
-                            Button("完成") { showTocSheet = false }
-                        }
+                }
+                .navigationTitle("章节目录")
+                .navigationBarTitleDisplayMode(.inline)
+                .toolbar {
+                    ToolbarItem(placement: .topBarTrailing) {
+                        Button("完成") { showTocSheet = false }
                     }
                 }
             }
-            .sheet(isPresented: $showPrefsSheet) {
-                ReaderPreferencesSheet()
-                    .presentationDetents([.medium, .large])
-            }
-            .sheet(isPresented: $showNoteEditor) {
-                NavigationStack {
-                    Form {
-                        Section("原句摘录") {
-                            Text(focusSentenceText()).font(.footnote).foregroundStyle(.secondary)
-                        }
-                        Section("批注笔记") {
-                            TextEditor(text: $noteDraft)
-                                .frame(minHeight: 120)
-                        }
+        }
+        .sheet(isPresented: $showPrefsSheet) {
+            ReaderPreferencesSheet()
+                .presentationDetents([.medium, .large])
+        }
+        .sheet(isPresented: $showNoteEditor) {
+            NavigationStack {
+                Form {
+                    Section("原句摘录") {
+                        Text(focusSentenceText()).font(.footnote).foregroundStyle(.secondary)
                     }
-                    .navigationTitle("保存句子笔记")
-                    .navigationBarTitleDisplayMode(.inline)
-                    .toolbar {
-                        ToolbarItem(placement: .topBarLeading) {
-                            Button("取消") { showNoteEditor = false }
-                        }
-                        ToolbarItem(placement: .topBarTrailing) {
-                            Button("保存") {
-                                db.saveSentenceNote(
-                                    bookId: book.id,
-                                    bookTitle: book.title,
-                                    chapterIndex: chapterIndex,
-                                    unitIndex: unitIndex,
-                                    sentenceText: focusSentenceText(),
-                                    sentenceTranslation: sentenceTranslation,
-                                    noteText: noteDraft
-                                )
-                                showNoteEditor = false
-                            }
-                            .bold()
-                        }
+                    Section("批注笔记") {
+                        TextEditor(text: $noteDraft)
+                            .frame(minHeight: 120)
                     }
                 }
-                .presentationDetents([.medium])
+                .navigationTitle("保存句子笔记")
+                .navigationBarTitleDisplayMode(.inline)
+                .toolbar {
+                    ToolbarItem(placement: .topBarLeading) {
+                        Button("取消") { showNoteEditor = false }
+                    }
+                    ToolbarItem(placement: .topBarTrailing) {
+                        Button("保存") {
+                            db.saveSentenceNote(
+                                bookId: book.id,
+                                bookTitle: book.title,
+                                chapterIndex: chapterIndex,
+                                unitIndex: unitIndex,
+                                sentenceText: focusSentenceText(),
+                                sentenceTranslation: sentenceTranslation,
+                                noteText: noteDraft
+                            )
+                            showNoteEditor = false
+                        }
+                        .bold()
+                    }
+                }
             }
+            .presentationDetents([.medium])
         }
     }
 
@@ -477,10 +544,6 @@ struct ReaderView: View {
     private func triggerAutoTranslation() {
         let target = focusSentenceText()
         guard !target.isEmpty else { return }
-
-        if settings.autoAiAnalyze {
-            triggerAiAnalysis(sentence: target, word: nil)
-        }
 
         guard settings.autoTranslateSentence else {
             sentenceTranslation = ""
@@ -568,9 +631,23 @@ struct ReaderView: View {
             lemma: saved.lemma,
             phonetic: saved.phonetic,
             translation: saved.translation,
+            englishTranslation: "",
+            englishLoading: true,
             lookupCount: saved.lookupCount,
             contextSentence: contextSent
         )
+
+        Task {
+            let enDef = await TranslationService.fetchEnglishDefinition(for: hit.lemma)
+            if wordCard?.word == clean {
+                wordCard?.englishTranslation = enDef ?? ""
+                wordCard?.englishLoading = false
+            }
+        }
+
+        if settings.autoAiAnalyze {
+            triggerAiAnalysis(sentence: contextSent, word: clean)
+        }
     }
 
     private func triggerAiAnalysis(sentence: String, word: String?) {
@@ -623,7 +700,7 @@ private struct ReaderPreferencesSheet: View {
                         Text("Apple 系统离线").tag("apple")
                         Text("自定义 AI").tag("ai")
                     }
-                    Toggle("翻句自动 AI 精讲", isOn: $store.settings.autoAiAnalyze)
+                    Toggle("点词自动 AI 语境解析", isOn: $store.settings.autoAiAnalyze)
                 }
 
                 Section("步进音效与震动反馈") {
@@ -743,6 +820,12 @@ private struct WordFlowLayout: Layout {
             x += size.width + horizontalSpacing
             rowHeight = Swift.max(rowHeight, size.height)
         }
+    }
+}
+
+private extension Array {
+    func getOrNil(_ index: Int) -> Element? {
+        indices.contains(index) ? self[index] : nil
     }
 }
 
