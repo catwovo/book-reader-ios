@@ -60,6 +60,7 @@ private final class ShelfScrollTracker {
     var opdsOffset: CGFloat = 0
     var manualHeroExpanded: Bool = false
     var manualExpandAnchor: CGFloat = 0
+    var manualExpandExtraTop: CGFloat = 0
     var manualHeroCollapsed: Bool = false
     var lastHeroToggleAt: Date = .distantPast
 }
@@ -91,6 +92,7 @@ struct LibraryView: View {
     @State private var heroPageIndex = 0
     @State private var collectionTab = 0 // 0 = 本地藏书, 1 = 在线书库
     @State private var expandedFolderIds: Set<Int64> = []
+    @State private var collapseAllScrollTrigger = 0
     @State private var scrollTracker = ShelfScrollTracker()
     @State private var expandedHeroHeight: CGFloat = 198
     @State private var compactHeroHeight: CGFloat = 68
@@ -262,8 +264,17 @@ struct LibraryView: View {
                 }
                 if recentBooks.isEmpty {
                     scrollTracker.manualHeroExpanded = false
+                    scrollTracker.manualExpandExtraTop = 0
                     scrollTracker.manualHeroCollapsed = false
                     scrollTracker.localOffset = 0
+                }
+            }
+            .onChange(of: collectionTab) { _, _ in
+                if scrollTracker.manualHeroExpanded {
+                    withAnimation(AppMotion.panelSpring) {
+                        scrollTracker.manualHeroExpanded = false
+                        scrollTracker.manualExpandExtraTop = 0
+                    }
                 }
             }
             .onChange(of: recentBooks.first?.id) { _, _ in
@@ -323,7 +334,7 @@ struct LibraryView: View {
 
                 ZStack(alignment: .top) {
                     collectionPager
-                        .padding(.top, pinnedTopInsetHeight)
+                        .padding(.top, pinnedTopInsetHeight + scrollTracker.manualExpandExtraTop)
 
                     LibraryHeroOverlay(
                         scrollTracker: scrollTracker,
@@ -339,7 +350,10 @@ struct LibraryView: View {
                         onCollapseAllFolders: {
                             withAnimation(AppMotion.panelSpring) {
                                 expandedFolderIds.removeAll()
+                                scrollTracker.manualHeroExpanded = false
+                                scrollTracker.manualExpandExtraTop = 0
                             }
+                            collapseAllScrollTrigger += 1
                         },
                         onNewFolder: { folderModal = .newFolder },
                         onImportBooks: {
@@ -381,14 +395,16 @@ struct LibraryView: View {
         }
         guard collectionTab == 0, hasRecentBooks else { return }
 
-        if scrollTracker.manualHeroExpanded,
-           abs(clamped - scrollTracker.manualExpandAnchor) > 18 {
-            withAnimation(.spring(response: 0.28, dampingFraction: 0.86)) {
-                scrollTracker.manualHeroExpanded = false
+        let now = Date()
+        if scrollTracker.manualHeroExpanded {
+            if clamped <= 4 || (now.timeIntervalSince(scrollTracker.lastHeroToggleAt) > 0.25 && abs(clamped - scrollTracker.manualExpandAnchor) > 18) {
+                withAnimation(.spring(response: 0.28, dampingFraction: 0.86)) {
+                    scrollTracker.manualHeroExpanded = false
+                    scrollTracker.manualExpandExtraTop = 0
+                }
             }
         }
 
-        let now = Date()
         guard now.timeIntervalSince(scrollTracker.lastHeroToggleAt) > 0.35 else { return }
 
         if !scrollTracker.manualHeroCollapsed {
@@ -398,6 +414,7 @@ struct LibraryView: View {
                 scrollTracker.lastHeroToggleAt = now
                 withAnimation(AppMotion.panelSpring) {
                     scrollTracker.manualHeroExpanded = false
+                    scrollTracker.manualExpandExtraTop = 0
                     scrollTracker.manualHeroCollapsed = true
                 }
             }
@@ -422,15 +439,18 @@ struct LibraryView: View {
             }
         }
         guard tab == collectionTab else { return }
-        if scrollTracker.manualHeroExpanded,
-           abs(clamped - scrollTracker.manualExpandAnchor) > 18 {
-            withAnimation(.spring(response: 0.28, dampingFraction: 0.86)) {
-                scrollTracker.manualHeroExpanded = false
+        let now = Date()
+        if scrollTracker.manualHeroExpanded {
+            if clamped <= 4 || (now.timeIntervalSince(scrollTracker.lastHeroToggleAt) > 0.25 && abs(clamped - scrollTracker.manualExpandAnchor) > 18) {
+                withAnimation(.spring(response: 0.28, dampingFraction: 0.86)) {
+                    scrollTracker.manualHeroExpanded = false
+                    scrollTracker.manualExpandExtraTop = 0
+                }
             }
         }
         if scrollTracker.manualHeroCollapsed, newOffset < -18,
-           Date().timeIntervalSince(scrollTracker.lastHeroToggleAt) > 0.35 {
-            scrollTracker.lastHeroToggleAt = Date()
+           now.timeIntervalSince(scrollTracker.lastHeroToggleAt) > 0.35 {
+            scrollTracker.lastHeroToggleAt = now
             withAnimation(AppMotion.panelSpring) {
                 scrollTracker.manualHeroCollapsed = false
             }
@@ -521,59 +541,69 @@ struct LibraryView: View {
             let showFreshRestoreHint = db.folders.isEmpty
                 && db.books.count == 1
                 && db.books.first?.filePathHint == "sample://art_of_slow_reading"
-            ScrollView {
-                LazyVStack(spacing: 4, pinnedViews: [.sectionHeaders]) {
-                    ForEach(sections) { section in
-                        shelfSectionView(for: section)
-                    }
-                    if showFreshRestoreHint {
-                        Section {
-                            GlassCard(cornerRadius: 18, tintColor: palette.accent.opacity(0.06)) {
-                                HStack(spacing: 12) {
-                                    AppleIconBadge(systemImage: "icloud.and.arrow.down", size: 34, cornerRadius: 10, filled: true)
-                                    VStack(alignment: .leading, spacing: 2) {
-                                        Text("重装恢复藏书与数据")
-                                            .font(.subheadline.weight(.semibold))
-                                        Text(backupService.statusMessage ?? "选择之前授权的外部备份目录（如 iCloud 云盘），即可一键还原全部书籍、进度与笔记")
-                                            .font(.caption2)
-                                            .foregroundStyle(backupService.statusIsError ? .red : .secondary)
-                                            .lineLimit(2)
+            ScrollViewReader { scrollProxy in
+                ScrollView {
+                    LazyVStack(spacing: 0, pinnedViews: [.sectionHeaders]) {
+                        Color.clear
+                            .frame(height: 0.5)
+                            .id("shelf_top_anchor")
+                        ForEach(sections) { section in
+                            shelfSectionView(for: section, scrollProxy: scrollProxy)
+                        }
+                        if showFreshRestoreHint {
+                            Section {
+                                GlassCard(cornerRadius: 18, tintColor: palette.accent.opacity(0.06)) {
+                                    HStack(spacing: 12) {
+                                        AppleIconBadge(systemImage: "icloud.and.arrow.down", size: 34, cornerRadius: 10, filled: true)
+                                        VStack(alignment: .leading, spacing: 2) {
+                                            Text("重装恢复藏书与数据")
+                                                .font(.subheadline.weight(.semibold))
+                                            Text(backupService.statusMessage ?? "选择之前授权的外部备份目录（如 iCloud 云盘），即可一键还原全部书籍、进度与笔记")
+                                                .font(.caption2)
+                                                .foregroundStyle(backupService.statusIsError ? .red : .secondary)
+                                                .lineLimit(2)
+                                        }
+                                        Spacer(minLength: 4)
+                                        GlassCapsuleChip(
+                                            title: backupService.isRestoring ? "恢复中" : "选择目录",
+                                            selected: true
+                                        ) {
+                                            importerMode = .restoreFolder
+                                            showFileImporter = true
+                                        }
+                                        .disabled(backupService.isRestoring)
                                     }
-                                    Spacer(minLength: 4)
-                                    GlassCapsuleChip(
-                                        title: backupService.isRestoring ? "恢复中" : "选择目录",
-                                        selected: true
-                                    ) {
-                                        importerMode = .restoreFolder
-                                        showFileImporter = true
-                                    }
-                                    .disabled(backupService.isRestoring)
+                                    .padding(12)
                                 }
-                                .padding(12)
+                                .padding(.top, 8)
                             }
-                            .padding(.top, 8)
                         }
                     }
+                    .padding(.horizontal, 16)
+                    .padding(.top, shelfTopPadding)
+                    .padding(.bottom, 12)
+                    .animation(AppMotion.panelSpring, value: scrollTracker.manualHeroCollapsed)
                 }
-                .padding(.horizontal, 16)
-                .padding(.top, shelfTopPadding)
-                .padding(.bottom, 12)
-                .animation(AppMotion.panelSpring, value: scrollTracker.manualHeroCollapsed)
-            }
-            .scrollBounceBehavior(.always)
-            .onScrollGeometryChange(for: ShelfScrollMetrics.self) { geo in
-                let offset = geo.contentOffset.y + geo.contentInsets.top
-                let maxScroll = max(0, geo.contentSize.height - geo.containerSize.height + geo.contentInsets.top + geo.contentInsets.bottom)
-                let canScroll = maxScroll >= max(40, heroCollapseDelta + 8)
-                return ShelfScrollMetrics(offset: offset, canScrollPastHero: canScroll)
-            } action: { _, metrics in
-                updateLocalScrollMetrics(metrics)
+                .scrollBounceBehavior(.always)
+                .onScrollGeometryChange(for: ShelfScrollMetrics.self) { geo in
+                    let offset = geo.contentOffset.y + geo.contentInsets.top
+                    let maxScroll = max(0, geo.contentSize.height - geo.containerSize.height + geo.contentInsets.top + geo.contentInsets.bottom)
+                    let canScroll = maxScroll >= max(40, heroCollapseDelta + 8)
+                    return ShelfScrollMetrics(offset: offset, canScrollPastHero: canScroll)
+                } action: { _, metrics in
+                    updateLocalScrollMetrics(metrics)
+                }
+                .onChange(of: collapseAllScrollTrigger) { _, _ in
+                    withAnimation(AppMotion.panelSpring) {
+                        scrollProxy.scrollTo("shelf_top_anchor", anchor: .top)
+                    }
+                }
             }
         }
     }
 
     @ViewBuilder
-    private func shelfSectionView(for section: ShelfSectionModel) -> some View {
+    private func shelfSectionView(for section: ShelfSectionModel, scrollProxy: ScrollViewProxy) -> some View {
         switch section.kind {
         case .folder(let folder, let folderBooks, let isExpanded, let idx, let totalCount):
             Section {
@@ -588,7 +618,8 @@ struct LibraryView: View {
                                 .padding(.horizontal, 12)
                         }
                         .padding(.leading, 10)
-                        .transition(.opacity.combined(with: .move(edge: .top)))
+                        .padding(.bottom, 4)
+                        .transition(.opacity.combined(with: .scale(scale: 0.98, anchor: .top)))
                     } else {
                         ForEach(Array(folderBooks.enumerated()), id: \.element.id) { bIdx, book in
                             shelfBookRow(
@@ -598,9 +629,15 @@ struct LibraryView: View {
                                 inFolder: true
                             )
                             .padding(.leading, 10)
-                            .transition(.opacity.combined(with: .move(edge: .top)))
+                            .padding(.bottom, 4)
+                            .transition(.opacity.combined(with: .scale(scale: 0.98, anchor: .top)))
                         }
                     }
+                } else {
+                    // Keep a tiny non-empty section body so LazyVStack(pinnedViews: [.sectionHeaders])
+                    // never drops or misplaces a collapsed folder header during animated collapse.
+                    Color.clear
+                        .frame(height: 0.5)
                 }
             } header: {
                 FolderHeaderGlassCard(
@@ -610,9 +647,14 @@ struct LibraryView: View {
                     index: idx,
                     count: totalCount,
                     onToggleExpand: {
+                        let wasExpanded = expandedFolderIds.contains(folder.id)
+                        let scrolledPastTop = scrollTracker.localOffset > max(12, heroCollapseDelta)
                         withAnimation(AppMotion.panelSpring) {
-                            if expandedFolderIds.contains(folder.id) {
+                            if wasExpanded {
                                 expandedFolderIds.remove(folder.id)
+                                if scrolledPastTop {
+                                    scrollProxy.scrollTo("folder_header_\(folder.id)", anchor: .top)
+                                }
                             } else {
                                 expandedFolderIds.insert(folder.id)
                             }
@@ -636,6 +678,8 @@ struct LibraryView: View {
                         deletingFolder = folder
                     }
                 )
+                .id("folder_header_\(folder.id)")
+                .padding(.bottom, 4)
             }
         case .rootBooks(let rootBooks, let hasFolders):
             Section {
@@ -647,6 +691,7 @@ struct LibraryView: View {
                         inFolder: false
                     )
                     .padding(.top, (bIdx == 0 && hasFolders) ? 4 : 0)
+                    .padding(.bottom, 4)
                 }
             }
         }
@@ -1069,7 +1114,6 @@ private struct FolderHeaderGlassCard: View {
                 x: 0,
                 y: 3
             )
-            .padding(.bottom, isExpanded ? 2 : 0)
             .animation(AppMotion.panelSpring, value: isExpanded)
     }
 }
@@ -1160,8 +1204,12 @@ private struct LibraryHeroOverlay: View {
                             scrollTracker.lastHeroToggleAt = Date()
                             withAnimation(AppMotion.panelSpring) {
                                 scrollTracker.manualHeroCollapsed = false
-                                if activeOffset > 12 {
+                                if activeOffset > 8 {
+                                    scrollTracker.manualExpandExtraTop = min(delta, activeOffset)
                                     scrollTracker.manualHeroExpanded = true
+                                } else {
+                                    scrollTracker.manualExpandExtraTop = 0
+                                    scrollTracker.manualHeroExpanded = false
                                 }
                             }
                         },
@@ -1236,14 +1284,21 @@ private struct LibraryHeroOverlay: View {
                             if dy < 0 {
                                 withAnimation(AppMotion.panelSpring) {
                                     scrollTracker.manualHeroExpanded = false
-                                    scrollTracker.manualHeroCollapsed = true
+                                    scrollTracker.manualExpandExtraTop = 0
+                                    if activeOffset < delta {
+                                        scrollTracker.manualHeroCollapsed = true
+                                    }
                                 }
                             } else {
                                 scrollTracker.manualExpandAnchor = activeOffset
                                 withAnimation(AppMotion.panelSpring) {
                                     scrollTracker.manualHeroCollapsed = false
-                                    if activeOffset > 12 {
+                                    if activeOffset > 8 {
+                                        scrollTracker.manualExpandExtraTop = min(delta, activeOffset)
                                         scrollTracker.manualHeroExpanded = true
+                                    } else {
+                                        scrollTracker.manualExpandExtraTop = 0
+                                        scrollTracker.manualHeroExpanded = false
                                     }
                                 }
                             }
