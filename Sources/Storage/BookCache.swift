@@ -2,6 +2,31 @@ import CryptoKit
 import Foundation
 import UIKit
 
+private actor CoverExtractionLimiter {
+    private var running = 0
+    private var waiters: [CheckedContinuation<Void, Never>] = []
+    private let maxConcurrent = 2
+
+    func acquire() async {
+        if running < maxConcurrent {
+            running += 1
+            return
+        }
+        await withCheckedContinuation { cont in
+            waiters.append(cont)
+        }
+    }
+
+    func release() {
+        if !waiters.isEmpty {
+            let next = waiters.removeFirst()
+            next.resume()
+        } else {
+            running = max(0, running - 1)
+        }
+    }
+}
+
 @Observable
 final class BookCache {
     static let shared = BookCache()
@@ -11,6 +36,7 @@ final class BookCache {
     private var coverMemoryCache: [String: UIImage] = [:]
     private var noCoverSet: Set<String> = []
     private let lock = NSLock()
+    private let coverLimiter = CoverExtractionLimiter()
 
     private static var cacheDirectory: URL {
         let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
@@ -166,6 +192,11 @@ final class BookCache {
         let coverUrl = coverFileUrl(for: book)
         let markerUrl = noCoverMarkerUrl(for: book)
 
+        await shared.coverLimiter.acquire()
+        if Task.isCancelled {
+            await shared.coverLimiter.release()
+            return nil
+        }
         let diskImage: UIImage? = await Task.detached(priority: .utility) {
             if FileManager.default.fileExists(atPath: coverUrl.path),
                let data = try? Data(contentsOf: coverUrl),
@@ -183,6 +214,7 @@ final class BookCache {
             FileManager.default.createFile(atPath: markerUrl.path, contents: Data())
             return nil
         }.value
+        await shared.coverLimiter.release()
 
         shared.saveCoverState(book.filePathHint, image: diskImage)
         return diskImage

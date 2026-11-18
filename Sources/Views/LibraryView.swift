@@ -442,9 +442,7 @@ struct LibraryView: View {
                         size: 32,
                         iconFont: .caption.bold()
                     ) {
-                        withAnimation(AppMotion.panelSpring) {
-                            expandedFolderIds.removeAll()
-                        }
+                        expandedFolderIds.removeAll()
                     }
                     .transition(.scale(scale: 0.8).combined(with: .opacity))
                 }
@@ -610,31 +608,16 @@ struct LibraryView: View {
             .padding(.top, isHeroCollapsed ? 0 : heroCollapseDelta)
         } else {
             let items = buildFlatShelfItems()
-            let cachingHints = BookCache.shared.cachingHints
-            let topSpacerHeight = (isHeroCollapsed ? 0 : heroCollapseDelta) + 4
-            List {
-                Color.clear
-                    .frame(height: max(0.5, topSpacerHeight))
-                    .listRowInsets(EdgeInsets())
-                    .listRowBackground(Color.clear)
-                    .listRowSeparator(.hidden)
-
-                ForEach(items) { item in
-                    shelfRowView(for: item, cachingHints: cachingHints)
-                        .listRowInsets(EdgeInsets(top: 2, leading: 16, bottom: 2, trailing: 16))
-                        .listRowBackground(Color.clear)
-                        .listRowSeparator(.hidden)
+            ScrollView {
+                LazyVStack(spacing: 4) {
+                    ForEach(items) { item in
+                        shelfRowView(for: item)
+                    }
                 }
-
-                Color.clear
-                    .frame(height: 12)
-                    .listRowInsets(EdgeInsets())
-                    .listRowBackground(Color.clear)
-                    .listRowSeparator(.hidden)
+                .padding(.horizontal, 16)
+                .padding(.top, (isHeroCollapsed ? 0 : heroCollapseDelta) + 4)
+                .padding(.bottom, 12)
             }
-            .listStyle(.plain)
-            .scrollContentBackground(.hidden)
-            .environment(\.defaultMinListRowHeight, 0)
             .scrollBounceBehavior(.always)
             .onScrollGeometryChange(for: CGFloat.self) { geo in
                 geo.contentOffset.y + geo.contentInsets.top
@@ -645,7 +628,7 @@ struct LibraryView: View {
     }
 
     @ViewBuilder
-    private func shelfRowView(for item: ShelfListItem, cachingHints: Set<String>) -> some View {
+    private func shelfRowView(for item: ShelfListItem) -> some View {
         switch item {
         case .folderHeader(let folder, let bookCount, let isExpanded, let idx, let count):
             FolderHeaderGlassCard(
@@ -655,18 +638,14 @@ struct LibraryView: View {
                 index: idx,
                 count: count,
                 onToggleExpand: {
-                    withAnimation(AppMotion.panelSpring) {
-                        if isExpanded {
-                            _ = expandedFolderIds.remove(folder.id)
-                        } else {
-                            _ = expandedFolderIds.insert(folder.id)
-                        }
+                    if isExpanded {
+                        _ = expandedFolderIds.remove(folder.id)
+                    } else {
+                        _ = expandedFolderIds.insert(folder.id)
                     }
                 },
                 onImportHere: {
-                    withAnimation(AppMotion.panelSpring) {
-                        _ = expandedFolderIds.insert(folder.id)
-                    }
+                    _ = expandedFolderIds.insert(folder.id)
                     importTargetFolderId = folder.id
                     showFileImporter = true
                 },
@@ -693,7 +672,6 @@ struct LibraryView: View {
         case .book(let book, let bIdx, let count, let inFolder, let isFirstRootAfterFolders):
             shelfBookRow(
                 book: book,
-                isCaching: cachingHints.contains(book.filePathHint),
                 index: bIdx,
                 count: count,
                 inFolder: inFolder
@@ -703,20 +681,17 @@ struct LibraryView: View {
         }
     }
 
-    private func shelfBookRow(book: BookItem, isCaching: Bool, index: Int, count: Int, inFolder: Bool) -> some View {
+    private func shelfBookRow(book: BookItem, index: Int, count: Int, inFolder: Bool) -> some View {
         let canMoveToFolder = inFolder ? db.folders.count > 1 : !db.folders.isEmpty
         return GlassGroupedCard(index: index, count: count, useLiveGlass: false) {
             HStack(spacing: 12) {
                 Button {
                     onOpenBook(book)
                 } label: {
-                    ShelfBookRowContent(
-                        book: book,
-                        isCaching: isCaching
-                    )
-                    .contentShape(Rectangle())
+                    ShelfBookRowContent(book: book)
+                        .contentShape(Rectangle())
                 }
-                .buttonStyle(.borderless)
+                .buttonStyle(.plain)
 
                 Menu {
                     if inFolder {
@@ -745,7 +720,6 @@ struct LibraryView: View {
                         .frame(width: 28, height: 28)
                         .contentShape(Rectangle())
                 }
-                .buttonStyle(.borderless)
             }
             .padding(.horizontal, 13)
             .padding(.vertical, 10)
@@ -1043,7 +1017,7 @@ private struct FolderHeaderGlassCard: View {
                 }
                 .contentShape(Rectangle())
             }
-            .buttonStyle(.borderless)
+            .buttonStyle(.plain)
 
             Menu {
                 Button(action: onImportHere) {
@@ -1066,16 +1040,16 @@ private struct FolderHeaderGlassCard: View {
                     .frame(width: 28, height: 28)
                     .contentShape(Rectangle())
             }
-            .buttonStyle(.borderless)
 
             Button(action: onToggleExpand) {
                 Image(systemName: "chevron.down")
                     .font(.caption.bold())
                     .foregroundStyle(.secondary)
                     .rotationEffect(.degrees(isExpanded ? 0 : -90))
+                    .animation(AppMotion.panelSpring, value: isExpanded)
                     .frame(width: 24, height: 28)
             }
-            .buttonStyle(.borderless)
+            .buttonStyle(.plain)
         }
         .padding(.horizontal, 13)
         .padding(.vertical, 10)
@@ -1097,12 +1071,12 @@ private struct FolderHeaderGlassCard: View {
 
 private struct ShelfBookRowContent: View {
     let book: BookItem
-    let isCaching: Bool
 
     @Environment(\.appPalette) private var palette
 
     var body: some View {
         let progress = computeBookProgress(book)
+        let isCaching = BookCache.shared.cachingHints.contains(book.filePathHint)
         HStack(spacing: 12) {
             BookCoverArtwork(book: book, compact: true, width: 38, height: 52)
                 .shadow(color: .black.opacity(0.10), radius: 2, x: 0, y: 1)
