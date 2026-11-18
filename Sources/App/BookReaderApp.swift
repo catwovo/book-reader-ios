@@ -6,6 +6,7 @@ struct BookReaderApp: App {
     @State private var settingsStore = SettingsStore()
     @State private var speech = SpeechManager()
     @State private var feedbackPlayer = StepFeedbackPlayer()
+    @State private var backupService = BackupService()
 
     var body: some Scene {
         WindowGroup {
@@ -14,6 +15,7 @@ struct BookReaderApp: App {
                 .environment(settingsStore)
                 .environment(speech)
                 .environment(feedbackPlayer)
+                .environment(backupService)
         }
     }
 }
@@ -21,7 +23,9 @@ struct BookReaderApp: App {
 private struct RootContentView: View {
     @Environment(DatabaseManager.self) private var db
     @Environment(SettingsStore.self) private var settingsStore
+    @Environment(BackupService.self) private var backupService
     @Environment(\.colorScheme) private var systemScheme
+    @Environment(\.scenePhase) private var scenePhase
 
     @State private var selectedTab = 0
     @State private var activeBook: BookItem?
@@ -143,8 +147,12 @@ private struct RootContentView: View {
         }
         .environment(\.appPalette, palette)
         .preferredColorScheme(colorSchemeFor(settingsStore.settings.themeMode))
-        .task {
-            BookCache.precacheMissingSequentially(books: db.books, db: db)
+        .onChange(of: scenePhase) { _, newPhase in
+            if newPhase == .background, backupService.isAuthorized, backupService.autoBackupEnabled {
+                Task {
+                    await backupService.backupNow(db: db, settingsStore: settingsStore, silent: true)
+                }
+            }
         }
         .alert("无法打开图书", isPresented: Binding(
             get: { openError != nil },

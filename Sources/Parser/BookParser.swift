@@ -1,4 +1,5 @@
 import Foundation
+import ImageIO
 import PDFKit
 import UIKit
 import zlib
@@ -220,11 +221,37 @@ enum BookParser {
         return parsed
     }
 
+    private static let pdfCoverLock = NSLock()
+
     // MARK: - Cover Thumbnail Extraction
     static func extractCoverThumbnailBytes(for book: BookItem) -> Data? {
         if book.filePathHint.isEmpty || book.filePathHint.hasPrefix("sample://") { return nil }
-        guard let data = try? loadRawData(for: book), !data.isEmpty else { return nil }
-        let actualFormat = detectActualFormat(data: data, declaredFormat: book.format)
+        guard let resolved = resolveReadableUrl(for: book) else { return nil }
+        defer {
+            if resolved.stopSecurityScope {
+                resolved.url.stopAccessingSecurityScopedResource()
+            }
+        }
+
+        let fileSize = (try? resolved.url.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
+        guard fileSize > 0 else { return nil }
+
+        // Sniff header bytes without loading entire file first
+        var headerBytes = Data()
+        if let handle = try? FileHandle(forReadingFrom: resolved.url) {
+            headerBytes = (try? handle.read(upToCount: 1024)) ?? Data()
+            try? handle.close()
+        }
+        let actualFormat = detectActualFormat(data: headerBytes.isEmpty ? Data() : headerBytes, declaredFormat: book.format)
+
+        if actualFormat == "PDF" {
+            return extractPdfCoverThumbnailBytes(url: resolved.url)
+        }
+
+        // Guard against OOM when thumbnailing giant files on the bookshelf
+        guard fileSize <= 180 * 1024 * 1024 else { return nil }
+        guard let data = try? Data(contentsOf: resolved.url, options: [.mappedIfSafe]), !data.isEmpty else { return nil }
+
         switch actualFormat {
         case "EPUB":
             if let rawImg = extractEpubCoverImageBytes(data: data) {
@@ -236,47 +263,66 @@ enum BookParser {
                 return encodeThumbnailJpeg(rawImg)
             }
             return nil
-        case "PDF":
-            return extractPdfCoverThumbnailBytes(data: data)
         default:
             return nil
         }
     }
 
     private static func encodeThumbnailJpeg(_ rawImageData: Data) -> Data? {
-        guard rawImageData.count >= 32, let image = UIImage(data: rawImageData) else { return nil }
-        let srcW = image.size.width
-        let srcH = image.size.height
-        guard srcW > 0, srcH > 0 else { return nil }
-        let maxW: CGFloat = 280
-        let maxH: CGFloat = 400
-        let scale = min(maxW / srcW, maxH / srcH, 1.0)
-        let dstSize = CGSize(width: max(1, (srcW * scale).rounded()), height: max(1, (srcH * scale).rounded()))
-        let format = UIGraphicsImageRendererFormat()
-        format.scale = 1.0
-        format.opaque = true
-        let rendered = UIGraphicsImageRenderer(size: dstSize, format: format).image { ctx in
-            UIColor.white.setFill()
-            ctx.fill(CGRect(origin: .zero, size: dstSize))
-            image.draw(in: CGRect(origin: .zero, size: dstSize))
-        }
-        return rendered.jpegData(compressionQuality: 0.86)
-    }
-
-    private static func extractPdfCoverThumbnailBytes(data: Data) -> Data? {
-        guard let pdf = PDFDocument(data: data), pdf.pageCount > 0, let page = pdf.page(at: 0) else {
+        guard rawImageData.count >= 32 else { return nil }
+        let srcOpts: [CFString: Any] = [
+            kCGImageSourceShouldCache: false
+        ]
+        guard let source = CGImageSourceCreateWithData(rawImageData as CFData, srcOpts as CFDictionary) else {
             return nil
         }
-        let thumb = page.thumbnail(of: CGSize(width: 260, height: 380), for: .mediaBox)
-        let format = UIGraphicsImageRendererFormat()
-        format.scale = 1.0
-        format.opaque = true
-        let rendered = UIGraphicsImageRenderer(size: thumb.size, format: format).image { ctx in
-            UIColor.white.setFill()
-            ctx.fill(CGRect(origin: .zero, size: thumb.size))
-            thumb.draw(in: CGRect(origin: .zero, size: thumb.size))
+        let thumbOpts: [CFString: Any] = [
+            kCGImageSourceCreateThumbnailFromImageAlways: true,
+            kCGImageSourceCreateThumbnailWithTransform: true,
+            kCGImageSourceShouldCacheImmediately: false,
+            kCGImageSourceThumbnailMaxPixelSize: 400
+        ]
+        guard let cgThumb = CGImageSourceCreateThumbnailAtIndex(source, 0, thumbOpts as CFDictionary) else {
+            return nil
         }
-        return rendered.jpegData(compressionQuality: 0.86)
+        return UIImage(cgImage: cgThumb).jpegData(compressionQuality: 0.84)
+    }
+
+    private static func extractPdfCoverThumbnailBytes(url: URL) -> Data? {
+        pdfCoverLock.lock()
+        defer { pdfCoverLock.unlock() }
+        guard let pdf = PDFDocument(url: url), pdf.pageCount > 0, let page = pdf.page(at: 0) else {
+            return nil
+        }
+        let mediaBox = page.bounds(for: .mediaBox)
+        let pageW = max(1, mediaBox.width)
+        let pageH = max(1, mediaBox.height)
+        let scale = min(260.0 / pageW, 380.0 / pageH, 2.0)
+        let dstW = max(1, Int((pageW * scale).rounded()))
+        let dstH = max(1, Int((pageH * scale).rounded()))
+
+        let colorSpace = CGColorSpaceCreateDeviceRGB()
+        guard let ctx = CGContext(
+            data: nil,
+            width: dstW,
+            height: dstH,
+            bitsPerComponent: 8,
+            bytesPerRow: 0,
+            space: colorSpace,
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+        ) else {
+            return nil
+        }
+        ctx.setFillColor(UIColor.white.cgColor)
+        ctx.fill(CGRect(x: 0, y: 0, width: dstW, height: dstH))
+        ctx.saveGState()
+        ctx.scaleBy(x: CGFloat(dstW) / pageW, y: CGFloat(dstH) / pageH)
+        ctx.translateBy(x: -mediaBox.origin.x, y: -mediaBox.origin.y)
+        page.draw(with: .mediaBox, to: ctx)
+        ctx.restoreGState()
+
+        guard let cgImage = ctx.makeImage() else { return nil }
+        return UIImage(cgImage: cgImage).jpegData(compressionQuality: 0.84)
     }
 
     // MARK: - Text Normalization Helpers
@@ -2239,7 +2285,9 @@ enum BookParser {
         var text = html
         text = text.replacingOccurrences(of: #"<!--[\s\S]*?-->"#, with: "", options: .regularExpression)
         text = text.replacingOccurrences(of: #"<(head|script|style|svg|rt|rp)\b[^>]*/>"#, with: "", options: [.regularExpression, .caseInsensitive])
-        text = text.replacingOccurrences(of: #"<(head|script|style|svg|rt|rp)\b[^>]*>[\s\S]*?</\1\s*>"#, with: "", options: [.regularExpression, .caseInsensitive])
+        for tag in ["head", "script", "style", "svg", "rt", "rp"] {
+            text = text.replacingOccurrences(of: "<\(tag)\\b[^>]*>[\\s\\S]*?</\(tag)\\s*>", with: "", options: [.regularExpression, .caseInsensitive])
+        }
         text = text.replacingOccurrences(of: #"</?(p|pre|div|h1|h2|h3|h4|h5|h6|li|dt|dd|blockquote|section|article|figcaption|caption|tr|br|hr)\b[^>]*>"#, with: "\u{0001}", options: [.regularExpression, .caseInsensitive])
         text = text.replacingOccurrences(of: #"</?(td|th)\b[^>]*>"#, with: " ", options: [.regularExpression, .caseInsensitive])
         text = stripHtmlTags(text)

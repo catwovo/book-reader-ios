@@ -78,6 +78,7 @@ private enum ShelfListItem: Identifiable {
 struct LibraryView: View {
     @Environment(DatabaseManager.self) private var db
     @Environment(SettingsStore.self) private var settingsStore
+    @Environment(BackupService.self) private var backupService
     @Environment(\.appPalette) private var palette
 
     var onOpenBook: (BookItem) -> Void
@@ -93,7 +94,12 @@ struct LibraryView: View {
     @State private var sectionBarHeight: CGFloat = 44
 
     // Import & Folder Modals
+    private enum ImporterMode {
+        case books
+        case restoreFolder
+    }
     @State private var showFileImporter = false
+    @State private var importerMode: ImporterMode = .books
     @State private var importTargetFolderId: Int64? = nil
     @State private var activeSheet: LibraryActiveSheet? = nil
     @State private var folderModal: LibraryFolderModal? = nil
@@ -124,11 +130,20 @@ struct LibraryView: View {
         content
             .fileImporter(
                 isPresented: $showFileImporter,
-                allowedContentTypes: supportedBookContentTypes,
-                allowsMultipleSelection: true
+                allowedContentTypes: importerMode == .books ? supportedBookContentTypes : [.folder],
+                allowsMultipleSelection: importerMode == .books
             ) { result in
-                if case .success(let urls) = result {
+                guard case .success(let urls) = result else { return }
+                switch importerMode {
+                case .books:
                     importPickedFiles(urls, targetFolderId: importTargetFolderId)
+                case .restoreFolder:
+                    if let folderUrl = urls.first {
+                        backupService.authorizeBackupFolder(folderUrl)
+                        Task {
+                            await backupService.restoreFromAuthorizedFolder(db: db, settingsStore: settingsStore)
+                        }
+                    }
                 }
             }
             .alert("删除文件夹", isPresented: Binding(
@@ -348,7 +363,7 @@ struct LibraryView: View {
             ZStack(alignment: .top) {
                 CompactHeroContinueBar(
                     book: activeBook,
-                    isCaching: BookCache.shared.cachingHints.contains(activeBook.filePathHint),
+                    isCaching: false,
                     onExpand: {
                         setHeroCollapsed(false, recordAnchor: true)
                     },
@@ -360,7 +375,7 @@ struct LibraryView: View {
                 .padding(.horizontal, 16)
                 .padding(.top, 4)
                 .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { h in
-                    if h > 10, abs(compactHeroHeight - h) > 0.5 {
+                    if h > 10, abs(compactHeroHeight - h) > 0.5, (isHeroCollapsed || abs(compactHeroHeight - 68) < 0.1) {
                         compactHeroHeight = h
                     }
                 }
@@ -374,7 +389,7 @@ struct LibraryView: View {
                             let book = recentBooks[idx]
                             HeroContinueCard(
                                 book: book,
-                                isCaching: BookCache.shared.cachingHints.contains(book.filePathHint),
+                                isCaching: false,
                                 onOpen: {
                                     onOpenBook(book)
                                     DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) {
@@ -402,7 +417,7 @@ struct LibraryView: View {
                 }
                 .padding(.top, 6)
                 .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { h in
-                    if h > 10, abs(expandedHeroHeight - h) > 0.5 {
+                    if !isHeroCollapsed, h > 10, abs(expandedHeroHeight - h) > 0.5 {
                         expandedHeroHeight = h
                     }
                 }
@@ -462,6 +477,7 @@ struct LibraryView: View {
                     iconFont: .subheadline.bold(),
                     isActive: true
                 ) {
+                    importerMode = .books
                     importTargetFolderId = nil
                     showFileImporter = true
                 }
@@ -588,8 +604,19 @@ struct LibraryView: View {
                     .foregroundStyle(.secondary)
                     .multilineTextAlignment(.center)
                 GlassCapsuleChip(title: "导入本地图书", systemImage: "plus", selected: true) {
+                    importerMode = .books
                     importTargetFolderId = nil
                     showFileImporter = true
+                }
+                GlassCapsuleChip(title: "从备份目录恢复", systemImage: "arrow.counterclockwise.icloud") {
+                    importerMode = .restoreFolder
+                    showFileImporter = true
+                }
+                if let statusMsg = backupService.statusMessage {
+                    Text(statusMsg)
+                        .font(.caption2)
+                        .foregroundStyle(backupService.statusIsError ? .red : palette.accent)
+                        .multilineTextAlignment(.center)
                 }
                 Spacer()
             }
@@ -608,10 +635,39 @@ struct LibraryView: View {
             .padding(.top, isHeroCollapsed ? 0 : heroCollapseDelta)
         } else {
             let items = buildFlatShelfItems()
+            let showFreshRestoreHint = db.folders.isEmpty
+                && db.books.count == 1
+                && db.books.first?.filePathHint == "sample://art_of_slow_reading"
             ScrollView {
                 LazyVStack(spacing: 4) {
                     ForEach(items) { item in
                         shelfRowView(for: item)
+                    }
+                    if showFreshRestoreHint {
+                        GlassCard(cornerRadius: 18, tintColor: palette.accent.opacity(0.06)) {
+                            HStack(spacing: 12) {
+                                AppleIconBadge(systemImage: "icloud.and.arrow.down", size: 34, cornerRadius: 10, filled: true)
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text("重装恢复藏书与数据")
+                                        .font(.subheadline.weight(.semibold))
+                                    Text(backupService.statusMessage ?? "选择之前授权的外部备份目录（如 iCloud 云盘），即可一键还原全部书籍、进度与笔记")
+                                        .font(.caption2)
+                                        .foregroundStyle(backupService.statusIsError ? .red : .secondary)
+                                        .lineLimit(2)
+                                }
+                                Spacer(minLength: 4)
+                                GlassCapsuleChip(
+                                    title: backupService.isRestoring ? "恢复中" : "选择目录",
+                                    selected: true
+                                ) {
+                                    importerMode = .restoreFolder
+                                    showFileImporter = true
+                                }
+                                .disabled(backupService.isRestoring)
+                            }
+                            .padding(12)
+                        }
+                        .padding(.top, 8)
                     }
                 }
                 .padding(.horizontal, 16)
@@ -646,6 +702,7 @@ struct LibraryView: View {
                 },
                 onImportHere: {
                     _ = expandedFolderIds.insert(folder.id)
+                    importerMode = .books
                     importTargetFolderId = folder.id
                     showFileImporter = true
                 },
@@ -729,38 +786,40 @@ struct LibraryView: View {
     // MARK: - Local Import Helper
 
     private func importPickedFiles(_ urls: [URL], targetFolderId: Int64?) {
-        let docsDir = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first!
-        let booksDir = docsDir.appendingPathComponent("Books", isDirectory: true)
-        try? FileManager.default.createDirectory(at: booksDir, withIntermediateDirectories: true)
+        guard !urls.isEmpty else { return }
+        Task.detached(priority: .userInitiated) {
+            let docsDir = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first!
+            let booksDir = docsDir.appendingPathComponent("Books", isDirectory: true)
+            try? FileManager.default.createDirectory(at: booksDir, withIntermediateDirectories: true)
 
-        for url in urls {
-            let accessed = url.startAccessingSecurityScopedResource()
-            defer { if accessed { url.stopAccessingSecurityScopedResource() } }
+            var prepared: [(title: String, bookmarkData: Data?, filePathHint: String, format: String, folderId: Int64?)] = []
+            prepared.reserveCapacity(urls.count)
 
-            let rawExt = url.pathExtension.uppercased()
-            let fmt = rawExt.isEmpty ? "TXT" : rawExt
-            let title = url.deletingPathExtension().lastPathComponent
+            for url in urls {
+                let accessed = url.startAccessingSecurityScopedResource()
+                defer { if accessed { url.stopAccessingSecurityScopedResource() } }
 
-            // Copy into sandbox Books/ directory for reliable permanent access across restarts
-            let destName = "\(UUID().uuidString.prefix(8))_\(url.lastPathComponent)"
-            let destUrl = booksDir.appendingPathComponent(destName)
-            var filePathHint = url.absoluteString
-            var bookmark: Data? = nil
+                let rawExt = url.pathExtension.uppercased()
+                let fmt = rawExt.isEmpty ? "TXT" : rawExt
+                let rawTitle = url.deletingPathExtension().lastPathComponent
+                let title = rawTitle.isEmpty ? "未命名图书" : rawTitle
 
-            if (try? FileManager.default.copyItem(at: url, to: destUrl)) != nil {
-                filePathHint = destUrl.absoluteString
-            } else {
-                bookmark = try? url.bookmarkData(options: [], includingResourceValuesForKeys: nil, relativeTo: nil)
+                let destName = "\(UUID().uuidString.prefix(8))_\(url.lastPathComponent)"
+                let destUrl = booksDir.appendingPathComponent(destName)
+                var filePathHint = url.absoluteString
+                var bookmark: Data? = nil
+
+                if (try? FileManager.default.copyItem(at: url, to: destUrl)) != nil {
+                    filePathHint = destUrl.absoluteString
+                } else {
+                    bookmark = try? url.bookmarkData(options: [], includingResourceValuesForKeys: nil, relativeTo: nil)
+                }
+
+                prepared.append((title: title, bookmarkData: bookmark, filePathHint: filePathHint, format: fmt, folderId: targetFolderId))
             }
 
-            if let added = db.addBook(
-                title: title.isEmpty ? "未命名图书" : title,
-                bookmarkData: bookmark,
-                filePathHint: filePathHint,
-                format: fmt,
-                folderId: targetFolderId
-            ) {
-                BookCache.precacheMissingSequentially(books: [added], db: db)
+            await MainActor.run {
+                db.addBooksBatch(prepared)
             }
         }
     }
@@ -1076,7 +1135,6 @@ private struct ShelfBookRowContent: View {
 
     var body: some View {
         let progress = computeBookProgress(book)
-        let isCaching = BookCache.shared.cachingHints.contains(book.filePathHint)
         HStack(spacing: 12) {
             BookCoverArtwork(book: book, compact: true, width: 38, height: 52)
                 .shadow(color: .black.opacity(0.10), radius: 2, x: 0, y: 1)
@@ -1095,12 +1153,7 @@ private struct ShelfBookRowContent: View {
 
                 HStack(spacing: 8) {
                     SmoothLinearProgressBar(progress: progress, height: 3.5)
-                    if isCaching {
-                        ProgressView().controlSize(.mini)
-                        Text("缓存中")
-                            .font(.caption2)
-                            .foregroundStyle(palette.accent)
-                    } else if book.readingSeconds > 0 {
+                    if book.readingSeconds > 0 {
                         Text("\(Int(progress * 100))% · \(formatDuration(book.readingSeconds))")
                             .font(.caption2)
                             .foregroundStyle(progress > 0 ? palette.accent : .secondary)

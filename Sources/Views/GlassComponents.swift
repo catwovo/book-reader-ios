@@ -694,6 +694,8 @@ struct BookCoverArtwork: View {
                         loadedHint = book.filePathHint
                     }
                 }
+            } else if coverImage == nil, let ready = BookCache.cachedCoverIfReady(for: book) {
+                coverImage = ready
             }
         }
     }
@@ -1591,20 +1593,15 @@ struct SmoothLinearProgressBar: View {
     var body: some View {
         let clamped = min(1.0, max(0.0, progress))
         let fillColor = tintColor ?? palette.accent
-        Canvas { context, size in
-            let radius = size.height * 0.5
-            let bgRect = CGRect(origin: .zero, size: size)
-            context.fill(
-                Path(roundedRect: bgRect, cornerRadius: radius),
-                with: .color(Color.secondary.opacity(0.18))
-            )
-            if clamped > 0 {
-                let barW = max(size.height, size.width * clamped)
-                let fgRect = CGRect(x: 0, y: 0, width: barW, height: size.height)
-                context.fill(
-                    Path(roundedRect: fgRect, cornerRadius: radius),
-                    with: .color(fillColor)
-                )
+        GeometryReader { geo in
+            ZStack(alignment: .leading) {
+                Capsule()
+                    .fill(Color.secondary.opacity(0.18))
+                if clamped > 0 {
+                    Capsule()
+                        .fill(fillColor)
+                        .frame(width: max(height, geo.size.width * clamped))
+                }
             }
         }
         .frame(height: height)

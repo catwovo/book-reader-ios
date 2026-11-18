@@ -147,4 +147,25 @@ final class SettingsStore {
         }
         persistOpdsSources()
     }
+
+    func restoreFromBackup(
+        settings restoredSettings: ReaderSettings,
+        opdsSources restoredSources: [OpdsSource],
+        selectedOpdsSourceId restoredSelectedId: String?
+    ) {
+        self.settings = restoredSettings
+        if let data = try? JSONEncoder().encode(restoredSettings) {
+            UserDefaults.standard.set(data, forKey: key)
+        }
+        if !restoredSources.isEmpty {
+            self.opdsSources = restoredSources
+            if let sid = restoredSelectedId, restoredSources.contains(where: { $0.id == sid }) {
+                self.selectedOpdsSourceId = sid
+            } else {
+                self.selectedOpdsSourceId = restoredSources.first?.id
+            }
+            UserDefaults.standard.set(true, forKey: opdsDefaultsSeededKey)
+            persistOpdsSources()
+        }
+    }
 }

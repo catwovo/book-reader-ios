@@ -389,3 +389,97 @@ struct WebDavDownloadResult: Sendable {
     let title: String
     let format: String
 }
+
+// MARK: - Persistent External Backup Models
+
+struct BackupFolderRecord: Codable, Hashable, Sendable {
+    var oldId: Int64
+    var name: String
+    var createdAt: Int64
+    var updatedAt: Int64
+}
+
+struct BackupBookRecord: Codable, Hashable, Sendable {
+    var oldId: Int64
+    var title: String
+    var fileName: String
+    var filePathHint: String
+    var format: String
+    var currentChapter: Int
+    var currentIndex: Int
+    var totalItems: Int
+    var overallProgress: Float
+    var readingSeconds: Int64
+    var lastReadAt: Int64
+    var oldFolderId: Int64?
+}
+
+struct BackupVocabRecord: Codable, Hashable, Sendable {
+    var word: String
+    var lemma: String
+    var phonetic: String
+    var translation: String
+    var englishTranslation: String
+    var lookupCount: Int
+    var contextSentence: String
+    var contextTranslation: String
+    var oldBookId: Int64?
+    var bookTitle: String
+    var familiarity: Int
+    var createdAt: Int64
+    var updatedAt: Int64
+}
+
+struct BackupNoteRecord: Codable, Hashable, Sendable {
+    var oldBookId: Int64
+    var bookTitle: String
+    var chapterIndex: Int
+    var chapterTitle: String
+    var unitIndex: Int
+    var sentenceText: String
+    var sentenceTranslation: String
+    var aiAnalysis: String
+    var noteText: String
+    var createdAt: Int64
+    var updatedAt: Int64
+}
+
+struct BackupReadingLogRecord: Codable, Hashable, Sendable {
+    var dateKey: String
+    var year: Int
+    var yearMonth: String
+    var dayOfMonth: Int
+    var oldBookId: Int64
+    var bookTitle: String
+    var readingSeconds: Int64
+    var unitsRead: Int
+    var lookupsCount: Int
+    var lastReadAt: Int64
+}
+
+struct BackupVocabReviewLogRecord: Codable, Hashable, Sendable {
+    var dateKey: String
+    var year: Int
+    var yearMonth: String
+    var dayOfMonth: Int
+    var unknownCount: Int
+    var fuzzyCount: Int
+    var knownCount: Int
+    var updatedAt: Int64
+}
+
+struct AppBackupManifest: Codable, Sendable {
+    var version: Int = 1
+    var exportedAtMs: Int64
+    var deviceName: String
+    var folders: [BackupFolderRecord]
+    var books: [BackupBookRecord]
+    var vocabList: [BackupVocabRecord]
+    var notes: [BackupNoteRecord]
+    var readingLogs: [BackupReadingLogRecord]
+    var vocabReviewLogs: [BackupVocabReviewLogRecord]
+    var settings: ReaderSettings
+    var opdsSources: [OpdsSource]
+    var selectedOpdsSourceId: String?
+}
+

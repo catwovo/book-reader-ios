@@ -469,6 +469,47 @@ final class DatabaseManager: @unchecked Sendable {
         return books.first(where: { $0.filePathHint == filePathHint })
     }
 
+    @discardableResult
+    func addBooksBatch(_ items: [(title: String, bookmarkData: Data?, filePathHint: String, format: String, folderId: Int64?)]) -> [BookItem] {
+        guard !items.isEmpty else { return [] }
+        let ts = nowMs()
+        dbLock.lock()
+        sqlite3_exec(db, "BEGIN TRANSACTION", nil, nil, nil)
+        var stmt: OpaquePointer?
+        let sql = "INSERT OR IGNORE INTO books (title, bookmarkData, filePathHint, format, overallProgress, lastReadAt, folderId) VALUES (?1, ?2, ?3, ?4, -1.0, ?5, ?6)"
+        if sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK {
+            for (idx, item) in items.enumerated() {
+                sqlite3_reset(stmt)
+                sqlite3_clear_bindings(stmt)
+                sqlite3_bind_text(stmt, 1, item.title, -1, SQLITE_TRANSIENT)
+                if let data = item.bookmarkData {
+                    _ = data.withUnsafeBytes { ptr in
+                        sqlite3_bind_blob(stmt, 2, ptr.baseAddress, Int32(data.count), SQLITE_TRANSIENT)
+                    }
+                } else {
+                    sqlite3_bind_null(stmt, 2)
+                }
+                sqlite3_bind_text(stmt, 3, item.filePathHint, -1, SQLITE_TRANSIENT)
+                sqlite3_bind_text(stmt, 4, item.format.uppercased(), -1, SQLITE_TRANSIENT)
+                sqlite3_bind_int64(stmt, 5, ts + Int64(items.count - idx))
+                if let fid = item.folderId {
+                    sqlite3_bind_int64(stmt, 6, fid)
+                } else {
+                    sqlite3_bind_null(stmt, 6)
+                }
+                sqlite3_step(stmt)
+            }
+        }
+        sqlite3_finalize(stmt)
+        sqlite3_exec(db, "COMMIT", nil, nil, nil)
+        dbLock.unlock()
+
+        let updated = fetchBooks()
+        books = updated
+        let hints = Set(items.map(\.filePathHint))
+        return updated.filter { hints.contains($0.filePathHint) }
+    }
+
     func moveBook(_ bookId: Int64, toFolder folderId: Int64?) {
         dbLock.lock()
         var stmt: OpaquePointer?
@@ -1371,5 +1412,304 @@ final class DatabaseManager: @unchecked Sendable {
                 format: "TXT"
             )
         }
+    }
+
+    // MARK: - Backup Export & Restore
+    struct RawBackupSnapshot: Sendable {
+        let folders: [BookFolder]
+        let books: [BookItem]
+        let vocabList: [VocabItem]
+        let notes: [SentenceNote]
+        let readingLogs: [ReadingLog]
+        let vocabReviewLogs: [VocabReviewLog]
+    }
+
+    func exportBackupSnapshot() -> RawBackupSnapshot {
+        dbLock.lock()
+        defer { dbLock.unlock() }
+        return RawBackupSnapshot(
+            folders: fetchFolders(),
+            books: fetchBooks(),
+            vocabList: fetchVocab(),
+            notes: fetchNotes(),
+            readingLogs: fetchReadingLogs(),
+            vocabReviewLogs: fetchVocabReviewLogs()
+        )
+    }
+
+    @discardableResult
+    func restoreFromBackup(
+        manifest: AppBackupManifest,
+        resolvedFileHintByOldBookId: [Int64: String]
+    ) -> (restoredBooks: Int, restoredFolders: Int, restoredNotes: Int, restoredVocab: Int) {
+        dbLock.lock()
+        sqlite3_exec(db, "BEGIN TRANSACTION", nil, nil, nil)
+
+        var existingFoldersByName: [String: Int64] = [:]
+        for f in fetchFolders() {
+            if existingFoldersByName[f.name] == nil {
+                existingFoldersByName[f.name] = f.id
+            }
+        }
+
+        var folderIdMap: [Int64: Int64] = [:]
+        var restoredFolders = 0
+        for f in manifest.folders {
+            if let existingId = existingFoldersByName[f.name] {
+                folderIdMap[f.oldId] = existingId
+            } else {
+                var stmt: OpaquePointer?
+                if sqlite3_prepare_v2(db, "INSERT INTO book_folders (name, createdAt, updatedAt) VALUES (?1, ?2, ?3)", -1, &stmt, nil) == SQLITE_OK {
+                    sqlite3_bind_text(stmt, 1, f.name, -1, SQLITE_TRANSIENT)
+                    sqlite3_bind_int64(stmt, 2, f.createdAt)
+                    sqlite3_bind_int64(stmt, 3, f.updatedAt)
+                    if sqlite3_step(stmt) == SQLITE_DONE {
+                        let newId = sqlite3_last_insert_rowid(db)
+                        folderIdMap[f.oldId] = newId
+                        existingFoldersByName[f.name] = newId
+                        restoredFolders += 1
+                    }
+                }
+                sqlite3_finalize(stmt)
+            }
+        }
+
+        let currentBooks = fetchBooks()
+        let existingByHint: [String: BookItem] = Dictionary(
+            currentBooks.map { ($0.filePathHint, $0) },
+            uniquingKeysWith: { first, _ in first }
+        )
+        var bookIdMap: [Int64: Int64] = [:]
+        var restoredBooks = 0
+
+        for b in manifest.books {
+            let targetHint = resolvedFileHintByOldBookId[b.oldId] ?? b.filePathHint
+            let targetFolderId: Int64? = b.oldFolderId.flatMap { folderIdMap[$0] }
+
+            if let existing = existingByHint[targetHint] {
+                bookIdMap[b.oldId] = existing.id
+                let shouldUpdateProgress = b.readingSeconds > existing.readingSeconds
+                    || b.lastReadAt > existing.lastReadAt
+                    || (existing.overallProgress < 0 && b.overallProgress >= 0)
+                if shouldUpdateProgress || (existing.folderId == nil && targetFolderId != nil) {
+                    var stmt: OpaquePointer?
+                    let sql = """
+                    UPDATE books SET
+                        currentChapter = ?1,
+                        currentIndex = ?2,
+                        totalItems = ?3,
+                        overallProgress = ?4,
+                        readingSeconds = MAX(readingSeconds, ?5),
+                        lastReadAt = MAX(lastReadAt, ?6),
+                        folderId = COALESCE(folderId, ?7)
+                    WHERE id = ?8
+                    """
+                    if sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK {
+                        sqlite3_bind_int(stmt, 1, Int32(shouldUpdateProgress ? b.currentChapter : existing.currentChapter))
+                        sqlite3_bind_int(stmt, 2, Int32(shouldUpdateProgress ? b.currentIndex : existing.currentIndex))
+                        sqlite3_bind_int(stmt, 3, Int32(max(1, shouldUpdateProgress ? b.totalItems : existing.totalItems)))
+                        sqlite3_bind_double(stmt, 4, Double(shouldUpdateProgress ? b.overallProgress : existing.overallProgress))
+                        sqlite3_bind_int64(stmt, 5, b.readingSeconds)
+                        sqlite3_bind_int64(stmt, 6, b.lastReadAt)
+                        if let fid = targetFolderId {
+                            sqlite3_bind_int64(stmt, 7, fid)
+                        } else {
+                            sqlite3_bind_null(stmt, 7)
+                        }
+                        sqlite3_bind_int64(stmt, 8, existing.id)
+                        sqlite3_step(stmt)
+                    }
+                    sqlite3_finalize(stmt)
+                }
+                restoredBooks += 1
+            } else {
+                var stmt: OpaquePointer?
+                let sql = """
+                INSERT OR IGNORE INTO books
+                (title, bookmarkData, filePathHint, format, currentChapter, currentIndex, totalItems, overallProgress, readingSeconds, lastReadAt, folderId)
+                VALUES (?1, NULL, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+                """
+                var insertedId: Int64 = 0
+                if sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK {
+                    sqlite3_bind_text(stmt, 1, b.title, -1, SQLITE_TRANSIENT)
+                    sqlite3_bind_text(stmt, 2, targetHint, -1, SQLITE_TRANSIENT)
+                    sqlite3_bind_text(stmt, 3, b.format.uppercased(), -1, SQLITE_TRANSIENT)
+                    sqlite3_bind_int(stmt, 4, Int32(b.currentChapter))
+                    sqlite3_bind_int(stmt, 5, Int32(b.currentIndex))
+                    sqlite3_bind_int(stmt, 6, Int32(max(1, b.totalItems)))
+                    sqlite3_bind_double(stmt, 7, Double(b.overallProgress))
+                    sqlite3_bind_int64(stmt, 8, b.readingSeconds)
+                    sqlite3_bind_int64(stmt, 9, b.lastReadAt)
+                    if let fid = targetFolderId {
+                        sqlite3_bind_int64(stmt, 10, fid)
+                    } else {
+                        sqlite3_bind_null(stmt, 10)
+                    }
+                    if sqlite3_step(stmt) == SQLITE_DONE && sqlite3_changes(db) > 0 {
+                        insertedId = sqlite3_last_insert_rowid(db)
+                    }
+                }
+                sqlite3_finalize(stmt)
+
+                if insertedId == 0 {
+                    var qStmt: OpaquePointer?
+                    if sqlite3_prepare_v2(db, "SELECT id FROM books WHERE filePathHint = ?1 LIMIT 1", -1, &qStmt, nil) == SQLITE_OK {
+                        sqlite3_bind_text(qStmt, 1, targetHint, -1, SQLITE_TRANSIENT)
+                        if sqlite3_step(qStmt) == SQLITE_ROW {
+                            insertedId = sqlite3_column_int64(qStmt, 0)
+                        }
+                    }
+                    sqlite3_finalize(qStmt)
+                }
+
+                if insertedId > 0 {
+                    bookIdMap[b.oldId] = insertedId
+                    restoredBooks += 1
+                }
+            }
+        }
+
+        var restoredVocab = 0
+        let vocabSql = """
+        INSERT INTO vocab (word, lemma, phonetic, translation, englishTranslation, lookupCount, contextSentence, contextTranslation, bookId, bookTitle, familiarity, createdAt, updatedAt)
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
+        ON CONFLICT(word) DO UPDATE SET
+            lookupCount = MAX(lookupCount, excluded.lookupCount),
+            phonetic = CASE WHEN excluded.phonetic != '' THEN excluded.phonetic ELSE phonetic END,
+            translation = CASE WHEN excluded.translation != '' THEN excluded.translation ELSE translation END,
+            englishTranslation = CASE WHEN excluded.englishTranslation != '' THEN excluded.englishTranslation ELSE englishTranslation END,
+            contextSentence = CASE WHEN excluded.contextSentence != '' THEN excluded.contextSentence ELSE contextSentence END,
+            contextTranslation = CASE WHEN excluded.contextTranslation != '' THEN excluded.contextTranslation ELSE contextTranslation END,
+            bookId = COALESCE(excluded.bookId, bookId),
+            bookTitle = CASE WHEN excluded.bookTitle != '' THEN excluded.bookTitle ELSE bookTitle END,
+            familiarity = MAX(familiarity, excluded.familiarity),
+            updatedAt = MAX(updatedAt, excluded.updatedAt)
+        """
+        var vStmt: OpaquePointer?
+        if sqlite3_prepare_v2(db, vocabSql, -1, &vStmt, nil) == SQLITE_OK {
+            for v in manifest.vocabList {
+                sqlite3_reset(vStmt)
+                sqlite3_clear_bindings(vStmt)
+                sqlite3_bind_text(vStmt, 1, v.word, -1, SQLITE_TRANSIENT)
+                sqlite3_bind_text(vStmt, 2, v.lemma, -1, SQLITE_TRANSIENT)
+                sqlite3_bind_text(vStmt, 3, v.phonetic, -1, SQLITE_TRANSIENT)
+                sqlite3_bind_text(vStmt, 4, v.translation, -1, SQLITE_TRANSIENT)
+                sqlite3_bind_text(vStmt, 5, v.englishTranslation, -1, SQLITE_TRANSIENT)
+                sqlite3_bind_int(vStmt, 6, Int32(max(1, v.lookupCount)))
+                sqlite3_bind_text(vStmt, 7, v.contextSentence, -1, SQLITE_TRANSIENT)
+                sqlite3_bind_text(vStmt, 8, v.contextTranslation, -1, SQLITE_TRANSIENT)
+                if let oldBid = v.oldBookId, let newBid = bookIdMap[oldBid] {
+                    sqlite3_bind_int64(vStmt, 9, newBid)
+                } else {
+                    sqlite3_bind_null(vStmt, 9)
+                }
+                sqlite3_bind_text(vStmt, 10, v.bookTitle, -1, SQLITE_TRANSIENT)
+                sqlite3_bind_int(vStmt, 11, Int32(v.familiarity))
+                sqlite3_bind_int64(vStmt, 12, v.createdAt)
+                sqlite3_bind_int64(vStmt, 13, v.updatedAt)
+                if sqlite3_step(vStmt) == SQLITE_DONE {
+                    restoredVocab += 1
+                }
+            }
+        }
+        sqlite3_finalize(vStmt)
+
+        var restoredNotes = 0
+        let noteSql = """
+        INSERT INTO sentence_notes (bookId, bookTitle, chapterIndex, chapterTitle, unitIndex, sentenceText, sentenceTranslation, aiAnalysis, noteText, createdAt, updatedAt)
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
+        ON CONFLICT(bookId, sentenceText) DO UPDATE SET
+            chapterTitle = CASE WHEN excluded.chapterTitle != '' THEN excluded.chapterTitle ELSE chapterTitle END,
+            sentenceTranslation = CASE WHEN excluded.sentenceTranslation != '' THEN excluded.sentenceTranslation ELSE sentenceTranslation END,
+            aiAnalysis = CASE WHEN excluded.aiAnalysis != '' THEN excluded.aiAnalysis ELSE aiAnalysis END,
+            noteText = CASE WHEN excluded.noteText != '' THEN excluded.noteText ELSE noteText END,
+            updatedAt = MAX(updatedAt, excluded.updatedAt)
+        """
+        var nStmt: OpaquePointer?
+        if sqlite3_prepare_v2(db, noteSql, -1, &nStmt, nil) == SQLITE_OK {
+            for n in manifest.notes {
+                let mappedBookId = bookIdMap[n.oldBookId] ?? n.oldBookId
+                sqlite3_reset(nStmt)
+                sqlite3_clear_bindings(nStmt)
+                sqlite3_bind_int64(nStmt, 1, mappedBookId)
+                sqlite3_bind_text(nStmt, 2, n.bookTitle, -1, SQLITE_TRANSIENT)
+                sqlite3_bind_int(nStmt, 3, Int32(n.chapterIndex))
+                sqlite3_bind_text(nStmt, 4, n.chapterTitle, -1, SQLITE_TRANSIENT)
+                sqlite3_bind_int(nStmt, 5, Int32(n.unitIndex))
+                sqlite3_bind_text(nStmt, 6, n.sentenceText, -1, SQLITE_TRANSIENT)
+                sqlite3_bind_text(nStmt, 7, n.sentenceTranslation, -1, SQLITE_TRANSIENT)
+                sqlite3_bind_text(nStmt, 8, n.aiAnalysis, -1, SQLITE_TRANSIENT)
+                sqlite3_bind_text(nStmt, 9, n.noteText, -1, SQLITE_TRANSIENT)
+                sqlite3_bind_int64(nStmt, 10, n.createdAt)
+                sqlite3_bind_int64(nStmt, 11, n.updatedAt)
+                if sqlite3_step(nStmt) == SQLITE_DONE {
+                    restoredNotes += 1
+                }
+            }
+        }
+        sqlite3_finalize(nStmt)
+
+        let logSql = """
+        INSERT INTO reading_logs (dateKey, year, yearMonth, dayOfMonth, bookId, bookTitle, readingSeconds, unitsRead, lookupsCount, lastReadAt)
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+        ON CONFLICT(dateKey, bookId) DO UPDATE SET
+            readingSeconds = MAX(readingSeconds, excluded.readingSeconds),
+            unitsRead = MAX(unitsRead, excluded.unitsRead),
+            lookupsCount = MAX(lookupsCount, excluded.lookupsCount),
+            lastReadAt = MAX(lastReadAt, excluded.lastReadAt)
+        """
+        var rlStmt: OpaquePointer?
+        if sqlite3_prepare_v2(db, logSql, -1, &rlStmt, nil) == SQLITE_OK {
+            for rl in manifest.readingLogs {
+                let mappedBookId = bookIdMap[rl.oldBookId] ?? rl.oldBookId
+                sqlite3_reset(rlStmt)
+                sqlite3_clear_bindings(rlStmt)
+                sqlite3_bind_text(rlStmt, 1, rl.dateKey, -1, SQLITE_TRANSIENT)
+                sqlite3_bind_int(rlStmt, 2, Int32(rl.year))
+                sqlite3_bind_text(rlStmt, 3, rl.yearMonth, -1, SQLITE_TRANSIENT)
+                sqlite3_bind_int(rlStmt, 4, Int32(rl.dayOfMonth))
+                sqlite3_bind_int64(rlStmt, 5, mappedBookId)
+                sqlite3_bind_text(rlStmt, 6, rl.bookTitle, -1, SQLITE_TRANSIENT)
+                sqlite3_bind_int64(rlStmt, 7, rl.readingSeconds)
+                sqlite3_bind_int(rlStmt, 8, Int32(rl.unitsRead))
+                sqlite3_bind_int(rlStmt, 9, Int32(rl.lookupsCount))
+                sqlite3_bind_int64(rlStmt, 10, rl.lastReadAt)
+                sqlite3_step(rlStmt)
+            }
+        }
+        sqlite3_finalize(rlStmt)
+
+        let vrlSql = """
+        INSERT INTO vocab_review_logs (dateKey, year, yearMonth, dayOfMonth, unknownCount, fuzzyCount, knownCount, updatedAt)
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+        ON CONFLICT(dateKey) DO UPDATE SET
+            unknownCount = MAX(unknownCount, excluded.unknownCount),
+            fuzzyCount = MAX(fuzzyCount, excluded.fuzzyCount),
+            knownCount = MAX(knownCount, excluded.knownCount),
+            updatedAt = MAX(updatedAt, excluded.updatedAt)
+        """
+        var vrlStmt: OpaquePointer?
+        if sqlite3_prepare_v2(db, vrlSql, -1, &vrlStmt, nil) == SQLITE_OK {
+            for vrl in manifest.vocabReviewLogs {
+                sqlite3_reset(vrlStmt)
+                sqlite3_clear_bindings(vrlStmt)
+                sqlite3_bind_text(vrlStmt, 1, vrl.dateKey, -1, SQLITE_TRANSIENT)
+                sqlite3_bind_int(vrlStmt, 2, Int32(vrl.year))
+                sqlite3_bind_text(vrlStmt, 3, vrl.yearMonth, -1, SQLITE_TRANSIENT)
+                sqlite3_bind_int(vrlStmt, 4, Int32(vrl.dayOfMonth))
+                sqlite3_bind_int(vrlStmt, 5, Int32(vrl.unknownCount))
+                sqlite3_bind_int(vrlStmt, 6, Int32(vrl.fuzzyCount))
+                sqlite3_bind_int(vrlStmt, 7, Int32(vrl.knownCount))
+                sqlite3_bind_int64(vrlStmt, 8, vrl.updatedAt)
+                sqlite3_step(vrlStmt)
+            }
+        }
+        sqlite3_finalize(vrlStmt)
+
+        sqlite3_exec(db, "COMMIT", nil, nil, nil)
+        dbLock.unlock()
+
+        reloadAll()
+        return (restoredBooks, restoredFolders, restoredNotes, restoredVocab)
     }
 }

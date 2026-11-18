@@ -53,23 +53,32 @@ private let appIconOptions: [AppIconOption] = [
 struct SettingsView: View {
     @Environment(DatabaseManager.self) private var db
     @Environment(SettingsStore.self) private var settingsStore
+    @Environment(BackupService.self) private var backupService
     @Environment(\.appPalette) private var palette
     @Environment(\.colorScheme) private var systemScheme
 
     var onOpenBook: (BookItem) -> Void = { _ in }
+
+    private enum ImporterMode {
+        case books
+        case backupFolder
+    }
 
     @State private var themeSectionExpanded = false
     @State private var appIconSectionExpanded = false
     @State private var importSectionExpanded = false
     @State private var dictSectionExpanded = false
     @State private var aiSectionExpanded = false
+    @State private var backupSectionExpanded = false
     @State private var cacheSectionExpanded = false
 
     @State private var currentAlternateIconName: String? = UIApplication.shared.alternateIconName
     @State private var iconSwitchError: String? = nil
 
-    // Local import
+    // Local import & folder permission picker
     @State private var showFileImporter = false
+    @State private var importerMode: ImporterMode = .books
+    @State private var showRestoreConfirmAlert = false
     @State private var importFeedbackMsg: String?
     @State private var importFeedbackIsError = false
 
@@ -110,6 +119,7 @@ struct SettingsView: View {
 
     var body: some View {
         @Bindable var store = settingsStore
+        @Bindable var backup = backupService
         let translationService = TranslationService.shared
         let engineLabel: String = {
             switch store.settings.sentenceTranslateEngine {
@@ -146,7 +156,7 @@ struct SettingsView: View {
                 ScrollView {
                     VStack(spacing: 3) {
                         // 1. 外观主题（7 套配色方案 + 阅读器自定义联动重置）
-                        GlassGroupedCard(index: 0, count: 6, outerRadius: 22, innerRadius: 6) {
+                        GlassGroupedCard(index: 0, count: 7, outerRadius: 22, innerRadius: 6) {
                             settingsGroupSection(
                                 title: "外观主题",
                                 subtitle: "当前：\(store.settings.themeMode.displayName)",
@@ -206,7 +216,7 @@ struct SettingsView: View {
                         }
 
                         // 2. 桌面图标
-                        GlassGroupedCard(index: 1, count: 6, outerRadius: 22, innerRadius: 6) {
+                        GlassGroupedCard(index: 1, count: 7, outerRadius: 22, innerRadius: 6) {
                             settingsGroupSection(
                                 title: "桌面图标",
                                 subtitle: "当前：\(currentIconOption.title)",
@@ -278,7 +288,7 @@ struct SettingsView: View {
                         }
 
                         // 3. 图书导入与网盘
-                        GlassGroupedCard(index: 2, count: 6, outerRadius: 22, innerRadius: 6) {
+                        GlassGroupedCard(index: 2, count: 7, outerRadius: 22, innerRadius: 6) {
                             settingsGroupSection(
                                 title: "图书导入与网盘",
                                 subtitle: "本地导入 · WebDAV · OPDS（\(store.opdsSources.count) 个）",
@@ -289,10 +299,11 @@ struct SettingsView: View {
                                 VStack(alignment: .leading, spacing: 8) {
                                     Text("本地文件导入")
                                         .font(.subheadline.weight(.semibold))
-                                    Text("支持 EPUB · TXT · PDF · MOBI · AZW3，导入后自动加入书架并后台解析缓存")
+                                    Text("支持 EPUB · TXT · PDF · MOBI · AZW3，导入后自动加入书架，打开时按需秒速解析")
                                         .font(.caption)
                                         .foregroundStyle(.secondary)
                                     Button {
+                                        importerMode = .books
                                         showFileImporter = true
                                     } label: {
                                         Label("关联本地图书", systemImage: "folder.badge.plus")
@@ -491,7 +502,7 @@ struct SettingsView: View {
                         }
 
                         // 4. 词库与翻译引擎
-                        GlassGroupedCard(index: 3, count: 6, outerRadius: 22, innerRadius: 6) {
+                        GlassGroupedCard(index: 3, count: 7, outerRadius: 22, innerRadius: 6) {
                             settingsGroupSection(
                                 title: "词库与翻译引擎",
                                 subtitle: "Apple 原生查词/翻译 · 整句：\(engineLabel)",
@@ -736,7 +747,7 @@ struct SettingsView: View {
                         }
 
                         // 5. 自定义 AI 接口
-                        GlassGroupedCard(index: 4, count: 6, outerRadius: 22, innerRadius: 6) {
+                        GlassGroupedCard(index: 4, count: 7, outerRadius: 22, innerRadius: 6) {
                             settingsGroupSection(
                                 title: "自定义 AI 接口",
                                 subtitle: aiSummary,
@@ -825,8 +836,134 @@ struct SettingsView: View {
                             }
                         }
 
-                        // 6. 缓存与存储管理
-                        GlassGroupedCard(index: 5, count: 6, outerRadius: 22, innerRadius: 6) {
+                        // 6. 数据权限与重装备份
+                        GlassGroupedCard(index: 5, count: 7, outerRadius: 22, innerRadius: 6) {
+                            settingsGroupSection(
+                                title: "数据权限与重装备份",
+                                subtitle: backupService.isAuthorized ? "已授权：\(backupService.authorizedFolderName)" : "未授权 · 卸载重装防丢失",
+                                systemImage: "folder.badge.person.crop",
+                                expanded: $backupSectionExpanded
+                            ) {
+                                Text("iOS 卸载应用时会清空本地沙盒。通过「文件」App 授权一个外部持久目录（强烈建议选择「iCloud 云盘」中的目录），应用会将图书文件、文件夹分类、阅读进度、笔记、生词本与阅读设置增量同步至该目录的 MiaoyueBackup 文件夹。")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+
+                                VStack(spacing: 8) {
+                                    HStack {
+                                        Text("外部存储权限")
+                                            .font(.caption)
+                                            .foregroundStyle(.secondary)
+                                        Spacer()
+                                        MinimalTagPill(
+                                            text: backupService.isAuthorized ? "已授权" : "未授权",
+                                            tintColor: backupService.isAuthorized ? palette.accent.opacity(0.16) : nil,
+                                            textColor: backupService.isAuthorized ? palette.accent : .secondary
+                                        )
+                                    }
+                                    if backupService.isAuthorized {
+                                        cacheStatRow("授权目录", backupService.authorizedFolderName)
+                                        if backupService.lastBackupAtMs > 0 {
+                                            cacheStatRow("最近同步", formatSettingsBackupTime(backupService.lastBackupAtMs))
+                                        }
+                                    }
+                                }
+                                .padding(12)
+                                .background(palette.nestedTint.opacity(0.55))
+                                .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+
+                                if backupService.isSandboxOwnDocumentsWarning {
+                                    Text("⚠️ 检测到您选择了本应用自身的沙盒目录（我的 iPhone/喵阅），卸载重装时该目录会被系统清除！请重新选择「iCloud 云盘」或外部云盘目录。")
+                                        .font(.caption)
+                                        .foregroundStyle(.red)
+                                }
+
+                                if let preview = backupService.detectedBackupPreview {
+                                    VStack(alignment: .leading, spacing: 4) {
+                                        Text("已检测到可恢复备份")
+                                            .font(.caption.weight(.semibold))
+                                            .foregroundStyle(palette.accent)
+                                        Text("\(preview.bookCount) 本图书 · \(preview.folderCount) 个文件夹 · \(preview.noteCount) 条笔记 · \(preview.vocabCount) 个生词")
+                                            .font(.caption2)
+                                            .foregroundStyle(.secondary)
+                                        Text("备份时间：\(formatSettingsBackupTime(preview.exportedAtMs))")
+                                            .font(.caption2)
+                                            .foregroundStyle(.secondary)
+                                    }
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                                    .padding(10)
+                                    .background(palette.accent.opacity(0.08))
+                                    .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                                }
+
+                                if backupService.isAuthorized {
+                                    Toggle("退至后台自动增量同步", isOn: $backup.autoBackupEnabled)
+                                        .font(.subheadline)
+                                }
+
+                                Button {
+                                    importerMode = .backupFolder
+                                    showFileImporter = true
+                                } label: {
+                                    Label(
+                                        backupService.isAuthorized ? "更换持久数据目录" : "授权持久数据目录（推荐 iCloud 云盘）",
+                                        systemImage: "folder.badge.plus"
+                                    )
+                                    .frame(maxWidth: .infinity)
+                                }
+                                .buttonStyle(.borderedProminent)
+                                .tint(palette.accent)
+                                .disabled(backupService.isBackingUp || backupService.isRestoring)
+
+                                if backupService.isAuthorized {
+                                    HStack(spacing: 8) {
+                                        Button {
+                                            Task {
+                                                await backupService.backupNow(db: db, settingsStore: settingsStore, silent: false)
+                                            }
+                                        } label: {
+                                            Text(backupService.isBackingUp ? "同步中..." : "立即同步备份")
+                                                .frame(maxWidth: .infinity)
+                                        }
+                                        .buttonStyle(.bordered)
+                                        .disabled(backupService.isBackingUp || backupService.isRestoring)
+
+                                        Button {
+                                            if db.books.count > 1 {
+                                                showRestoreConfirmAlert = true
+                                            } else {
+                                                Task {
+                                                    await backupService.restoreFromAuthorizedFolder(db: db, settingsStore: settingsStore)
+                                                }
+                                            }
+                                        } label: {
+                                            Text(backupService.isRestoring ? "恢复中..." : "从备份恢复")
+                                                .frame(maxWidth: .infinity)
+                                        }
+                                        .buttonStyle(.bordered)
+                                        .disabled(backupService.isBackingUp || backupService.isRestoring || backupService.detectedBackupPreview == nil)
+                                    }
+
+                                    Button("取消目录授权", role: .destructive) {
+                                        backupService.revokeBackupFolder()
+                                    }
+                                    .font(.caption)
+                                }
+
+                                if backupService.isBackingUp || backupService.isRestoring {
+                                    ProgressView()
+                                        .progressViewStyle(.linear)
+                                }
+
+                                if let statusMsg = backupService.statusMessage {
+                                    Text(statusMsg)
+                                        .font(.caption)
+                                        .foregroundStyle(backupService.statusIsError ? .red : palette.accent)
+                                }
+                            }
+                        }
+
+                        // 7. 缓存与存储管理
+                        GlassGroupedCard(index: 6, count: 7, outerRadius: 22, innerRadius: 6) {
                             settingsGroupSection(
                                 title: "缓存与存储管理",
                                 subtitle: "占用 \(formatSettingsCacheSize(cacheStats.totalBytes)) · 翻译缓存 \(translationCacheCount) 条",
@@ -902,6 +1039,11 @@ struct SettingsView: View {
                     Task { await refreshAppleLanguagePackStatuses() }
                 }
             }
+            .onChange(of: backupSectionExpanded) { _, expanded in
+                if expanded, backupService.isAuthorized {
+                    Task { await backupService.refreshAuthorizedFolderState() }
+                }
+            }
             .onAppear {
                 if store.settings.webdavUrl.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                     webDavConfigExpanded = true
@@ -910,12 +1052,28 @@ struct SettingsView: View {
             }
             .fileImporter(
                 isPresented: $showFileImporter,
-                allowedContentTypes: settingsBookContentTypes,
-                allowsMultipleSelection: true
+                allowedContentTypes: importerMode == .books ? settingsBookContentTypes : [.folder],
+                allowsMultipleSelection: importerMode == .books
             ) { result in
-                if case .success(let urls) = result {
+                guard case .success(let urls) = result else { return }
+                switch importerMode {
+                case .books:
                     importLocalBooks(urls)
+                case .backupFolder:
+                    if let folderUrl = urls.first {
+                        backupService.authorizeBackupFolder(folderUrl)
+                    }
                 }
+            }
+            .alert("从备份恢复数据", isPresented: $showRestoreConfirmAlert) {
+                Button("立即恢复", role: .destructive) {
+                    Task {
+                        await backupService.restoreFromAuthorizedFolder(db: db, settingsStore: settingsStore)
+                    }
+                }
+                Button("取消", role: .cancel) {}
+            } message: {
+                Text("将从已授权目录中的 MiaoyueBackup 合并恢复图书、文件夹、阅读进度、笔记、生词与阅读设置。")
             }
             .sheet(isPresented: $showOpdsEditSheet) {
                 OpdsSourceEditSheet(
@@ -1080,46 +1238,52 @@ struct SettingsView: View {
     }
 
     private func importLocalBooks(_ urls: [URL]) {
-        let docsDir = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first!
-        let booksDir = docsDir.appendingPathComponent("Books", isDirectory: true)
-        try? FileManager.default.createDirectory(at: booksDir, withIntermediateDirectories: true)
+        guard !urls.isEmpty else { return }
+        importFeedbackIsError = false
+        importFeedbackMsg = "正在导入 \(urls.count) 本图书..."
+        Task.detached(priority: .userInitiated) {
+            let docsDir = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first!
+            let booksDir = docsDir.appendingPathComponent("Books", isDirectory: true)
+            try? FileManager.default.createDirectory(at: booksDir, withIntermediateDirectories: true)
 
-        var importedTitles: [String] = []
-        for url in urls {
-            let accessed = url.startAccessingSecurityScopedResource()
-            defer { if accessed { url.stopAccessingSecurityScopedResource() } }
+            var prepared: [(title: String, bookmarkData: Data?, filePathHint: String, format: String, folderId: Int64?)] = []
+            prepared.reserveCapacity(urls.count)
 
-            let rawExt = url.pathExtension.uppercased()
-            let fmt = rawExt.isEmpty ? "TXT" : rawExt
-            let title = url.deletingPathExtension().lastPathComponent
-            let destName = "\(UUID().uuidString.prefix(8))_\(url.lastPathComponent)"
-            let destUrl = booksDir.appendingPathComponent(destName)
-            var filePathHint = url.absoluteString
-            var bookmark: Data? = nil
+            for url in urls {
+                let accessed = url.startAccessingSecurityScopedResource()
+                defer { if accessed { url.stopAccessingSecurityScopedResource() } }
 
-            if (try? FileManager.default.copyItem(at: url, to: destUrl)) != nil {
-                filePathHint = destUrl.absoluteString
-            } else {
-                bookmark = try? url.bookmarkData(options: [], includingResourceValuesForKeys: nil, relativeTo: nil)
+                let rawExt = url.pathExtension.uppercased()
+                let fmt = rawExt.isEmpty ? "TXT" : rawExt
+                let rawTitle = url.deletingPathExtension().lastPathComponent
+                let title = rawTitle.isEmpty ? "未命名图书" : rawTitle
+                let destName = "\(UUID().uuidString.prefix(8))_\(url.lastPathComponent)"
+                let destUrl = booksDir.appendingPathComponent(destName)
+                var filePathHint = url.absoluteString
+                var bookmark: Data? = nil
+
+                if (try? FileManager.default.copyItem(at: url, to: destUrl)) != nil {
+                    filePathHint = destUrl.absoluteString
+                } else {
+                    bookmark = try? url.bookmarkData(options: [], includingResourceValuesForKeys: nil, relativeTo: nil)
+                }
+
+                prepared.append((title: title, bookmarkData: bookmark, filePathHint: filePathHint, format: fmt, folderId: nil))
             }
 
-            if let added = db.addBook(
-                title: title.isEmpty ? "未命名图书" : title,
-                bookmarkData: bookmark,
-                filePathHint: filePathHint,
-                format: fmt
-            ) {
-                importedTitles.append(added.title)
-                BookCache.precacheMissingSequentially(books: [added], db: db)
+            let addedCount = await MainActor.run {
+                db.addBooksBatch(prepared).count
             }
-        }
 
-        if importedTitles.isEmpty {
-            importFeedbackIsError = true
-            importFeedbackMsg = "未能导入所选文件"
-        } else {
-            importFeedbackIsError = false
-            importFeedbackMsg = "已导入 \(importedTitles.count) 本图书到书架并开始后台缓存"
+            await MainActor.run {
+                if addedCount == 0 {
+                    importFeedbackIsError = true
+                    importFeedbackMsg = "未能导入所选文件"
+                } else {
+                    importFeedbackIsError = false
+                    importFeedbackMsg = "已导入 \(addedCount) 本图书到书架"
+                }
+            }
         }
     }
 
@@ -1620,4 +1784,12 @@ private func formatSettingsCacheSize(_ bytes: Int64) -> String {
     }
     let mb = kb / 1024.0
     return String(format: "%.1f MB", mb)
+}
+
+private func formatSettingsBackupTime(_ ms: Int64) -> String {
+    guard ms > 0 else { return "未知" }
+    let date = Date(timeIntervalSince1970: Double(ms) / 1000.0)
+    let fmt = DateFormatter()
+    fmt.dateFormat = "yyyy-MM-dd HH:mm"
+    return fmt.string(from: date)
 }

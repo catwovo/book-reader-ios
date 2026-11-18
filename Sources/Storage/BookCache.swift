@@ -2,41 +2,45 @@ import CryptoKit
 import Foundation
 import UIKit
 
-private actor CoverExtractionLimiter {
-    private var running = 0
-    private var waiters: [CheckedContinuation<Void, Never>] = []
-    private let maxConcurrent = 2
-
-    func acquire() async {
-        if running < maxConcurrent {
-            running += 1
-            return
-        }
-        await withCheckedContinuation { cont in
-            waiters.append(cont)
-        }
-    }
-
-    func release() {
-        if !waiters.isEmpty {
-            let next = waiters.removeFirst()
-            next.resume()
-        } else {
-            running = max(0, running - 1)
-        }
-    }
-}
-
 @Observable
-final class BookCache {
+final class BookCache: @unchecked Sendable {
     static let shared = BookCache()
 
     private(set) var cachingHints: Set<String> = []
     private var memoryCache: [String: ParsedBook] = [:]
-    private var coverMemoryCache: [String: UIImage] = [:]
+    private let coverNSCache: NSCache<NSString, UIImage> = {
+        let cache = NSCache<NSString, UIImage>()
+        cache.countLimit = 250
+        cache.totalCostLimit = 64 * 1024 * 1024
+        return cache
+    }()
     private var noCoverSet: Set<String> = []
     private let lock = NSLock()
-    private let coverLimiter = CoverExtractionLimiter()
+
+    // Dedicated GCD queues completely outside Swift Concurrency's cooperative thread pool
+    private let coverDiskQueue: OperationQueue = {
+        let q = OperationQueue()
+        q.name = "com.tin.bookreader.coverDisk"
+        q.maxConcurrentOperationCount = 4
+        q.qualityOfService = .userInitiated
+        return q
+    }()
+
+    private let coverExtractQueue: OperationQueue = {
+        let q = OperationQueue()
+        q.name = "com.tin.bookreader.coverExtract"
+        q.maxConcurrentOperationCount = 1
+        q.qualityOfService = .utility
+        return q
+    }()
+
+    private let precacheQueue: OperationQueue = {
+        let q = OperationQueue()
+        q.name = "com.tin.bookreader.precache"
+        q.maxConcurrentOperationCount = 1
+        q.qualityOfService = .background
+        return q
+    }()
 
     private static var cacheDirectory: URL {
         let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
@@ -132,23 +136,28 @@ final class BookCache {
         return parsed
     }
 
+    /// Gentle, serialized background precaching (e.g. for newly downloaded single OPDS/WebDAV book).
+    /// Never floods Swift Concurrency's cooperative thread pool or mutates UI `@Observable` hints.
     static func precacheMissingSequentially(books: [BookItem], db: DatabaseManager) {
-        Task.detached(priority: .utility) {
-            for book in books {
-                if book.filePathHint.hasPrefix("sample://") { continue }
-                if !isCached(for: book) {
-                    if let parsed = try? await getOrParse(for: book), !parsed.isErrorPlaceholder, book.overallProgress < 0 {
-                        let chap = min(max(0, book.currentChapter), max(0, parsed.chapters.count - 1))
-                        let unitsCount = parsed.chapters.isEmpty ? 1 : max(1, parsed.chapters[chap].paragraphs.count)
-                        let overall = BookParser.computeOverallProgress(
-                            parsedBook: parsed,
-                            chapterIndex: chap,
-                            unitIndex: book.currentIndex,
-                            chapterUnitCount: unitsCount
-                        )
-                        await MainActor.run {
-                            db.updateOverallProgress(bookId: book.id, overallProgress: overall)
-                        }
+        for book in books {
+            if book.filePathHint.hasPrefix("sample://") || isCached(for: book) { continue }
+            shared.precacheQueue.addOperation {
+                if isCached(for: book) { return }
+                guard let parsed = try? BookParser.parseBook(book: book), !parsed.isErrorPlaceholder else {
+                    return
+                }
+                save(parsed, for: book)
+                if book.overallProgress < 0 {
+                    let chap = min(max(0, book.currentChapter), max(0, parsed.chapters.count - 1))
+                    let unitsCount = parsed.chapters.isEmpty ? 1 : max(1, parsed.chapters[chap].paragraphs.count)
+                    let overall = BookParser.computeOverallProgress(
+                        parsedBook: parsed,
+                        chapterIndex: chap,
+                        unitIndex: book.currentIndex,
+                        chapterUnitCount: unitsCount
+                    )
+                    DispatchQueue.main.async {
+                        db.updateOverallProgress(bookId: book.id, overallProgress: overall)
                     }
                 }
             }
@@ -156,31 +165,73 @@ final class BookCache {
     }
 
     private func lookupCoverState(_ hint: String) -> (hit: UIImage?, noCover: Bool) {
+        if let mem = coverNSCache.object(forKey: hint as NSString) {
+            return (mem, false)
+        }
         lock.lock()
-        defer { lock.unlock() }
-        if let mem = coverMemoryCache[hint] { return (mem, false) }
-        if noCoverSet.contains(hint) { return (nil, true) }
-        return (nil, false)
+        let noCov = noCoverSet.contains(hint)
+        lock.unlock()
+        return (nil, noCov)
     }
 
     private func saveCoverState(_ hint: String, image: UIImage?) {
-        lock.lock()
-        defer { lock.unlock() }
         if let image {
-            if coverMemoryCache.count >= 200 {
-                for key in coverMemoryCache.keys.prefix(40) {
-                    coverMemoryCache.removeValue(forKey: key)
-                }
-            }
-            coverMemoryCache[hint] = image
+            let cost = Int(image.size.width * image.size.height * image.scale * image.scale * 4)
+            coverNSCache.setObject(image, forKey: hint as NSString, cost: max(1, cost))
         } else {
+            lock.lock()
             noCoverSet.insert(hint)
+            lock.unlock()
         }
     }
 
     static func cachedCoverIfReady(for book: BookItem) -> UIImage? {
         guard !book.filePathHint.isEmpty, !book.filePathHint.hasPrefix("sample://") else { return nil }
         return shared.lookupCoverState(book.filePathHint).hit
+    }
+
+    private final class ResumeOnceBox: @unchecked Sendable {
+        private let lock = NSLock()
+        private var resumed = false
+        private let cont: CheckedContinuation<(image: UIImage?, wasCancelled: Bool), Never>
+
+        init(_ cont: CheckedContinuation<(image: UIImage?, wasCancelled: Bool), Never>) {
+            self.cont = cont
+        }
+
+        func finish(image: UIImage?, wasCancelled: Bool) {
+            lock.lock()
+            let shouldResume = !resumed
+            resumed = true
+            lock.unlock()
+            if shouldResume {
+                cont.resume(returning: (image, wasCancelled))
+            }
+        }
+    }
+
+    private static func runOperation(_ queue: OperationQueue, work: @escaping () -> UIImage?) async -> (image: UIImage?, wasCancelled: Bool) {
+        let op = BlockOperation()
+        return await withTaskCancellationHandler {
+            await withCheckedContinuation { cont in
+                let box = ResumeOnceBox(cont)
+                op.addExecutionBlock { [weak op] in
+                    if op?.isCancelled == true {
+                        box.finish(image: nil, wasCancelled: true)
+                        return
+                    }
+                    let result = work()
+                    let wasCancelled = (op?.isCancelled == true)
+                    box.finish(image: result, wasCancelled: wasCancelled)
+                }
+                op.completionBlock = {
+                    box.finish(image: nil, wasCancelled: true)
+                }
+                queue.addOperation(op)
+            }
+        } onCancel: {
+            op.cancel()
+        }
     }
 
     static func getCoverImage(for book: BookItem) async -> UIImage? {
@@ -192,12 +243,43 @@ final class BookCache {
         let coverUrl = coverFileUrl(for: book)
         let markerUrl = noCoverMarkerUrl(for: book)
 
-        await shared.coverLimiter.acquire()
-        if Task.isCancelled {
-            await shared.coverLimiter.release()
-            return nil
+        // Phase 1: Fast disk cache read (never waits behind heavy raw-book extraction)
+        enum DiskProbe {
+            case hit(UIImage)
+            case noCover
+            case needsExtraction
         }
-        let diskImage: UIImage? = await Task.detached(priority: .utility) {
+        let diskProbe: DiskProbe = await withCheckedContinuation { cont in
+            shared.coverDiskQueue.addOperation {
+                if FileManager.default.fileExists(atPath: coverUrl.path),
+                   let data = try? Data(contentsOf: coverUrl),
+                   let img = UIImage(data: data) {
+                    cont.resume(returning: .hit(img))
+                    return
+                }
+                if FileManager.default.fileExists(atPath: markerUrl.path) {
+                    cont.resume(returning: .noCover)
+                    return
+                }
+                cont.resume(returning: .needsExtraction)
+            }
+        }
+
+        switch diskProbe {
+        case .hit(let img):
+            shared.saveCoverState(book.filePathHint, image: img)
+            return img
+        case .noCover:
+            shared.saveCoverState(book.filePathHint, image: nil)
+            return nil
+        case .needsExtraction:
+            break
+        }
+
+        if Task.isCancelled { return nil }
+
+        // Phase 2: Serialized extraction on dedicated GCD queue (1 at a time, cancellable before start)
+        let outcome = await runOperation(shared.coverExtractQueue) {
             if FileManager.default.fileExists(atPath: coverUrl.path),
                let data = try? Data(contentsOf: coverUrl),
                let img = UIImage(data: data) {
@@ -213,17 +295,19 @@ final class BookCache {
             }
             FileManager.default.createFile(atPath: markerUrl.path, contents: Data())
             return nil
-        }.value
-        await shared.coverLimiter.release()
+        }
 
-        shared.saveCoverState(book.filePathHint, image: diskImage)
-        return diskImage
+        if outcome.wasCancelled && outcome.image == nil {
+            return nil
+        }
+        shared.saveCoverState(book.filePathHint, image: outcome.image)
+        return outcome.image
     }
 
     static func invalidate(for book: BookItem) {
+        shared.coverNSCache.removeObject(forKey: book.filePathHint as NSString)
         shared.lock.lock()
         shared.memoryCache.removeValue(forKey: book.filePathHint)
-        shared.coverMemoryCache.removeValue(forKey: book.filePathHint)
         shared.noCoverSet.remove(book.filePathHint)
         shared.lock.unlock()
         try? FileManager.default.removeItem(at: cacheFileUrl(for: book))
@@ -259,9 +343,9 @@ final class BookCache {
     }
 
     static func clearAll() {
+        shared.coverNSCache.removeAllObjects()
         shared.lock.lock()
         shared.memoryCache.removeAll()
-        shared.coverMemoryCache.removeAll()
         shared.noCoverSet.removeAll()
         shared.lock.unlock()
 
