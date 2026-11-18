@@ -611,87 +611,95 @@ struct LibraryView: View {
         } else {
             let items = buildFlatShelfItems()
             let cachingHints = BookCache.shared.cachingHints
-            ScrollView {
-                LazyVStack(spacing: 4) {
-                    ForEach(items) { item in
-                        switch item {
-                        case .folderHeader(let folder, let bookCount, let isExpanded, let idx, let count):
-                            FolderHeaderGlassCard(
-                                folder: folder,
-                                bookCount: bookCount,
-                                isExpanded: isExpanded,
-                                index: idx,
-                                count: count,
-                                onToggleExpand: {
-                                    withAnimation(AppMotion.panelSpring) {
-                                        if isExpanded {
-                                            _ = expandedFolderIds.remove(folder.id)
-                                        } else {
-                                            _ = expandedFolderIds.insert(folder.id)
-                                        }
-                                    }
-                                },
-                                onImportHere: {
-                                    withAnimation(AppMotion.panelSpring) {
-                                        _ = expandedFolderIds.insert(folder.id)
-                                    }
-                                    importTargetFolderId = folder.id
-                                    showFileImporter = true
-                                },
-                                onAddExistingBooks: {
-                                    activeSheet = .addBooksToFolder(folder)
-                                },
-                                onRename: {
-                                    folderModal = .renameFolder(folder)
-                                },
-                                onDeleteFolder: {
-                                    deletingFolder = folder
-                                }
-                            )
-                        case .folderEmpty:
-                            GlassGroupedCard(index: 0, count: 1, outerRadius: 14, useLiveGlass: false) {
-                                Text("此文件夹暂无书籍，可点击右上角菜单导入或添加")
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
-                                    .frame(maxWidth: .infinity)
-                                    .padding(.vertical, 12)
-                                    .padding(.horizontal, 12)
-                            }
-                            .padding(.leading, 10)
-                        case .book(let book, let bIdx, let count, let inFolder, let isFirstRootAfterFolders):
-                            shelfBookRow(
-                                book: book,
-                                isCaching: cachingHints.contains(book.filePathHint),
-                                index: bIdx,
-                                count: count,
-                                inFolder: inFolder
-                            )
-                            .padding(.leading, inFolder ? 10 : 0)
-                            .padding(.top, isFirstRootAfterFolders ? 4 : 0)
-                        }
-                    }
+            let topSpacerHeight = (isHeroCollapsed ? 0 : heroCollapseDelta) + 4
+            List {
+                Color.clear
+                    .frame(height: max(0.5, topSpacerHeight))
+                    .listRowInsets(EdgeInsets())
+                    .listRowBackground(Color.clear)
+                    .listRowSeparator(.hidden)
+
+                ForEach(items) { item in
+                    shelfRowView(for: item, cachingHints: cachingHints)
+                        .listRowInsets(EdgeInsets(top: 2, leading: 16, bottom: 2, trailing: 16))
+                        .listRowBackground(Color.clear)
+                        .listRowSeparator(.hidden)
                 }
-                .padding(.horizontal, 16)
-                .padding(.top, (isHeroCollapsed ? 0 : heroCollapseDelta) + 4)
-                .padding(.bottom, 12)
+
+                Color.clear
+                    .frame(height: 12)
+                    .listRowInsets(EdgeInsets())
+                    .listRowBackground(Color.clear)
+                    .listRowSeparator(.hidden)
             }
+            .listStyle(.plain)
+            .scrollContentBackground(.hidden)
+            .environment(\.defaultMinListRowHeight, 0)
             .scrollBounceBehavior(.always)
-            .simultaneousGesture(
-                DragGesture(minimumDistance: 20)
-                    .onEnded { value in
-                        guard abs(value.translation.height) > abs(value.translation.width) * 1.35 else { return }
-                        if value.translation.height < -22 && !isHeroCollapsed {
-                            setHeroCollapsed(true)
-                        } else if value.translation.height > 26 && isHeroCollapsed && scrollTracker.localOffset <= 4 {
-                            setHeroCollapsed(false)
-                        }
-                    }
-            )
             .onScrollGeometryChange(for: CGFloat.self) { geo in
                 geo.contentOffset.y + geo.contentInsets.top
             } action: { _, newOffset in
                 updateScrollOffset(newOffset, forTab: 0)
             }
+        }
+    }
+
+    @ViewBuilder
+    private func shelfRowView(for item: ShelfListItem, cachingHints: Set<String>) -> some View {
+        switch item {
+        case .folderHeader(let folder, let bookCount, let isExpanded, let idx, let count):
+            FolderHeaderGlassCard(
+                folder: folder,
+                bookCount: bookCount,
+                isExpanded: isExpanded,
+                index: idx,
+                count: count,
+                onToggleExpand: {
+                    withAnimation(AppMotion.panelSpring) {
+                        if isExpanded {
+                            _ = expandedFolderIds.remove(folder.id)
+                        } else {
+                            _ = expandedFolderIds.insert(folder.id)
+                        }
+                    }
+                },
+                onImportHere: {
+                    withAnimation(AppMotion.panelSpring) {
+                        _ = expandedFolderIds.insert(folder.id)
+                    }
+                    importTargetFolderId = folder.id
+                    showFileImporter = true
+                },
+                onAddExistingBooks: {
+                    activeSheet = .addBooksToFolder(folder)
+                },
+                onRename: {
+                    folderModal = .renameFolder(folder)
+                },
+                onDeleteFolder: {
+                    deletingFolder = folder
+                }
+            )
+        case .folderEmpty:
+            GlassGroupedCard(index: 0, count: 1, outerRadius: 14, useLiveGlass: false) {
+                Text("此文件夹暂无书籍，可点击右上角菜单导入或添加")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 12)
+                    .padding(.horizontal, 12)
+            }
+            .padding(.leading, 10)
+        case .book(let book, let bIdx, let count, let inFolder, let isFirstRootAfterFolders):
+            shelfBookRow(
+                book: book,
+                isCaching: cachingHints.contains(book.filePathHint),
+                index: bIdx,
+                count: count,
+                inFolder: inFolder
+            )
+            .padding(.leading, inFolder ? 10 : 0)
+            .padding(.top, isFirstRootAfterFolders ? 4 : 0)
         }
     }
 
@@ -708,7 +716,7 @@ struct LibraryView: View {
                     )
                     .contentShape(Rectangle())
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(.borderless)
 
                 Menu {
                     if inFolder {
@@ -737,6 +745,7 @@ struct LibraryView: View {
                         .frame(width: 28, height: 28)
                         .contentShape(Rectangle())
                 }
+                .buttonStyle(.borderless)
             }
             .padding(.horizontal, 13)
             .padding(.vertical, 10)
@@ -799,8 +808,8 @@ private struct CompactHeroContinueBar: View {
             HStack(spacing: 11) {
                 Button(action: onExpand) {
                     HStack(spacing: 11) {
-                        BookCoverArtwork(book: book, compact: true)
-                            .frame(width: 32, height: 44)
+                        BookCoverArtwork(book: book, compact: true, width: 32, height: 44)
+                            .id(book.filePathHint)
                             .shadow(color: .black.opacity(0.12), radius: 2, x: 0, y: 1)
 
                         VStack(alignment: .leading, spacing: 4) {
@@ -903,8 +912,8 @@ private struct HeroContinueCard: View {
                 HStack(spacing: 13) {
                     Button(action: onOpen) {
                         HStack(spacing: 13) {
-                            BookCoverArtwork(book: book, compact: false)
-                                .frame(width: 50, height: 68)
+                            BookCoverArtwork(book: book, compact: false, width: 50, height: 68)
+                                .id(book.filePathHint)
                                 .shadow(color: .black.opacity(0.14), radius: 4, x: 0, y: 2)
 
                             VStack(alignment: .leading, spacing: 5) {
@@ -1034,7 +1043,7 @@ private struct FolderHeaderGlassCard: View {
                 }
                 .contentShape(Rectangle())
             }
-            .buttonStyle(.plain)
+            .buttonStyle(.borderless)
 
             Menu {
                 Button(action: onImportHere) {
@@ -1057,6 +1066,7 @@ private struct FolderHeaderGlassCard: View {
                     .frame(width: 28, height: 28)
                     .contentShape(Rectangle())
             }
+            .buttonStyle(.borderless)
 
             Button(action: onToggleExpand) {
                 Image(systemName: "chevron.down")
@@ -1065,7 +1075,7 @@ private struct FolderHeaderGlassCard: View {
                     .rotationEffect(.degrees(isExpanded ? 0 : -90))
                     .frame(width: 24, height: 28)
             }
-            .buttonStyle(.plain)
+            .buttonStyle(.borderless)
         }
         .padding(.horizontal, 13)
         .padding(.vertical, 10)
@@ -1094,8 +1104,7 @@ private struct ShelfBookRowContent: View {
     var body: some View {
         let progress = computeBookProgress(book)
         HStack(spacing: 12) {
-            BookCoverArtwork(book: book, compact: true)
-                .frame(width: 38, height: 52)
+            BookCoverArtwork(book: book, compact: true, width: 38, height: 52)
                 .shadow(color: .black.opacity(0.10), radius: 2, x: 0, y: 1)
 
             VStack(alignment: .leading, spacing: 6) {

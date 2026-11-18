@@ -585,13 +585,28 @@ private let modernCoverPalettes: [(Color, Color)] = [
 struct BookCoverArtwork: View {
     let book: BookItem
     var compact: Bool = false
+    var width: CGFloat? = nil
+    var height: CGFloat? = nil
 
     @State private var coverImage: UIImage?
+    @State private var loadedHint: String
 
-    init(book: BookItem, compact: Bool = false) {
+    init(book: BookItem, compact: Bool = false, width: CGFloat? = nil, height: CGFloat? = nil) {
         self.book = book
         self.compact = compact
-        _coverImage = State(initialValue: BookCache.cachedCoverIfReady(for: book))
+        self.width = width
+        self.height = height
+        let initial = BookCache.cachedCoverIfReady(for: book)
+        _coverImage = State(initialValue: initial)
+        _loadedHint = State(initialValue: initial != nil ? book.filePathHint : "")
+    }
+
+    private var targetWidth: CGFloat {
+        width ?? (compact ? 38 : 50)
+    }
+
+    private var targetHeight: CGFloat {
+        height ?? (compact ? 52 : 68)
     }
 
     private var paletteIndex: Int {
@@ -614,15 +629,16 @@ struct BookCoverArtwork: View {
     var body: some View {
         let corner: CGFloat = compact ? 8 : 10
         let pair = modernCoverPalettes[paletteIndex]
+        let w = targetWidth
+        let h = targetHeight
 
         ZStack {
             if let coverImage {
-                Color.clear
-                    .overlay {
-                        Image(uiImage: coverImage)
-                            .resizable()
-                            .scaledToFill()
-                    }
+                Image(uiImage: coverImage)
+                    .resizable()
+                    .scaledToFill()
+                    .frame(width: w, height: h)
+                    .clipped()
             } else {
                 LinearGradient(
                     colors: [pair.0, pair.1],
@@ -658,6 +674,7 @@ struct BookCoverArtwork: View {
                 }
             }
         }
+        .frame(width: w, height: h)
         .clipShape(RoundedRectangle(cornerRadius: corner, style: .continuous))
         .contentShape(RoundedRectangle(cornerRadius: corner, style: .continuous))
         .overlay {
@@ -665,8 +682,18 @@ struct BookCoverArtwork: View {
                 .strokeBorder(Color.white.opacity(0.18), lineWidth: 0.6)
         }
         .task(id: book.filePathHint) {
-            if coverImage == nil {
-                coverImage = await BookCache.getCoverImage(for: book)
+            if loadedHint != book.filePathHint {
+                if let ready = BookCache.cachedCoverIfReady(for: book) {
+                    coverImage = ready
+                    loadedHint = book.filePathHint
+                } else {
+                    coverImage = nil
+                    let img = await BookCache.getCoverImage(for: book)
+                    if !Task.isCancelled {
+                        coverImage = img
+                        loadedHint = book.filePathHint
+                    }
+                }
             }
         }
     }
@@ -1563,14 +1590,21 @@ struct SmoothLinearProgressBar: View {
 
     var body: some View {
         let clamped = min(1.0, max(0.0, progress))
-        GeometryReader { geo in
-            ZStack(alignment: .leading) {
-                Capsule()
-                    .fill(Color.secondary.opacity(0.18))
-                Capsule()
-                    .fill(tintColor ?? palette.accent)
-                    .frame(width: max(clamped > 0 ? height : 0, geo.size.width * clamped))
-                    .animation(.easeOut(duration: 0.25), value: clamped)
+        let fillColor = tintColor ?? palette.accent
+        Canvas { context, size in
+            let radius = size.height * 0.5
+            let bgRect = CGRect(origin: .zero, size: size)
+            context.fill(
+                Path(roundedRect: bgRect, cornerRadius: radius),
+                with: .color(Color.secondary.opacity(0.18))
+            )
+            if clamped > 0 {
+                let barW = max(size.height, size.width * clamped)
+                let fgRect = CGRect(x: 0, y: 0, width: barW, height: size.height)
+                context.fill(
+                    Path(roundedRect: fgRect, cornerRadius: radius),
+                    with: .color(fillColor)
+                )
             }
         }
         .frame(height: height)
