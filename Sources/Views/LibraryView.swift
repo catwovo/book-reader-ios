@@ -60,11 +60,17 @@ private final class ShelfScrollTracker {
     var opdsOffset: CGFloat = 0
     var manualHeroExpanded: Bool = false
     var manualExpandAnchor: CGFloat = 0
+    var manualHeroCollapsed: Bool = false
+    var lastHeroToggleAt: Date = .distantPast
+}
+
+private struct ShelfScrollMetrics: Equatable {
+    let offset: CGFloat
+    let canScrollPastHero: Bool
 }
 
 private enum ShelfSectionKind {
-    case collapsedFolders([(folder: BookFolder, bookCount: Int, index: Int, totalCount: Int)])
-    case expandedFolder(folder: BookFolder, books: [BookItem], index: Int, totalCount: Int)
+    case folder(folder: BookFolder, books: [BookItem], isExpanded: Bool, index: Int, totalCount: Int)
     case rootBooks([BookItem], hasFolders: Bool)
 }
 
@@ -256,6 +262,7 @@ struct LibraryView: View {
                 }
                 if recentBooks.isEmpty {
                     scrollTracker.manualHeroExpanded = false
+                    scrollTracker.manualHeroCollapsed = false
                     scrollTracker.localOffset = 0
                 }
             }
@@ -349,18 +356,56 @@ struct LibraryView: View {
 
     @ViewBuilder
     private var collectionPager: some View {
+        let opdsTopSpacer = scrollTracker.manualHeroCollapsed ? 0 : heroCollapseDelta
         GlassHorizontalPager(selection: $collectionTab, pageCount: 2) { page in
             if page == 0 {
                 localShelfView
             } else {
                 OpdsOnlineLibraryPane(
-                    heroTopSpacerHeight: heroCollapseDelta,
-                    emptyTopPadding: heroCollapseDelta,
+                    heroTopSpacerHeight: opdsTopSpacer,
+                    emptyTopPadding: opdsTopSpacer,
                     onScrollOffsetChange: { offset in
                         updateScrollOffset(offset, forTab: 1)
                     },
                     onOpenBook: onOpenBook
                 )
+            }
+        }
+    }
+
+    private func updateLocalScrollMetrics(_ metrics: ShelfScrollMetrics) {
+        let rawOffset = metrics.offset
+        let clamped = max(0, rawOffset)
+        if abs(scrollTracker.localOffset - clamped) > 0.25 {
+            scrollTracker.localOffset = clamped
+        }
+        guard collectionTab == 0, hasRecentBooks else { return }
+
+        if scrollTracker.manualHeroExpanded,
+           abs(clamped - scrollTracker.manualExpandAnchor) > 18 {
+            withAnimation(.spring(response: 0.28, dampingFraction: 0.86)) {
+                scrollTracker.manualHeroExpanded = false
+            }
+        }
+
+        let now = Date()
+        guard now.timeIntervalSince(scrollTracker.lastHeroToggleAt) > 0.35 else { return }
+
+        if !scrollTracker.manualHeroCollapsed {
+            // When the shelf doesn't have enough overflow height to keep the hero collapsed via scroll alone,
+            // pulling up past the threshold latches the hero card in compact mode.
+            if !metrics.canScrollPastHero && rawOffset > 16 {
+                scrollTracker.lastHeroToggleAt = now
+                withAnimation(AppMotion.panelSpring) {
+                    scrollTracker.manualHeroExpanded = false
+                    scrollTracker.manualHeroCollapsed = true
+                }
+            }
+        } else if rawOffset < -18 {
+            // Pull down at the top to expand the latched compact hero bar back to full card.
+            scrollTracker.lastHeroToggleAt = now
+            withAnimation(AppMotion.panelSpring) {
+                scrollTracker.manualHeroCollapsed = false
             }
         }
     }
@@ -383,6 +428,13 @@ struct LibraryView: View {
                 scrollTracker.manualHeroExpanded = false
             }
         }
+        if scrollTracker.manualHeroCollapsed, newOffset < -18,
+           Date().timeIntervalSince(scrollTracker.lastHeroToggleAt) > 0.35 {
+            scrollTracker.lastHeroToggleAt = Date()
+            withAnimation(AppMotion.panelSpring) {
+                scrollTracker.manualHeroCollapsed = false
+            }
+        }
     }
 
     // MARK: - Local Shelf View
@@ -392,33 +444,20 @@ struct LibraryView: View {
         let grouped = folderBooksMap
         let rootBooks = rootShelfBooks
         var sections: [ShelfSectionModel] = []
-        var collapsedBuffer: [(folder: BookFolder, bookCount: Int, index: Int, totalCount: Int)] = []
-
-        func flushCollapsedBuffer() {
-            guard !collapsedBuffer.isEmpty else { return }
-            let id = "collapsed_" + collapsedBuffer.map { String($0.folder.id) }.joined(separator: "_")
-            sections.append(ShelfSectionModel(id: id, kind: .collapsedFolders(collapsedBuffer)))
-            collapsedBuffer.removeAll(keepingCapacity: true)
-        }
 
         for (idx, folder) in folders.enumerated() {
             let folderBooks = grouped[folder.id] ?? []
-            if expandedFolderIds.contains(folder.id) {
-                flushCollapsedBuffer()
-                sections.append(ShelfSectionModel(
-                    id: "expanded_\(folder.id)",
-                    kind: .expandedFolder(
-                        folder: folder,
-                        books: folderBooks,
-                        index: idx,
-                        totalCount: folders.count
-                    )
-                ))
-            } else {
-                collapsedBuffer.append((folder: folder, bookCount: folderBooks.count, index: idx, totalCount: folders.count))
-            }
+            sections.append(ShelfSectionModel(
+                id: "folder_\(folder.id)",
+                kind: .folder(
+                    folder: folder,
+                    books: folderBooks,
+                    isExpanded: expandedFolderIds.contains(folder.id),
+                    index: idx,
+                    totalCount: folders.count
+                )
+            ))
         }
-        flushCollapsedBuffer()
 
         if !rootBooks.isEmpty {
             sections.append(ShelfSectionModel(
@@ -431,6 +470,7 @@ struct LibraryView: View {
 
     @ViewBuilder
     private var localShelfView: some View {
+        let shelfTopPadding = (scrollTracker.manualHeroCollapsed ? 0 : heroCollapseDelta) + 4
         if db.books.isEmpty && db.folders.isEmpty {
             VStack(spacing: 14) {
                 Spacer()
@@ -464,7 +504,7 @@ struct LibraryView: View {
                 Spacer()
             }
             .padding(24)
-            .padding(.top, heroCollapseDelta)
+            .padding(.top, scrollTracker.manualHeroCollapsed ? 0 : heroCollapseDelta)
         } else if db.folders.isEmpty && rootShelfBooks.isEmpty {
             VStack(spacing: 10) {
                 Spacer()
@@ -475,7 +515,7 @@ struct LibraryView: View {
                 Spacer()
             }
             .padding(24)
-            .padding(.top, heroCollapseDelta)
+            .padding(.top, scrollTracker.manualHeroCollapsed ? 0 : heroCollapseDelta)
         } else {
             let sections = buildShelfSections()
             let showFreshRestoreHint = db.folders.isEmpty
@@ -516,14 +556,18 @@ struct LibraryView: View {
                     }
                 }
                 .padding(.horizontal, 16)
-                .padding(.top, heroCollapseDelta + 4)
+                .padding(.top, shelfTopPadding)
                 .padding(.bottom, 12)
+                .animation(AppMotion.panelSpring, value: scrollTracker.manualHeroCollapsed)
             }
             .scrollBounceBehavior(.always)
-            .onScrollGeometryChange(for: CGFloat.self) { geo in
-                geo.contentOffset.y + geo.contentInsets.top
-            } action: { _, newOffset in
-                updateScrollOffset(newOffset, forTab: 0)
+            .onScrollGeometryChange(for: ShelfScrollMetrics.self) { geo in
+                let offset = geo.contentOffset.y + geo.contentInsets.top
+                let maxScroll = max(0, geo.contentSize.height - geo.containerSize.height + geo.contentInsets.top + geo.contentInsets.bottom)
+                let canScroll = maxScroll >= max(40, heroCollapseDelta + 8)
+                return ShelfScrollMetrics(offset: offset, canScrollPastHero: canScroll)
+            } action: { _, metrics in
+                updateLocalScrollMetrics(metrics)
             }
         }
     }
@@ -531,70 +575,53 @@ struct LibraryView: View {
     @ViewBuilder
     private func shelfSectionView(for section: ShelfSectionModel) -> some View {
         switch section.kind {
-        case .collapsedFolders(let folderItems):
+        case .folder(let folder, let folderBooks, let isExpanded, let idx, let totalCount):
             Section {
-                ForEach(folderItems, id: \.folder.id) { entry in
-                    FolderHeaderGlassCard(
-                        folder: entry.folder,
-                        bookCount: entry.bookCount,
-                        isExpanded: false,
-                        index: entry.index,
-                        count: entry.totalCount,
-                        onToggleExpand: {
-                            _ = expandedFolderIds.insert(entry.folder.id)
-                        },
-                        onImportHere: {
-                            _ = expandedFolderIds.insert(entry.folder.id)
-                            importerMode = .books
-                            importTargetFolderId = entry.folder.id
-                            showFileImporter = true
-                        },
-                        onAddExistingBooks: {
-                            activeSheet = .addBooksToFolder(entry.folder)
-                        },
-                        onRename: {
-                            folderModal = .renameFolder(entry.folder)
-                        },
-                        onDeleteFolder: {
-                            deletingFolder = entry.folder
+                if isExpanded {
+                    if folderBooks.isEmpty {
+                        GlassGroupedCard(index: 0, count: 1, outerRadius: 14, useLiveGlass: false) {
+                            Text("此文件夹暂无书籍，可点击右上角菜单导入或添加")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                                .frame(maxWidth: .infinity)
+                                .padding(.vertical, 12)
+                                .padding(.horizontal, 12)
                         }
-                    )
-                }
-            }
-        case .expandedFolder(let folder, let folderBooks, let idx, let totalCount):
-            Section {
-                if folderBooks.isEmpty {
-                    GlassGroupedCard(index: 0, count: 1, outerRadius: 14, useLiveGlass: false) {
-                        Text("此文件夹暂无书籍，可点击右上角菜单导入或添加")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                            .frame(maxWidth: .infinity)
-                            .padding(.vertical, 12)
-                            .padding(.horizontal, 12)
-                    }
-                    .padding(.leading, 10)
-                } else {
-                    ForEach(Array(folderBooks.enumerated()), id: \.element.id) { bIdx, book in
-                        shelfBookRow(
-                            book: book,
-                            index: bIdx,
-                            count: folderBooks.count,
-                            inFolder: true
-                        )
                         .padding(.leading, 10)
+                        .transition(.opacity.combined(with: .move(edge: .top)))
+                    } else {
+                        ForEach(Array(folderBooks.enumerated()), id: \.element.id) { bIdx, book in
+                            shelfBookRow(
+                                book: book,
+                                index: bIdx,
+                                count: folderBooks.count,
+                                inFolder: true
+                            )
+                            .padding(.leading, 10)
+                            .transition(.opacity.combined(with: .move(edge: .top)))
+                        }
                     }
                 }
             } header: {
                 FolderHeaderGlassCard(
                     folder: folder,
                     bookCount: folderBooks.count,
-                    isExpanded: true,
+                    isExpanded: isExpanded,
                     index: idx,
                     count: totalCount,
                     onToggleExpand: {
-                        _ = expandedFolderIds.remove(folder.id)
+                        withAnimation(AppMotion.panelSpring) {
+                            if expandedFolderIds.contains(folder.id) {
+                                expandedFolderIds.remove(folder.id)
+                            } else {
+                                expandedFolderIds.insert(folder.id)
+                            }
+                        }
                     },
                     onImportHere: {
+                        withAnimation(AppMotion.panelSpring) {
+                            _ = expandedFolderIds.insert(folder.id)
+                        }
                         importerMode = .books
                         importTargetFolderId = folder.id
                         showFileImporter = true
@@ -609,7 +636,6 @@ struct LibraryView: View {
                         deletingFolder = folder
                     }
                 )
-                .padding(.bottom, 2)
             }
         case .rootBooks(let rootBooks, let hasFolders):
             Section {
@@ -1001,35 +1027,50 @@ private struct FolderHeaderGlassCard: View {
         .padding(.horizontal, 13)
         .padding(.vertical, 10)
 
-        if isExpanded {
-            let shape = RoundedRectangle(cornerRadius: 18, style: .continuous)
-            content
-                .background {
-                    ZStack {
+        let topR: CGFloat = isExpanded ? 18 : ((count <= 1 || index == 0) ? 22 : 8)
+        let botR: CGFloat = isExpanded ? 18 : ((count <= 1 || index == count - 1) ? 22 : 8)
+        let shape = UnevenRoundedRectangle(
+            topLeadingRadius: topR,
+            bottomLeadingRadius: botR,
+            bottomTrailingRadius: botR,
+            topTrailingRadius: topR,
+            style: .continuous
+        )
+
+        content
+            .background {
+                ZStack {
+                    if isExpanded {
                         shape.fill(.regularMaterial)
-                        shape.fill(palette.surfaceTint.opacity(palette.isLight ? 0.90 : 0.88))
-                        shape.fill(palette.accent.opacity(0.06))
                     }
-                }
-                .overlay {
-                    shape.strokeBorder(
-                        Color.white.opacity(palette.isLight ? 0.78 : 0.18),
-                        lineWidth: 0.6
+                    shape.fill(
+                        palette.surfaceTint.opacity(
+                            isExpanded
+                                ? (palette.isLight ? 0.90 : 0.88)
+                                : (palette.isLight ? 0.88 : 0.82)
+                        )
                     )
+                    shape.fill(palette.accent.opacity(isExpanded ? 0.06 : 0))
                 }
-                .shadow(color: .black.opacity(palette.isLight ? 0.06 : 0.22), radius: 8, x: 0, y: 3)
-        } else {
-            GlassGroupedCard(
-                index: index,
-                count: count,
-                outerRadius: 22,
-                innerRadius: 8,
-                tintColor: nil,
-                useLiveGlass: false
-            ) {
-                content
             }
-        }
+            .overlay {
+                shape.strokeBorder(
+                    Color.white.opacity(
+                        isExpanded
+                            ? (palette.isLight ? 0.78 : 0.18)
+                            : (palette.isLight ? 0.72 : 0.14)
+                    ),
+                    lineWidth: isExpanded ? 0.6 : 0.55
+                )
+            }
+            .shadow(
+                color: .black.opacity(isExpanded ? (palette.isLight ? 0.06 : 0.22) : 0),
+                radius: 8,
+                x: 0,
+                y: 3
+            )
+            .padding(.bottom, isExpanded ? 2 : 0)
+            .animation(AppMotion.panelSpring, value: isExpanded)
     }
 }
 
@@ -1097,7 +1138,9 @@ private struct LibraryHeroOverlay: View {
     var body: some View {
         let delta = max(0, expandedHeroHeight - compactHeroHeight)
         let activeOffset = collectionTab == 0 ? scrollTracker.localOffset : scrollTracker.opdsOffset
-        let effectiveCollapse: CGFloat = scrollTracker.manualHeroExpanded ? 0 : min(delta, max(0, activeOffset))
+        let effectiveCollapse: CGFloat = scrollTracker.manualHeroCollapsed
+            ? delta
+            : (scrollTracker.manualHeroExpanded ? 0 : min(delta, max(0, activeOffset)))
         let visibleHeroHeight = recentBooks.isEmpty ? 0 : max(compactHeroHeight, expandedHeroHeight - effectiveCollapse)
         let collapseProgress: CGFloat = delta > 1 ? min(1, max(0, effectiveCollapse / delta)) : 0
         let compactOpacity = max(0, min(1, (collapseProgress - 0.45) / 0.55))
@@ -1114,8 +1157,12 @@ private struct LibraryHeroOverlay: View {
                         isCaching: false,
                         onExpand: {
                             scrollTracker.manualExpandAnchor = activeOffset
-                            withAnimation(.spring(response: 0.34, dampingFraction: 0.86)) {
-                                scrollTracker.manualHeroExpanded = true
+                            scrollTracker.lastHeroToggleAt = Date()
+                            withAnimation(AppMotion.panelSpring) {
+                                scrollTracker.manualHeroCollapsed = false
+                                if activeOffset > 12 {
+                                    scrollTracker.manualHeroExpanded = true
+                                }
                             }
                         },
                         onOpen: {
@@ -1179,6 +1226,29 @@ private struct LibraryHeroOverlay: View {
                 }
                 .frame(height: visibleHeroHeight, alignment: .top)
                 .clipped()
+                .simultaneousGesture(
+                    DragGesture(minimumDistance: 20, coordinateSpace: .local)
+                        .onEnded { value in
+                            let dx = value.translation.width
+                            let dy = value.translation.height
+                            guard abs(dy) > abs(dx) * 1.35, abs(dy) > 24 else { return }
+                            scrollTracker.lastHeroToggleAt = Date()
+                            if dy < 0 {
+                                withAnimation(AppMotion.panelSpring) {
+                                    scrollTracker.manualHeroExpanded = false
+                                    scrollTracker.manualHeroCollapsed = true
+                                }
+                            } else {
+                                scrollTracker.manualExpandAnchor = activeOffset
+                                withAnimation(AppMotion.panelSpring) {
+                                    scrollTracker.manualHeroCollapsed = false
+                                    if activeOffset > 12 {
+                                        scrollTracker.manualHeroExpanded = true
+                                    }
+                                }
+                            }
+                        }
+                )
             }
 
             HStack {
