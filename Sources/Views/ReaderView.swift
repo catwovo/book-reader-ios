@@ -2537,8 +2537,10 @@ private struct InlineCustomColorPalette: View {
         VStack(alignment: .leading, spacing: 10) {
             // 2D Saturation x Brightness Spectrum Pad
             GeometryReader { geo in
-                let w = max(1, geo.size.width)
-                let h = max(1, geo.size.height)
+                let gw = max(1, geo.size.width)
+                let gh = max(1, geo.size.height)
+                let w = Double(gw)
+                let h = Double(gh)
                 ZStack {
                     RoundedRectangle(cornerRadius: 12, style: .continuous)
                         .fill(Color(hue: hue, saturation: 1, brightness: 1))
@@ -2567,16 +2569,16 @@ private struct InlineCustomColorPalette: View {
                         .overlay(Circle().strokeBorder(.white, lineWidth: 2))
                         .overlay(Circle().strokeBorder(.black.opacity(0.28), lineWidth: 0.6))
                         .position(
-                            x: min(max(9, saturation * w), w - 9),
-                            y: min(max(9, (1 - brightness) * h), h - 9)
+                            x: min(max(9, CGFloat(saturation) * gw), gw - 9),
+                            y: min(max(9, CGFloat(1.0 - brightness) * gh), gh - 9)
                         )
                 }
                 .contentShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
                 .highPriorityGesture(
                     DragGesture(minimumDistance: 0)
                         .onChanged { value in
-                            saturation = min(1, max(0, value.location.x / w))
-                            brightness = min(1, max(0, 1 - value.location.y / h))
+                            saturation = min(1.0, max(0.0, Double(value.location.x) / w))
+                            brightness = min(1.0, max(0.0, 1.0 - Double(value.location.y) / h))
                             pushColor()
                         }
                 )
@@ -2585,8 +2587,9 @@ private struct InlineCustomColorPalette: View {
 
             // Hue Bar
             GeometryReader { geo in
-                let w = max(1, geo.size.width)
-                let h = geo.size.height
+                let gw = max(1, geo.size.width)
+                let gh = geo.size.height
+                let w = Double(gw)
                 ZStack {
                     Capsule()
                         .fill(
@@ -2612,13 +2615,13 @@ private struct InlineCustomColorPalette: View {
                         .frame(width: 18, height: 18)
                         .overlay(Circle().strokeBorder(.white, lineWidth: 2))
                         .overlay(Circle().strokeBorder(.black.opacity(0.28), lineWidth: 0.6))
-                        .position(x: min(max(9, hue * w), w - 9), y: h * 0.5)
+                        .position(x: min(max(9, CGFloat(hue) * gw), gw - 9), y: gh * 0.5)
                 }
                 .contentShape(Rectangle())
                 .highPriorityGesture(
                     DragGesture(minimumDistance: 0)
                         .onChanged { value in
-                            hue = min(1, max(0, value.location.x / w))
+                            hue = min(1.0, max(0.0, Double(value.location.x) / w))
                             pushColor()
                         }
                 )
@@ -2628,8 +2631,9 @@ private struct InlineCustomColorPalette: View {
             // Opacity Bar (only for focusUnit)
             if supportsOpacity {
                 GeometryReader { geo in
-                    let w = max(1, geo.size.width)
-                    let h = geo.size.height
+                    let gw = max(1, geo.size.width)
+                    let gh = geo.size.height
+                    let w = Double(gw)
                     let pure = Color(hue: hue, saturation: saturation, brightness: brightness)
                     ZStack {
                         Capsule()
@@ -2651,13 +2655,13 @@ private struct InlineCustomColorPalette: View {
                             .frame(width: 18, height: 18)
                             .overlay(Circle().strokeBorder(.white, lineWidth: 2))
                             .overlay(Circle().strokeBorder(.black.opacity(0.28), lineWidth: 0.6))
-                            .position(x: min(max(9, ((alpha - 0.05) / 0.95) * w), w - 9), y: h * 0.5)
+                            .position(x: min(max(9, CGFloat((alpha - 0.05) / 0.95) * gw), gw - 9), y: gh * 0.5)
                     }
                     .contentShape(Rectangle())
                     .highPriorityGesture(
                         DragGesture(minimumDistance: 0)
                             .onChanged { value in
-                                let t = min(1, max(0, value.location.x / w))
+                                let t = min(1.0, max(0.0, Double(value.location.x) / w))
                                 alpha = 0.05 + t * 0.95
                                 pushColor()
                             }

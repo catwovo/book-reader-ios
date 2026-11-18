@@ -617,9 +617,12 @@ struct BookCoverArtwork: View {
 
         ZStack {
             if let coverImage {
-                Image(uiImage: coverImage)
-                    .resizable()
-                    .scaledToFill()
+                Color.clear
+                    .overlay {
+                        Image(uiImage: coverImage)
+                            .resizable()
+                            .scaledToFill()
+                    }
             } else {
                 LinearGradient(
                     colors: [pair.0, pair.1],
@@ -656,6 +659,7 @@ struct BookCoverArtwork: View {
             }
         }
         .clipShape(RoundedRectangle(cornerRadius: corner, style: .continuous))
+        .contentShape(RoundedRectangle(cornerRadius: corner, style: .continuous))
         .overlay {
             RoundedRectangle(cornerRadius: corner, style: .continuous)
                 .strokeBorder(Color.white.opacity(0.18), lineWidth: 0.6)
