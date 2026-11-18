@@ -231,6 +231,13 @@ struct LibraryView: View {
                     localScrollOffset = 0
                 }
             }
+            .onChange(of: recentBooks.first?.id) { _, _ in
+                if heroPageIndex != 0 {
+                    withAnimation(AppMotion.tabSpring) {
+                        heroPageIndex = 0
+                    }
+                }
+            }
             .onChange(of: db.folders.map(\.id)) { _, validIds in
                 let validSet = Set(validIds)
                 expandedFolderIds = expandedFolderIds.intersection(validSet)
@@ -338,7 +345,10 @@ struct LibraryView: View {
                     onExpand: {
                         setHeroCollapsed(false, recordAnchor: true)
                     },
-                    onOpen: { onOpenBook(activeBook) }
+                    onOpen: {
+                        heroPageIndex = 0
+                        onOpenBook(activeBook)
+                    }
                 )
                 .padding(.horizontal, 16)
                 .padding(.top, 4)
@@ -358,7 +368,12 @@ struct LibraryView: View {
                             HeroContinueCard(
                                 book: book,
                                 isCaching: BookCache.shared.cachingHints.contains(book.filePathHint),
-                                onOpen: { onOpenBook(book) },
+                                onOpen: {
+                                    onOpenBook(book)
+                                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) {
+                                        heroPageIndex = 0
+                                    }
+                                },
                                 onDelete: { deletingBook = book }
                             )
                             .padding(.horizontal, 16)

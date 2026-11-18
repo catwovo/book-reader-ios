@@ -1,4 +1,5 @@
 import AVFoundation
+import CoreHaptics
 import Foundation
 import UIKit
 
@@ -8,6 +9,7 @@ final class StepFeedbackPlayer {
     private static let minIntervalMs = 180
     private static let maxIntervalMs = 700
     private static let maxStepNotes = 6
+    private static let maxHapticLines = 12
 
     private struct TrackDefinition {
         let phrases: [[Int]]
@@ -73,6 +75,7 @@ final class StepFeedbackPlayer {
     }
 
     private let audioQueue = DispatchQueue(label: "com.tin.bookreader.stepfeedback", qos: .userInitiated)
+    private let hapticQueue = DispatchQueue(label: "com.tin.bookreader.haptics", qos: .userInteractive)
     private let lock = NSLock()
 
     private var audioEngine: AVAudioEngine?
@@ -80,6 +83,10 @@ final class StepFeedbackPlayer {
     private var activeVoiceCursor = 0
     private var bufferCache: [BufferKey: AVAudioPCMBuffer] = [:]
     private var audioFormat: AVAudioFormat?
+
+    private var hapticEngine: CHHapticEngine?
+    private var hapticEngineReady = false
+    private var activeHapticPlayer: CHHapticPatternPlayer?
 
     private var currentTrack: StepSoundTrack = .canon
     private var noteCursor: Int = 0
@@ -128,6 +135,10 @@ final class StepFeedbackPlayer {
         audioQueue.async { [weak self] in
             self?.stopAllVoices()
         }
+        hapticQueue.async { [weak self] in
+            try? self?.activeHapticPlayer?.stop(atTime: CHHapticTimeImmediate)
+            self?.activeHapticPlayer = nil
+        }
     }
 
     func triggerFeedback(soundTrack: StepSoundTrack, hapticLevel: Int, noteCount: Int = 1) {
@@ -137,7 +148,8 @@ final class StepFeedbackPlayer {
 
     func playStep(hapticLevel: Int? = nil, noteCount: Int = 1) {
         let clampedHaptic = min(3, max(0, hapticLevel ?? self.hapticLevel))
-        let desiredCount = min(Self.maxStepNotes, max(1, noteCount))
+        let desiredAudioCount = min(Self.maxStepNotes, max(1, noteCount))
+        let desiredHapticLines = min(Self.maxHapticLines, max(1, noteCount))
         let intervalMs = min(Self.maxIntervalMs, max(Self.minIntervalMs, noteIntervalMs))
 
         lock.lock()
@@ -150,9 +162,9 @@ final class StepFeedbackPlayer {
 
         var scheduled: [ScheduledNote] = []
         if !def.notes.isEmpty {
-            scheduled.reserveCapacity(desiredCount)
+            scheduled.reserveCapacity(desiredAudioCount)
             var step = 0
-            var remaining = desiredCount
+            var remaining = desiredAudioCount
             while remaining > 0 {
                 remaining -= 1
                 let idx = min(max(0, noteCursor), def.notes.count - 1)
@@ -168,51 +180,36 @@ final class StepFeedbackPlayer {
         }
         lock.unlock()
 
-        let hapticCount: Int
-        if clampedHaptic <= 0 {
-            hapticCount = 0
-        } else if hapticFollowLines {
-            hapticCount = desiredCount
-        } else {
-            hapticCount = 1
-        }
-
-        let maxSteps = max(scheduled.count, hapticCount)
         if !scheduled.isEmpty {
             audioQueue.async { [weak self] in
                 self?.duckActiveVoices()
             }
         }
 
-        for step in 0..<maxSteps {
-            let note = step < scheduled.count ? scheduled[step] : nil
-            let shouldVibrate = step < hapticCount
+        for step in 0..<scheduled.count {
+            let note = scheduled[step]
             let delaySec = Double(step * intervalMs) / 1000.0
-
             if step == 0 {
-                if shouldVibrate {
-                    triggerHaptic(level: clampedHaptic)
-                }
-                if let note {
-                    audioQueue.async { [weak self] in
-                        guard let self, self.isAudioGenerationCurrent(curAudioGen) else { return }
-                        self.playMidi(note.midi, isLong: note.isPhraseEnd, volume: note.volume)
-                    }
+                audioQueue.async { [weak self] in
+                    guard let self, self.isAudioGenerationCurrent(curAudioGen) else { return }
+                    self.playMidi(note.midi, isLong: note.isPhraseEnd, volume: note.volume)
                 }
             } else {
-                if shouldVibrate {
-                    DispatchQueue.main.asyncAfter(deadline: .now() + delaySec) { [weak self] in
-                        guard let self, self.isHapticGenerationCurrent(curHapticGen) else { return }
-                        self.triggerHaptic(level: clampedHaptic)
-                    }
-                }
-                if let note {
-                    audioQueue.asyncAfter(deadline: .now() + delaySec) { [weak self] in
-                        guard let self, self.isAudioGenerationCurrent(curAudioGen) else { return }
-                        self.playMidi(note.midi, isLong: note.isPhraseEnd, volume: note.volume)
-                    }
+                audioQueue.asyncAfter(deadline: .now() + delaySec) { [weak self] in
+                    guard let self, self.isAudioGenerationCurrent(curAudioGen) else { return }
+                    self.playMidi(note.midi, isLong: note.isPhraseEnd, volume: note.volume)
                 }
             }
+        }
+
+        if clampedHaptic > 0 {
+            dispatchAppleHaptics(
+                level: clampedHaptic,
+                lineCount: desiredHapticLines,
+                followLines: hapticFollowLines,
+                intervalMs: intervalMs,
+                generation: curHapticGen
+            )
         }
     }
 
@@ -260,17 +257,14 @@ final class StepFeedbackPlayer {
         let gen = hapticGeneration
         lock.unlock()
 
-        triggerHaptic(level: clamped)
-        guard followLines else { return }
-
         let intervalMs = min(Self.maxIntervalMs, max(Self.minIntervalMs, noteIntervalMs))
-        for step in 1..<3 {
-            let delaySec = Double(step * intervalMs) / 1000.0
-            DispatchQueue.main.asyncAfter(deadline: .now() + delaySec) { [weak self] in
-                guard let self, self.isHapticGenerationCurrent(gen) else { return }
-                self.triggerHaptic(level: clamped)
-            }
-        }
+        dispatchAppleHaptics(
+            level: clamped,
+            lineCount: followLines ? 5 : 1,
+            followLines: followLines,
+            intervalMs: intervalMs,
+            generation: gen
+        )
     }
 
     // MARK: - Private Helpers
@@ -289,15 +283,246 @@ final class StepFeedbackPlayer {
         return ok
     }
 
-    private func triggerHaptic(level: Int) {
+    private func dispatchAppleHaptics(
+        level: Int,
+        lineCount: Int,
+        followLines: Bool,
+        intervalMs: Int,
+        generation: Int
+    ) {
+        if CHHapticEngine.capabilitiesForHardware().supportsHaptics {
+            hapticQueue.async { [weak self] in
+                guard let self, self.isHapticGenerationCurrent(generation) else { return }
+                if self.playCoreHapticPattern(level: level, lineCount: lineCount, followLines: followLines, intervalMs: intervalMs) {
+                    return
+                }
+                self.playFallbackImpactHaptics(level: level, lineCount: lineCount, followLines: followLines, intervalMs: intervalMs, generation: generation)
+            }
+        } else {
+            playFallbackImpactHaptics(level: level, lineCount: lineCount, followLines: followLines, intervalMs: intervalMs, generation: generation)
+        }
+    }
+
+    private func ensureHapticEngine() -> CHHapticEngine? {
+        guard CHHapticEngine.capabilitiesForHardware().supportsHaptics else { return nil }
+        if hapticEngine == nil {
+            do {
+                let engine = try CHHapticEngine()
+                engine.playsHapticsOnly = true
+                engine.isAutoShutdownEnabled = true
+                engine.stoppedHandler = { [weak self] _ in
+                    self?.hapticQueue.async {
+                        self?.hapticEngineReady = false
+                    }
+                }
+                engine.resetHandler = { [weak self] in
+                    self?.hapticQueue.async {
+                        self?.hapticEngineReady = false
+                        if let eng = self?.hapticEngine {
+                            try? eng.start()
+                            self?.hapticEngineReady = true
+                        }
+                    }
+                }
+                hapticEngine = engine
+            } catch {
+                return nil
+            }
+        }
+        guard let engine = hapticEngine else { return nil }
+        if !hapticEngineReady {
+            do {
+                try engine.start()
+                hapticEngineReady = true
+            } catch {
+                return nil
+            }
+        }
+        return engine
+    }
+
+    private func playCoreHapticPattern(level: Int, lineCount: Int, followLines: Bool, intervalMs: Int) -> Bool {
+        guard let engine = ensureHapticEngine() else { return false }
+        try? activeHapticPlayer?.stop(atTime: CHHapticTimeImmediate)
+        activeHapticPlayer = nil
+
+        let baseIntensity: Float
+        let baseSharpness: Float
+        switch level {
+        case 1:
+            baseIntensity = 0.38
+            baseSharpness = 0.28
+        case 2:
+            baseIntensity = 0.64
+            baseSharpness = 0.45
+        default:
+            baseIntensity = 0.90
+            baseSharpness = 0.62
+        }
+
+        let effectiveLines = followLines ? min(Self.maxHapticLines, max(1, lineCount)) : 1
+        var events: [CHHapticEvent] = []
+        var curves: [CHHapticParameterCurve] = []
+
+        if effectiveLines == 1 {
+            // Single refined Apple Taptic tap + soft micro-cushion tail
+            events.append(
+                CHHapticEvent(
+                    eventType: .hapticTransient,
+                    parameters: [
+                        CHHapticEventParameter(parameterID: .hapticIntensity, value: baseIntensity),
+                        CHHapticEventParameter(parameterID: .hapticSharpness, value: baseSharpness)
+                    ],
+                    relativeTime: 0
+                )
+            )
+            events.append(
+                CHHapticEvent(
+                    eventType: .hapticContinuous,
+                    parameters: [
+                        CHHapticEventParameter(parameterID: .hapticIntensity, value: baseIntensity * 0.26),
+                        CHHapticEventParameter(parameterID: .hapticSharpness, value: baseSharpness * 0.45)
+                    ],
+                    relativeTime: 0.008,
+                    duration: 0.045
+                )
+            )
+        } else if effectiveLines == 2 {
+            // Two delicate rhythmic Apple Taptic taps
+            let stepSec = min(0.24, max(0.10, Double(intervalMs) * 0.50 / 1000.0))
+            for i in 0..<2 {
+                let scale: Float = i == 0 ? 1.0 : 0.86
+                let t = Double(i) * stepSec
+                events.append(
+                    CHHapticEvent(
+                        eventType: .hapticTransient,
+                        parameters: [
+                            CHHapticEventParameter(parameterID: .hapticIntensity, value: baseIntensity * scale),
+                            CHHapticEventParameter(parameterID: .hapticSharpness, value: baseSharpness * scale)
+                        ],
+                        relativeTime: t
+                    )
+                )
+                events.append(
+                    CHHapticEvent(
+                        eventType: .hapticContinuous,
+                        parameters: [
+                            CHHapticEventParameter(parameterID: .hapticIntensity, value: baseIntensity * 0.24 * scale),
+                            CHHapticEventParameter(parameterID: .hapticSharpness, value: baseSharpness * 0.42)
+                        ],
+                        relativeTime: t + 0.006,
+                        duration: 0.05
+                    )
+                )
+            }
+        } else {
+            // 3+ lines: continuous, flowing Apple CoreHaptics texture with gentle line-by-line wave modulation
+            let perLineSec = min(0.18, max(0.085, Double(intervalMs) * 0.38 / 1000.0))
+            let totalDuration = min(1.65, Double(effectiveLines) * perLineSec)
+            let actualStep = totalDuration / Double(effectiveLines)
+
+            events.append(
+                CHHapticEvent(
+                    eventType: .hapticTransient,
+                    parameters: [
+                        CHHapticEventParameter(parameterID: .hapticIntensity, value: baseIntensity * 0.62),
+                        CHHapticEventParameter(parameterID: .hapticSharpness, value: baseSharpness * 0.52)
+                    ],
+                    relativeTime: 0
+                )
+            )
+
+            events.append(
+                CHHapticEvent(
+                    eventType: .hapticContinuous,
+                    parameters: [
+                        CHHapticEventParameter(parameterID: .hapticIntensity, value: baseIntensity * 0.66),
+                        CHHapticEventParameter(parameterID: .hapticSharpness, value: baseSharpness * 0.40)
+                    ],
+                    relativeTime: 0.01,
+                    duration: totalDuration
+                )
+            )
+
+            var intensityPoints: [CHHapticParameterCurve.ControlPoint] = [
+                .init(relativeTime: 0.0, value: 0.35),
+                .init(relativeTime: min(0.05, totalDuration * 0.12), value: 0.92)
+            ]
+            for idx in 1..<effectiveLines {
+                let peakTime = Double(idx) * actualStep
+                let dipTime = peakTime - actualStep * 0.36
+                if dipTime > 0.05 {
+                    intensityPoints.append(.init(relativeTime: dipTime, value: 0.64))
+                }
+                intensityPoints.append(.init(relativeTime: peakTime, value: 0.96))
+            }
+            let tailStart = max(0.08, totalDuration - min(0.14, actualStep * 0.75))
+            intensityPoints.append(.init(relativeTime: tailStart, value: 0.55))
+            intensityPoints.append(.init(relativeTime: totalDuration, value: 0.0))
+
+            curves.append(
+                CHHapticParameterCurve(
+                    parameterID: .hapticIntensityControl,
+                    controlPoints: intensityPoints,
+                    relativeTime: 0.01
+                )
+            )
+            curves.append(
+                CHHapticParameterCurve(
+                    parameterID: .hapticSharpnessControl,
+                    controlPoints: [
+                        .init(relativeTime: 0.0, value: 0.08),
+                        .init(relativeTime: totalDuration * 0.5, value: 0.0),
+                        .init(relativeTime: totalDuration, value: -0.18)
+                    ],
+                    relativeTime: 0.01
+                )
+            )
+        }
+
+        do {
+            let pattern = try CHHapticPattern(events: events, parameterCurves: curves)
+            let player = try engine.makePlayer(with: pattern)
+            try player.start(atTime: CHHapticTimeImmediate)
+            activeHapticPlayer = player
+            return true
+        } catch {
+            hapticEngineReady = false
+            return false
+        }
+    }
+
+    private func playFallbackImpactHaptics(
+        level: Int,
+        lineCount: Int,
+        followLines: Bool,
+        intervalMs: Int,
+        generation: Int
+    ) {
+        let count = followLines ? min(Self.maxHapticLines, max(1, lineCount)) : 1
+        let stepSec = min(0.22, max(0.09, Double(intervalMs) * 0.42 / 1000.0))
+        for step in 0..<count {
+            let delaySec = Double(step) * stepSec
+            if step == 0 {
+                triggerFallbackImpact(level: level)
+            } else {
+                DispatchQueue.main.asyncAfter(deadline: .now() + delaySec) { [weak self] in
+                    guard let self, self.isHapticGenerationCurrent(generation) else { return }
+                    self.triggerFallbackImpact(level: level)
+                }
+            }
+        }
+    }
+
+    private func triggerFallbackImpact(level: Int) {
         DispatchQueue.main.async {
             switch level {
             case 1:
-                UIImpactFeedbackGenerator(style: .soft).impactOccurred(intensity: 0.65)
+                UIImpactFeedbackGenerator(style: .soft).impactOccurred(intensity: 0.55)
             case 2:
-                UIImpactFeedbackGenerator(style: .medium).impactOccurred(intensity: 0.85)
+                UIImpactFeedbackGenerator(style: .medium).impactOccurred(intensity: 0.78)
             case 3:
-                UIImpactFeedbackGenerator(style: .heavy).impactOccurred(intensity: 1.0)
+                UIImpactFeedbackGenerator(style: .heavy).impactOccurred(intensity: 0.95)
             default:
                 break
             }

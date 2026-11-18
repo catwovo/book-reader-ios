@@ -1415,9 +1415,38 @@ struct ReaderView: View {
 
     private func estimateVisualLineCount(for text: String) -> Int {
         guard !text.isEmpty else { return 1 }
-        let approxCharsPerLine = Swift.max(18.0, (Double(stageWidth) - 54.0) / (settings.fontSize * 0.62))
-        let count = Int(ceil(Double(text.count) / approxCharsPerLine))
-        return Swift.min(6, Swift.max(1, count))
+        let availableWidth = Swift.max(200.0, Double(stageWidth) - 52.0)
+        let lines = text.split(separator: "\n", omittingEmptySubsequences: false)
+        var totalLines = 0
+        for line in lines {
+            let str = String(line)
+            if str.isEmpty {
+                totalLines += 1
+                continue
+            }
+            var lineWidth = 0.0
+            var wordCount = 0
+            var inAsciiWord = false
+            for ch in str {
+                if TextTokenizer.isChineseChar(ch) || ch.unicodeScalars.contains(where: { $0.value >= 0x3000 }) {
+                    lineWidth += settings.fontSize * 1.06
+                    inAsciiWord = false
+                } else if ch.isWhitespace {
+                    lineWidth += settings.fontSize * 0.30
+                    inAsciiWord = false
+                } else {
+                    if !inAsciiWord {
+                        wordCount += 1
+                        inAsciiWord = true
+                    }
+                    lineWidth += settings.fontSize * 0.58
+                }
+            }
+            lineWidth += Double(wordCount) * 5.0
+            let estimated = Int(ceil((lineWidth * 1.10) / availableWidth))
+            totalLines += Swift.max(1, estimated)
+        }
+        return Swift.min(12, Swift.max(1, totalLines))
     }
 
     private func stepNext() {
@@ -1997,91 +2026,104 @@ private struct ReaderTocAndNotesSheet: View {
 
     var body: some View {
         NavigationStack {
-            VStack(spacing: 10) {
-                GlassSegmentedControl(
-                    titles: ["目录 (\(displayToc.count))", "本书笔记 (\(bookNotes.count))"],
-                    selection: $tab,
-                    compact: true
-                )
-                .padding(.horizontal, 16)
-                .padding(.top, 8)
+            ZStack(alignment: .bottom) {
+                VStack(spacing: 10) {
+                    GlassSegmentedControl(
+                        titles: ["目录 (\(displayToc.count))", "本书笔记 (\(bookNotes.count))"],
+                        selection: $tab,
+                        compact: true
+                    )
+                    .padding(.horizontal, 16)
+                    .padding(.top, 8)
 
-                if tab == 0 {
-                    ScrollViewReader { proxy in
-                        List {
-                            ForEach(Array(displayToc.enumerated()), id: \.offset) { idx, entry in
-                                let isActive = idx == activeTocIdx
-                                let indent = CGFloat(Swift.min(4, Swift.max(0, entry.level)) * 16)
+                    if tab == 0 {
+                        ScrollViewReader { proxy in
+                            List {
+                                ForEach(Array(displayToc.enumerated()), id: \.offset) { idx, entry in
+                                    let isActive = idx == activeTocIdx
+                                    let indent = CGFloat(Swift.min(4, Swift.max(0, entry.level)) * 16)
+                                    Button {
+                                        onSelectToc(entry)
+                                    } label: {
+                                        HStack {
+                                            Text(entry.title)
+                                                .font(entry.level > 0 ? .subheadline : .body)
+                                                .fontWeight(isActive ? .bold : (entry.level == 0 ? .medium : .regular))
+                                                .foregroundStyle(isActive ? palette.accent : (entry.level > 0 ? .secondary : .primary))
+                                                .lineLimit(2)
+                                            Spacer()
+                                            if isActive {
+                                                Image(systemName: "checkmark")
+                                                    .font(.caption.bold())
+                                                    .foregroundStyle(palette.accent)
+                                            }
+                                        }
+                                        .padding(.leading, indent)
+                                    }
+                                    .id(idx)
+                                }
+                            }
+                            .listStyle(.plain)
+                            .contentMargins(.bottom, 76, for: .scrollContent)
+                            .onAppear {
+                                let target = Swift.max(0, activeTocIdx - 2)
+                                proxy.scrollTo(target, anchor: .top)
+                            }
+                        }
+                    } else {
+                        if bookNotes.isEmpty {
+                            Spacer()
+                            Text("本书还没有收藏句子或笔记\n在阅读下方句卡点击星标或编辑按钮即可记录")
+                                .font(.subheadline)
+                                .foregroundStyle(.secondary)
+                                .multilineTextAlignment(.center)
+                                .padding(24)
+                            Spacer()
+                        } else {
+                            List(bookNotes) { note in
                                 Button {
-                                    onSelectToc(entry)
+                                    onSelectNote(note)
                                 } label: {
-                                    HStack {
-                                        Text(entry.title)
-                                            .font(entry.level > 0 ? .subheadline : .body)
-                                            .fontWeight(isActive ? .bold : (entry.level == 0 ? .medium : .regular))
-                                            .foregroundStyle(isActive ? palette.accent : (entry.level > 0 ? .secondary : .primary))
+                                    VStack(alignment: .leading, spacing: 4) {
+                                        Text(note.chapterTitle.isEmpty ? "第 \(note.chapterIndex + 1) 章" : note.chapterTitle)
+                                            .font(.caption2)
+                                            .foregroundStyle(.secondary)
+                                        Text(note.sentenceText)
+                                            .font(.subheadline)
+                                            .foregroundStyle(.primary)
                                             .lineLimit(2)
-                                        Spacer()
-                                        if isActive {
-                                            Image(systemName: "checkmark")
-                                                .font(.caption.bold())
+                                        if !note.noteText.isEmpty {
+                                            Text("笔记：\(note.noteText)")
+                                                .font(.caption)
                                                 .foregroundStyle(palette.accent)
+                                                .lineLimit(2)
                                         }
                                     }
-                                    .padding(.leading, indent)
+                                    .padding(.vertical, 4)
                                 }
-                                .id(idx)
                             }
+                            .listStyle(.plain)
+                            .contentMargins(.bottom, 76, for: .scrollContent)
                         }
-                        .listStyle(.plain)
-                        .onAppear {
-                            let target = Swift.max(0, activeTocIdx - 2)
-                            proxy.scrollTo(target, anchor: .top)
-                        }
-                    }
-                } else {
-                    if bookNotes.isEmpty {
-                        Spacer()
-                        Text("本书还没有收藏句子或笔记\n在阅读下方句卡点击星标或编辑按钮即可记录")
-                            .font(.subheadline)
-                            .foregroundStyle(.secondary)
-                            .multilineTextAlignment(.center)
-                            .padding(24)
-                        Spacer()
-                    } else {
-                        List(bookNotes) { note in
-                            Button {
-                                onSelectNote(note)
-                            } label: {
-                                VStack(alignment: .leading, spacing: 4) {
-                                    Text(note.chapterTitle.isEmpty ? "第 \(note.chapterIndex + 1) 章" : note.chapterTitle)
-                                        .font(.caption2)
-                                        .foregroundStyle(.secondary)
-                                    Text(note.sentenceText)
-                                        .font(.subheadline)
-                                        .foregroundStyle(.primary)
-                                        .lineLimit(2)
-                                    if !note.noteText.isEmpty {
-                                        Text("笔记：\(note.noteText)")
-                                            .font(.caption)
-                                            .foregroundStyle(palette.accent)
-                                            .lineLimit(2)
-                                    }
-                                }
-                                .padding(.vertical, 4)
-                            }
-                        }
-                        .listStyle(.plain)
                     }
                 }
+
+                Button {
+                    dismiss()
+                } label: {
+                    Text("完成")
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(.primary)
+                        .padding(.horizontal, 34)
+                        .padding(.vertical, 11)
+                        .appleLiquidGlassCapsule(tint: palette.accent.opacity(0.14), interactive: true)
+                        .shadow(color: .black.opacity(palette.isLight ? 0.10 : 0.28), radius: 12, x: 0, y: 4)
+                }
+                .buttonStyle(GlassPressButtonStyle())
+                .padding(.bottom, 14)
             }
             .navigationTitle("目录与笔记")
             .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .topBarTrailing) {
-                    Button("完成") { dismiss() }
-                }
-            }
         }
     }
 }
@@ -2230,17 +2272,25 @@ private struct ReaderPreferencesSheet: View {
                                     Spacer()
                                 }
 
-                                ColorPicker(
-                                    "自定义调色板",
-                                    selection: Binding(
-                                        get: { targetColor },
-                                        set: { newColor in
-                                            activeColorTarget.update(newColor.toStoredHexInt64(), in: &store.settings)
-                                        }
-                                    ),
-                                    supportsOpacity: activeColorTarget == .focusUnit
-                                )
-                                .font(.caption)
+                                HStack(spacing: 10) {
+                                    Text("自定义调色板")
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                    Spacer()
+                                    ColorPicker(
+                                        "",
+                                        selection: Binding(
+                                            get: { targetColor },
+                                            set: { newColor in
+                                                activeColorTarget.update(newColor.toStoredHexInt64(), in: &store.settings)
+                                            }
+                                        ),
+                                        supportsOpacity: activeColorTarget == .focusUnit
+                                    )
+                                    .labelsHidden()
+                                    .fixedSize()
+                                    .frame(width: 30, height: 30)
+                                }
                             }
                             .padding(12)
                             .background(Color.secondary.opacity(0.07), in: RoundedRectangle(cornerRadius: 14, style: .continuous))

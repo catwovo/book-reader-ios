@@ -1232,7 +1232,18 @@ struct GlassHorizontalPager<PageContent: View>: View {
             }
         }
         .onAppear {
-            scrollPage = selection
+            if scrollPage != selection {
+                scrollPage = selection
+            }
+        }
+        .onChange(of: pageCount) { _, newCount in
+            let clamped = max(0, min(newCount - 1, selection))
+            if selection != clamped {
+                selection = clamped
+            }
+            if scrollPage != clamped {
+                scrollPage = clamped
+            }
         }
         .onChange(of: selection) { _, newValue in
             if scrollPage != newValue {
