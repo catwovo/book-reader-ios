@@ -54,25 +54,23 @@ private enum LibraryFolderModal: Identifiable, Equatable {
     }
 }
 
+@Observable
 private final class ShelfScrollTracker {
     var localOffset: CGFloat = 0
     var opdsOffset: CGFloat = 0
-    var heroExpandedAtOffset: CGFloat? = nil
-    var lastHeroCollapseToggle: Date = .distantPast
+    var manualHeroExpanded: Bool = false
+    var manualExpandAnchor: CGFloat = 0
 }
 
-private enum ShelfListItem: Identifiable {
-    case folderHeader(folder: BookFolder, bookCount: Int, isExpanded: Bool, index: Int, count: Int)
-    case folderEmpty(folderId: Int64)
-    case book(book: BookItem, index: Int, count: Int, inFolder: Bool, isFirstRootAfterFolders: Bool)
+private enum ShelfSectionKind {
+    case collapsedFolders([(folder: BookFolder, bookCount: Int, index: Int, totalCount: Int)])
+    case expandedFolder(folder: BookFolder, books: [BookItem], index: Int, totalCount: Int)
+    case rootBooks([BookItem], hasFolders: Bool)
+}
 
-    var id: String {
-        switch self {
-        case .folderHeader(let folder, _, _, _, _): return "folder_\(folder.id)"
-        case .folderEmpty(let folderId): return "empty_\(folderId)"
-        case .book(let book, _, _, _, _): return "book_\(book.id)"
-        }
-    }
+private struct ShelfSectionModel: Identifiable {
+    let id: String
+    let kind: ShelfSectionKind
 }
 
 struct LibraryView: View {
@@ -87,7 +85,6 @@ struct LibraryView: View {
     @State private var heroPageIndex = 0
     @State private var collectionTab = 0 // 0 = 本地藏书, 1 = 在线书库
     @State private var expandedFolderIds: Set<Int64> = []
-    @State private var isHeroCollapsed = false
     @State private var scrollTracker = ShelfScrollTracker()
     @State private var expandedHeroHeight: CGFloat = 198
     @State private var compactHeroHeight: CGFloat = 68
@@ -258,8 +255,7 @@ struct LibraryView: View {
                     heroPageIndex = max(0, recentBooks.count - 1)
                 }
                 if recentBooks.isEmpty {
-                    isHeroCollapsed = false
-                    scrollTracker.heroExpandedAtOffset = nil
+                    scrollTracker.manualHeroExpanded = false
                     scrollTracker.localOffset = 0
                 }
             }
@@ -285,30 +281,8 @@ struct LibraryView: View {
         return max(0, expandedHeroHeight - compactHeroHeight)
     }
 
-    private var activeScrollOffset: CGFloat {
-        collectionTab == 0 ? scrollTracker.localOffset : scrollTracker.opdsOffset
-    }
-
     private var pinnedTopInsetHeight: CGFloat {
         (hasRecentBooks ? compactHeroHeight : 0) + sectionBarHeight
-    }
-
-    private var currentHeroVisibleHeight: CGFloat {
-        guard hasRecentBooks else { return 0 }
-        return isHeroCollapsed ? compactHeroHeight : expandedHeroHeight
-    }
-
-    private func setHeroCollapsed(_ collapsed: Bool, recordAnchor: Bool = false) {
-        if !collapsed && recordAnchor && activeScrollOffset > 30 {
-            scrollTracker.heroExpandedAtOffset = activeScrollOffset
-        } else if collapsed {
-            scrollTracker.heroExpandedAtOffset = nil
-        }
-        guard isHeroCollapsed != collapsed else { return }
-        scrollTracker.lastHeroCollapseToggle = Date()
-        withAnimation(.spring(response: 0.34, dampingFraction: 0.86)) {
-            isHeroCollapsed = collapsed
-        }
     }
 
     @ViewBuilder
@@ -344,156 +318,31 @@ struct LibraryView: View {
                     collectionPager
                         .padding(.top, pinnedTopInsetHeight)
 
-                    VStack(spacing: 0) {
-                        heroContinueSection
-                        sectionHeaderBar
-                    }
+                    LibraryHeroOverlay(
+                        scrollTracker: scrollTracker,
+                        recentBooks: recentBooks,
+                        heroPageIndex: $heroPageIndex,
+                        collectionTab: collectionTab,
+                        hasExpandedFolders: !expandedFolderIds.isEmpty,
+                        expandedHeroHeight: $expandedHeroHeight,
+                        compactHeroHeight: $compactHeroHeight,
+                        sectionBarHeight: $sectionBarHeight,
+                        onOpenBook: onOpenBook,
+                        onDeleteBook: { deletingBook = $0 },
+                        onCollapseAllFolders: {
+                            withAnimation(AppMotion.panelSpring) {
+                                expandedFolderIds.removeAll()
+                            }
+                        },
+                        onNewFolder: { folderModal = .newFolder },
+                        onImportBooks: {
+                            importerMode = .books
+                            importTargetFolderId = nil
+                            showFileImporter = true
+                        }
+                    )
                     .zIndex(2)
                 }
-            }
-        }
-    }
-
-    @ViewBuilder
-    private var heroContinueSection: some View {
-        if !recentBooks.isEmpty {
-            let safePage = min(heroPageIndex, recentBooks.count - 1)
-            let activeBook = recentBooks[safePage]
-
-            ZStack(alignment: .top) {
-                CompactHeroContinueBar(
-                    book: activeBook,
-                    isCaching: false,
-                    onExpand: {
-                        setHeroCollapsed(false, recordAnchor: true)
-                    },
-                    onOpen: {
-                        heroPageIndex = 0
-                        onOpenBook(activeBook)
-                    }
-                )
-                .padding(.horizontal, 16)
-                .padding(.top, 4)
-                .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { h in
-                    if h > 10, abs(compactHeroHeight - h) > 0.5, (isHeroCollapsed || abs(compactHeroHeight - 68) < 0.1) {
-                        compactHeroHeight = h
-                    }
-                }
-                .opacity(isHeroCollapsed ? 1 : 0)
-                .scaleEffect(isHeroCollapsed ? 1.0 : 0.97, anchor: .top)
-                .allowsHitTesting(isHeroCollapsed)
-
-                VStack(spacing: 6) {
-                    GlassHorizontalPager(selection: $heroPageIndex, pageCount: recentBooks.count, fillHeight: false) { idx in
-                        if idx < recentBooks.count {
-                            let book = recentBooks[idx]
-                            HeroContinueCard(
-                                book: book,
-                                isCaching: false,
-                                onOpen: {
-                                    onOpenBook(book)
-                                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) {
-                                        heroPageIndex = 0
-                                    }
-                                },
-                                onDelete: { deletingBook = book }
-                            )
-                            .padding(.horizontal, 16)
-                        }
-                    }
-
-                    if recentBooks.count > 1 {
-                        MinimalPagerDots(
-                            pageCount: recentBooks.count,
-                            currentPage: safePage,
-                            onSelectPage: { target in
-                                withAnimation(AppMotion.tabSpring) {
-                                    heroPageIndex = target
-                                }
-                            }
-                        )
-                        .frame(height: 16)
-                    }
-                }
-                .padding(.top, 6)
-                .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { h in
-                    if !isHeroCollapsed, h > 10, abs(expandedHeroHeight - h) > 0.5 {
-                        expandedHeroHeight = h
-                    }
-                }
-                .opacity(isHeroCollapsed ? 0 : 1)
-                .scaleEffect(isHeroCollapsed ? 0.96 : 1.0, anchor: .top)
-                .offset(y: isHeroCollapsed ? -14 : 0)
-                .allowsHitTesting(!isHeroCollapsed)
-            }
-            .frame(height: currentHeroVisibleHeight, alignment: .top)
-            .clipped()
-            .simultaneousGesture(
-                DragGesture(minimumDistance: 24)
-                    .onEnded { value in
-                        if abs(value.translation.height) > abs(value.translation.width) * 1.4 {
-                            let collapse = value.translation.height < 0
-                            setHeroCollapsed(collapse, recordAnchor: !collapse)
-                        }
-                    }
-            )
-        }
-    }
-
-    @ViewBuilder
-    private var sectionHeaderBar: some View {
-        HStack {
-            Text(collectionTab == 0 ? "藏书目录" : "OPDS 书源")
-                .font(.caption.weight(.semibold))
-                .foregroundStyle(.secondary)
-                .animation(.easeOut(duration: 0.2), value: collectionTab)
-
-            Spacer()
-
-            HStack(spacing: 8) {
-                if !expandedFolderIds.isEmpty {
-                    GlassCircleIconButton(
-                        systemImage: "chevron.up",
-                        size: 32,
-                        iconFont: .caption.bold()
-                    ) {
-                        expandedFolderIds.removeAll()
-                    }
-                    .transition(.scale(scale: 0.8).combined(with: .opacity))
-                }
-
-                GlassCircleIconButton(
-                    systemImage: "folder.badge.plus",
-                    size: 32,
-                    iconFont: .subheadline,
-                    isActive: true
-                ) {
-                    folderModal = .newFolder
-                }
-
-                GlassCircleIconButton(
-                    systemImage: "plus",
-                    size: 32,
-                    iconFont: .subheadline.bold(),
-                    isActive: true
-                ) {
-                    importerMode = .books
-                    importTargetFolderId = nil
-                    showFileImporter = true
-                }
-            }
-            .opacity(collectionTab == 0 ? 1 : 0)
-            .scaleEffect(collectionTab == 0 ? 1 : 0.9)
-            .allowsHitTesting(collectionTab == 0)
-            .animation(AppMotion.tabSpring, value: collectionTab)
-        }
-        .frame(height: 36)
-        .padding(.horizontal, 16)
-        .padding(.top, 4)
-        .padding(.bottom, 4)
-        .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { h in
-            if h > 10, abs(sectionBarHeight - h) > 0.5 {
-                sectionBarHeight = h
             }
         }
     }
@@ -505,8 +354,8 @@ struct LibraryView: View {
                 localShelfView
             } else {
                 OpdsOnlineLibraryPane(
-                    heroTopSpacerHeight: isHeroCollapsed ? 0 : heroCollapseDelta,
-                    emptyTopPadding: isHeroCollapsed ? 0 : heroCollapseDelta,
+                    heroTopSpacerHeight: heroCollapseDelta,
+                    emptyTopPadding: heroCollapseDelta,
                     onScrollOffsetChange: { offset in
                         updateScrollOffset(offset, forTab: 1)
                     },
@@ -517,73 +366,67 @@ struct LibraryView: View {
     }
 
     private func updateScrollOffset(_ newOffset: CGFloat, forTab tab: Int) {
+        let clamped = max(0, newOffset)
         if tab == 0 {
-            scrollTracker.localOffset = newOffset
+            if abs(scrollTracker.localOffset - clamped) > 0.25 {
+                scrollTracker.localOffset = clamped
+            }
         } else {
-            scrollTracker.opdsOffset = newOffset
+            if abs(scrollTracker.opdsOffset - clamped) > 0.25 {
+                scrollTracker.opdsOffset = clamped
+            }
         }
         guard tab == collectionTab else { return }
-        guard Date().timeIntervalSince(scrollTracker.lastHeroCollapseToggle) > 0.42 else { return }
-
-        if !isHeroCollapsed {
-            if let anchor = scrollTracker.heroExpandedAtOffset {
-                if newOffset > anchor + 16 || newOffset < anchor - 36 {
-                    setHeroCollapsed(true)
-                }
-            } else if newOffset > 14 {
-                setHeroCollapsed(true)
+        if scrollTracker.manualHeroExpanded,
+           abs(clamped - scrollTracker.manualExpandAnchor) > 18 {
+            withAnimation(.spring(response: 0.28, dampingFraction: 0.86)) {
+                scrollTracker.manualHeroExpanded = false
             }
-        } else if newOffset < -20 {
-            setHeroCollapsed(false)
         }
     }
 
     // MARK: - Local Shelf View
 
-    private func buildFlatShelfItems() -> [ShelfListItem] {
+    private func buildShelfSections() -> [ShelfSectionModel] {
         let folders = db.folders
         let grouped = folderBooksMap
         let rootBooks = rootShelfBooks
-        var items: [ShelfListItem] = []
-        items.reserveCapacity(folders.count + db.books.count)
+        var sections: [ShelfSectionModel] = []
+        var collapsedBuffer: [(folder: BookFolder, bookCount: Int, index: Int, totalCount: Int)] = []
+
+        func flushCollapsedBuffer() {
+            guard !collapsedBuffer.isEmpty else { return }
+            let id = "collapsed_" + collapsedBuffer.map { String($0.folder.id) }.joined(separator: "_")
+            sections.append(ShelfSectionModel(id: id, kind: .collapsedFolders(collapsedBuffer)))
+            collapsedBuffer.removeAll(keepingCapacity: true)
+        }
 
         for (idx, folder) in folders.enumerated() {
             let folderBooks = grouped[folder.id] ?? []
-            let isExpanded = expandedFolderIds.contains(folder.id)
-            items.append(.folderHeader(
-                folder: folder,
-                bookCount: folderBooks.count,
-                isExpanded: isExpanded,
-                index: idx,
-                count: folders.count
-            ))
-            if isExpanded {
-                if folderBooks.isEmpty {
-                    items.append(.folderEmpty(folderId: folder.id))
-                } else {
-                    for (bIdx, book) in folderBooks.enumerated() {
-                        items.append(.book(
-                            book: book,
-                            index: bIdx,
-                            count: folderBooks.count,
-                            inFolder: true,
-                            isFirstRootAfterFolders: false
-                        ))
-                    }
-                }
+            if expandedFolderIds.contains(folder.id) {
+                flushCollapsedBuffer()
+                sections.append(ShelfSectionModel(
+                    id: "expanded_\(folder.id)",
+                    kind: .expandedFolder(
+                        folder: folder,
+                        books: folderBooks,
+                        index: idx,
+                        totalCount: folders.count
+                    )
+                ))
+            } else {
+                collapsedBuffer.append((folder: folder, bookCount: folderBooks.count, index: idx, totalCount: folders.count))
             }
         }
+        flushCollapsedBuffer()
 
-        for (idx, book) in rootBooks.enumerated() {
-            items.append(.book(
-                book: book,
-                index: idx,
-                count: rootBooks.count,
-                inFolder: false,
-                isFirstRootAfterFolders: idx == 0 && !folders.isEmpty
+        if !rootBooks.isEmpty {
+            sections.append(ShelfSectionModel(
+                id: "root_books",
+                kind: .rootBooks(rootBooks, hasFolders: !folders.isEmpty)
             ))
         }
-        return items
+        return sections
     }
 
     @ViewBuilder
@@ -621,7 +464,7 @@ struct LibraryView: View {
                 Spacer()
             }
             .padding(24)
-            .padding(.top, isHeroCollapsed ? 0 : heroCollapseDelta)
+            .padding(.top, heroCollapseDelta)
         } else if db.folders.isEmpty && rootShelfBooks.isEmpty {
             VStack(spacing: 10) {
                 Spacer()
@@ -632,46 +475,48 @@ struct LibraryView: View {
                 Spacer()
             }
             .padding(24)
-            .padding(.top, isHeroCollapsed ? 0 : heroCollapseDelta)
+            .padding(.top, heroCollapseDelta)
         } else {
-            let items = buildFlatShelfItems()
+            let sections = buildShelfSections()
             let showFreshRestoreHint = db.folders.isEmpty
                 && db.books.count == 1
                 && db.books.first?.filePathHint == "sample://art_of_slow_reading"
             ScrollView {
-                LazyVStack(spacing: 4) {
-                    ForEach(items) { item in
-                        shelfRowView(for: item)
+                LazyVStack(spacing: 4, pinnedViews: [.sectionHeaders]) {
+                    ForEach(sections) { section in
+                        shelfSectionView(for: section)
                     }
                     if showFreshRestoreHint {
-                        GlassCard(cornerRadius: 18, tintColor: palette.accent.opacity(0.06)) {
-                            HStack(spacing: 12) {
-                                AppleIconBadge(systemImage: "icloud.and.arrow.down", size: 34, cornerRadius: 10, filled: true)
-                                VStack(alignment: .leading, spacing: 2) {
-                                    Text("重装恢复藏书与数据")
-                                        .font(.subheadline.weight(.semibold))
-                                    Text(backupService.statusMessage ?? "选择之前授权的外部备份目录（如 iCloud 云盘），即可一键还原全部书籍、进度与笔记")
-                                        .font(.caption2)
-                                        .foregroundStyle(backupService.statusIsError ? .red : .secondary)
-                                        .lineLimit(2)
+                        Section {
+                            GlassCard(cornerRadius: 18, tintColor: palette.accent.opacity(0.06)) {
+                                HStack(spacing: 12) {
+                                    AppleIconBadge(systemImage: "icloud.and.arrow.down", size: 34, cornerRadius: 10, filled: true)
+                                    VStack(alignment: .leading, spacing: 2) {
+                                        Text("重装恢复藏书与数据")
+                                            .font(.subheadline.weight(.semibold))
+                                        Text(backupService.statusMessage ?? "选择之前授权的外部备份目录（如 iCloud 云盘），即可一键还原全部书籍、进度与笔记")
+                                            .font(.caption2)
+                                            .foregroundStyle(backupService.statusIsError ? .red : .secondary)
+                                            .lineLimit(2)
+                                    }
+                                    Spacer(minLength: 4)
+                                    GlassCapsuleChip(
+                                        title: backupService.isRestoring ? "恢复中" : "选择目录",
+                                        selected: true
+                                    ) {
+                                        importerMode = .restoreFolder
+                                        showFileImporter = true
+                                    }
+                                    .disabled(backupService.isRestoring)
                                 }
-                                Spacer(minLength: 4)
-                                GlassCapsuleChip(
-                                    title: backupService.isRestoring ? "恢复中" : "选择目录",
-                                    selected: true
-                                ) {
-                                    importerMode = .restoreFolder
-                                    showFileImporter = true
-                                }
-                                .disabled(backupService.isRestoring)
+                                .padding(12)
                             }
-                            .padding(12)
+                            .padding(.top, 8)
                         }
-                        .padding(.top, 8)
                     }
                 }
                 .padding(.horizontal, 16)
-                .padding(.top, (isHeroCollapsed ? 0 : heroCollapseDelta) + 4)
+                .padding(.top, heroCollapseDelta + 4)
                 .padding(.bottom, 12)
             }
             .scrollBounceBehavior(.always)
@@ -684,57 +529,100 @@ struct LibraryView: View {
     }
 
     @ViewBuilder
-    private func shelfRowView(for item: ShelfListItem) -> some View {
-        switch item {
-        case .folderHeader(let folder, let bookCount, let isExpanded, let idx, let count):
-            FolderHeaderGlassCard(
-                folder: folder,
-                bookCount: bookCount,
-                isExpanded: isExpanded,
-                index: idx,
-                count: count,
-                onToggleExpand: {
-                    if isExpanded {
-                        _ = expandedFolderIds.remove(folder.id)
-                    } else {
-                        _ = expandedFolderIds.insert(folder.id)
-                    }
-                },
-                onImportHere: {
-                    _ = expandedFolderIds.insert(folder.id)
-                    importerMode = .books
-                    importTargetFolderId = folder.id
-                    showFileImporter = true
-                },
-                onAddExistingBooks: {
-                    activeSheet = .addBooksToFolder(folder)
-                },
-                onRename: {
-                    folderModal = .renameFolder(folder)
-                },
-                onDeleteFolder: {
-                    deletingFolder = folder
+    private func shelfSectionView(for section: ShelfSectionModel) -> some View {
+        switch section.kind {
+        case .collapsedFolders(let folderItems):
+            Section {
+                ForEach(folderItems, id: \.folder.id) { entry in
+                    FolderHeaderGlassCard(
+                        folder: entry.folder,
+                        bookCount: entry.bookCount,
+                        isExpanded: false,
+                        index: entry.index,
+                        count: entry.totalCount,
+                        onToggleExpand: {
+                            _ = expandedFolderIds.insert(entry.folder.id)
+                        },
+                        onImportHere: {
+                            _ = expandedFolderIds.insert(entry.folder.id)
+                            importerMode = .books
+                            importTargetFolderId = entry.folder.id
+                            showFileImporter = true
+                        },
+                        onAddExistingBooks: {
+                            activeSheet = .addBooksToFolder(entry.folder)
+                        },
+                        onRename: {
+                            folderModal = .renameFolder(entry.folder)
+                        },
+                        onDeleteFolder: {
+                            deletingFolder = entry.folder
+                        }
+                    )
                 }
-            )
-        case .folderEmpty:
-            GlassGroupedCard(index: 0, count: 1, outerRadius: 14, useLiveGlass: false) {
-                Text("此文件夹暂无书籍，可点击右上角菜单导入或添加")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .frame(maxWidth: .infinity)
-                    .padding(.vertical, 12)
-                    .padding(.horizontal, 12)
             }
-            .padding(.leading, 10)
-        case .book(let book, let bIdx, let count, let inFolder, let isFirstRootAfterFolders):
-            shelfBookRow(
-                book: book,
-                index: bIdx,
-                count: count,
-                inFolder: inFolder
-            )
-            .padding(.leading, inFolder ? 10 : 0)
-            .padding(.top, isFirstRootAfterFolders ? 4 : 0)
+        case .expandedFolder(let folder, let folderBooks, let idx, let totalCount):
+            Section {
+                if folderBooks.isEmpty {
+                    GlassGroupedCard(index: 0, count: 1, outerRadius: 14, useLiveGlass: false) {
+                        Text("此文件夹暂无书籍，可点击右上角菜单导入或添加")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 12)
+                            .padding(.horizontal, 12)
+                    }
+                    .padding(.leading, 10)
+                } else {
+                    ForEach(Array(folderBooks.enumerated()), id: \.element.id) { bIdx, book in
+                        shelfBookRow(
+                            book: book,
+                            index: bIdx,
+                            count: folderBooks.count,
+                            inFolder: true
+                        )
+                        .padding(.leading, 10)
+                    }
+                }
+            } header: {
+                FolderHeaderGlassCard(
+                    folder: folder,
+                    bookCount: folderBooks.count,
+                    isExpanded: true,
+                    index: idx,
+                    count: totalCount,
+                    onToggleExpand: {
+                        _ = expandedFolderIds.remove(folder.id)
+                    },
+                    onImportHere: {
+                        importerMode = .books
+                        importTargetFolderId = folder.id
+                        showFileImporter = true
+                    },
+                    onAddExistingBooks: {
+                        activeSheet = .addBooksToFolder(folder)
+                    },
+                    onRename: {
+                        folderModal = .renameFolder(folder)
+                    },
+                    onDeleteFolder: {
+                        deletingFolder = folder
+                    }
+                )
+                .padding(.bottom, 2)
+            }
+        case .rootBooks(let rootBooks, let hasFolders):
+            Section {
+                ForEach(Array(rootBooks.enumerated()), id: \.element.id) { bIdx, book in
+                    shelfBookRow(
+                        book: book,
+                        index: bIdx,
+                        count: rootBooks.count,
+                        inFolder: false
+                    )
+                    .padding(.top, (bIdx == 0 && hasFolders) ? 4 : 0)
+                }
+            }
         }
     }
 
@@ -1113,15 +1001,34 @@ private struct FolderHeaderGlassCard: View {
         .padding(.horizontal, 13)
         .padding(.vertical, 10)
 
-        GlassGroupedCard(
-            index: isExpanded ? 0 : index,
-            count: isExpanded ? 1 : count,
-            outerRadius: isExpanded ? 18 : 22,
-            innerRadius: 8,
-            tintColor: isExpanded ? palette.accent.opacity(0.06) : nil,
-            useLiveGlass: false
-        ) {
+        if isExpanded {
+            let shape = RoundedRectangle(cornerRadius: 18, style: .continuous)
             content
+                .background {
+                    ZStack {
+                        shape.fill(.regularMaterial)
+                        shape.fill(palette.surfaceTint.opacity(palette.isLight ? 0.90 : 0.88))
+                        shape.fill(palette.accent.opacity(0.06))
+                    }
+                }
+                .overlay {
+                    shape.strokeBorder(
+                        Color.white.opacity(palette.isLight ? 0.78 : 0.18),
+                        lineWidth: 0.6
+                    )
+                }
+                .shadow(color: .black.opacity(palette.isLight ? 0.06 : 0.22), radius: 8, x: 0, y: 3)
+        } else {
+            GlassGroupedCard(
+                index: index,
+                count: count,
+                outerRadius: 22,
+                innerRadius: 8,
+                tintColor: nil,
+                useLiveGlass: false
+            ) {
+                content
+            }
         }
     }
 }
@@ -1162,6 +1069,165 @@ private struct ShelfBookRowContent: View {
                             .font(.caption2)
                             .foregroundStyle(.secondary)
                     }
+                }
+            }
+        }
+        .frame(minHeight: 52)
+    }
+}
+
+// MARK: - Isolated Scroll-Responsive Hero Overlay
+
+private struct LibraryHeroOverlay: View {
+    let scrollTracker: ShelfScrollTracker
+    let recentBooks: [BookItem]
+    @Binding var heroPageIndex: Int
+    let collectionTab: Int
+    let hasExpandedFolders: Bool
+    @Binding var expandedHeroHeight: CGFloat
+    @Binding var compactHeroHeight: CGFloat
+    @Binding var sectionBarHeight: CGFloat
+
+    var onOpenBook: (BookItem) -> Void
+    var onDeleteBook: (BookItem) -> Void
+    var onCollapseAllFolders: () -> Void
+    var onNewFolder: () -> Void
+    var onImportBooks: () -> Void
+
+    var body: some View {
+        let delta = max(0, expandedHeroHeight - compactHeroHeight)
+        let activeOffset = collectionTab == 0 ? scrollTracker.localOffset : scrollTracker.opdsOffset
+        let effectiveCollapse: CGFloat = scrollTracker.manualHeroExpanded ? 0 : min(delta, max(0, activeOffset))
+        let visibleHeroHeight = recentBooks.isEmpty ? 0 : max(compactHeroHeight, expandedHeroHeight - effectiveCollapse)
+        let collapseProgress: CGFloat = delta > 1 ? min(1, max(0, effectiveCollapse / delta)) : 0
+        let compactOpacity = max(0, min(1, (collapseProgress - 0.45) / 0.55))
+        let expandedOpacity = max(0, min(1, 1 - collapseProgress * 1.45))
+
+        VStack(spacing: 0) {
+            if !recentBooks.isEmpty {
+                let safePage = min(heroPageIndex, recentBooks.count - 1)
+                let activeBook = recentBooks[safePage]
+
+                ZStack(alignment: .top) {
+                    CompactHeroContinueBar(
+                        book: activeBook,
+                        isCaching: false,
+                        onExpand: {
+                            scrollTracker.manualExpandAnchor = activeOffset
+                            withAnimation(.spring(response: 0.34, dampingFraction: 0.86)) {
+                                scrollTracker.manualHeroExpanded = true
+                            }
+                        },
+                        onOpen: {
+                            heroPageIndex = 0
+                            onOpenBook(activeBook)
+                        }
+                    )
+                    .padding(.horizontal, 16)
+                    .padding(.top, 4)
+                    .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { h in
+                        if h > 10, abs(compactHeroHeight - h) > 0.5 {
+                            compactHeroHeight = h
+                        }
+                    }
+                    .opacity(compactOpacity)
+                    .scaleEffect(0.97 + 0.03 * compactOpacity, anchor: .top)
+                    .allowsHitTesting(collapseProgress >= 0.5)
+
+                    VStack(spacing: 6) {
+                        GlassHorizontalPager(selection: $heroPageIndex, pageCount: recentBooks.count, fillHeight: false) { idx in
+                            if idx < recentBooks.count {
+                                let book = recentBooks[idx]
+                                HeroContinueCard(
+                                    book: book,
+                                    isCaching: false,
+                                    onOpen: {
+                                        onOpenBook(book)
+                                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) {
+                                            heroPageIndex = 0
+                                        }
+                                    },
+                                    onDelete: { onDeleteBook(book) }
+                                )
+                                .padding(.horizontal, 16)
+                            }
+                        }
+
+                        if recentBooks.count > 1 {
+                            MinimalPagerDots(
+                                pageCount: recentBooks.count,
+                                currentPage: safePage,
+                                onSelectPage: { target in
+                                    withAnimation(AppMotion.tabSpring) {
+                                        heroPageIndex = target
+                                    }
+                                }
+                            )
+                            .frame(height: 16)
+                        }
+                    }
+                    .padding(.top, 6)
+                    .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { h in
+                        if h > 10, abs(expandedHeroHeight - h) > 0.5 {
+                            expandedHeroHeight = h
+                        }
+                    }
+                    .opacity(expandedOpacity)
+                    .scaleEffect(1.0 - 0.04 * collapseProgress, anchor: .top)
+                    .offset(y: -effectiveCollapse * 0.22)
+                    .allowsHitTesting(collapseProgress < 0.5)
+                }
+                .frame(height: visibleHeroHeight, alignment: .top)
+                .clipped()
+            }
+
+            HStack {
+                Text(collectionTab == 0 ? "藏书目录" : "OPDS 书源")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                    .animation(.easeOut(duration: 0.2), value: collectionTab)
+
+                Spacer()
+
+                HStack(spacing: 8) {
+                    if hasExpandedFolders {
+                        GlassCircleIconButton(
+                            systemImage: "chevron.up",
+                            size: 32,
+                            iconFont: .caption.bold(),
+                            action: onCollapseAllFolders
+                        )
+                        .transition(.scale(scale: 0.8).combined(with: .opacity))
+                    }
+
+                    GlassCircleIconButton(
+                        systemImage: "folder.badge.plus",
+                        size: 32,
+                        iconFont: .subheadline,
+                        isActive: true,
+                        action: onNewFolder
+                    )
+
+                    GlassCircleIconButton(
+                        systemImage: "plus",
+                        size: 32,
+                        iconFont: .subheadline.bold(),
+                        isActive: true,
+                        action: onImportBooks
+                    )
+                }
+                .opacity(collectionTab == 0 ? 1 : 0)
+                .scaleEffect(collectionTab == 0 ? 1 : 0.9)
+                .allowsHitTesting(collectionTab == 0)
+                .animation(AppMotion.tabSpring, value: collectionTab)
+            }
+            .frame(height: 36)
+            .padding(.horizontal, 16)
+            .padding(.top, 4)
+            .padding(.bottom, 4)
+            .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { h in
+                if h > 10, abs(sectionBarHeight - h) > 0.5 {
+                    sectionBarHeight = h
                 }
             }
         }
