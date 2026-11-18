@@ -141,11 +141,20 @@ final class BookCache {
         lock.lock()
         defer { lock.unlock() }
         if let image {
-            if coverMemoryCache.count > 48 { coverMemoryCache.removeAll() }
+            if coverMemoryCache.count >= 200 {
+                for key in coverMemoryCache.keys.prefix(40) {
+                    coverMemoryCache.removeValue(forKey: key)
+                }
+            }
             coverMemoryCache[hint] = image
         } else {
             noCoverSet.insert(hint)
         }
+    }
+
+    static func cachedCoverIfReady(for book: BookItem) -> UIImage? {
+        guard !book.filePathHint.isEmpty, !book.filePathHint.hasPrefix("sample://") else { return nil }
+        return shared.lookupCoverState(book.filePathHint).hit
     }
 
     static func getCoverImage(for book: BookItem) async -> UIImage? {

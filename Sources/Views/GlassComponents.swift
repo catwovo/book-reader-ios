@@ -73,6 +73,23 @@ extension Color {
         let argb: Int64 = trimmed.count == 6 ? Int64(0xFF000000 | val) : Int64(val)
         return Color(hexInt64: argb)
     }
+
+    func hsbComponents() -> (hue: Double, saturation: Double, brightness: Double, alpha: Double) {
+        let uiColor = UIColor(self)
+        var h: CGFloat = 0
+        var s: CGFloat = 0
+        var b: CGFloat = 0
+        var a: CGFloat = 1
+        if uiColor.getHue(&h, saturation: &s, brightness: &b, alpha: &a) {
+            return (Double(h), Double(s), Double(b), Double(a))
+        }
+        var r: CGFloat = 0
+        var g: CGFloat = 0
+        var bl: CGFloat = 0
+        uiColor.getRed(&r, green: &g, blue: &bl, alpha: &a)
+        UIColor(red: r, green: g, blue: bl, alpha: a).getHue(&h, saturation: &s, brightness: &b, alpha: &a)
+        return (Double(h), Double(s), Double(b), Double(a))
+    }
 }
 
 // MARK: - 7-Theme Liquid Glass Palette
@@ -324,6 +341,7 @@ struct GlassGroupedCard<Content: View>: View {
     var outerRadius: CGFloat = 22
     var innerRadius: CGFloat = 8
     var tintColor: Color? = nil
+    var useLiveGlass: Bool = true
     @Environment(\.appPalette) private var palette
     @ViewBuilder var content: () -> Content
 
@@ -340,18 +358,41 @@ struct GlassGroupedCard<Content: View>: View {
     }
 
     var body: some View {
-        #if compiler(>=6.2)
-        if #available(iOS 26.0, *) {
-            let effectiveTint: Color? = tintColor ?? (palette.mode != .dynamic ? palette.surfaceTint.opacity(palette.isLight ? 0.20 : 0.24) : nil)
-            let glass: Glass = effectiveTint != nil ? .regular.tint(effectiveTint!) : .regular
-            content()
-                .glassEffect(glass, in: shape)
+        if !useLiveGlass {
+            fastStaticBody
         } else {
+            #if compiler(>=6.2)
+            if #available(iOS 26.0, *) {
+                let effectiveTint: Color? = tintColor ?? (palette.mode != .dynamic ? palette.surfaceTint.opacity(palette.isLight ? 0.20 : 0.24) : nil)
+                let glass: Glass = effectiveTint != nil ? .regular.tint(effectiveTint!) : .regular
+                content()
+                    .glassEffect(glass, in: shape)
+            } else {
+                legacyGroupedBody
+            }
+            #else
             legacyGroupedBody
+            #endif
         }
-        #else
-        legacyGroupedBody
-        #endif
+    }
+
+    @ViewBuilder
+    private var fastStaticBody: some View {
+        content()
+            .background {
+                ZStack {
+                    shape.fill(palette.surfaceTint.opacity(palette.isLight ? 0.88 : 0.82))
+                    if let tintColor {
+                        shape.fill(tintColor)
+                    }
+                }
+            }
+            .overlay {
+                shape.strokeBorder(
+                    Color.white.opacity(palette.isLight ? 0.72 : 0.14),
+                    lineWidth: 0.55
+                )
+            }
     }
 
     @ViewBuilder
@@ -547,6 +588,12 @@ struct BookCoverArtwork: View {
 
     @State private var coverImage: UIImage?
 
+    init(book: BookItem, compact: Bool = false) {
+        self.book = book
+        self.compact = compact
+        _coverImage = State(initialValue: BookCache.cachedCoverIfReady(for: book))
+    }
+
     private var paletteIndex: Int {
         var h = 0
         for scalar in book.title.unicodeScalars {
@@ -614,7 +661,9 @@ struct BookCoverArtwork: View {
                 .strokeBorder(Color.white.opacity(0.18), lineWidth: 0.6)
         }
         .task(id: book.filePathHint) {
-            coverImage = await BookCache.getCoverImage(for: book)
+            if coverImage == nil {
+                coverImage = await BookCache.getCoverImage(for: book)
+            }
         }
     }
 }
@@ -623,6 +672,7 @@ struct MinimalTagPill: View {
     let text: String
     var tintColor: Color? = nil
     var textColor: Color = .secondary
+    var useMaterial: Bool = true
 
     var body: some View {
         Text(text)
@@ -633,13 +683,17 @@ struct MinimalTagPill: View {
             .padding(.horizontal, 8)
             .padding(.vertical, 3)
             .background {
-                ZStack {
-                    Capsule().fill(.ultraThinMaterial)
-                    Capsule().fill((tintColor ?? Color.secondary.opacity(0.14)))
+                if useMaterial {
+                    ZStack {
+                        Capsule().fill(.ultraThinMaterial)
+                        Capsule().fill((tintColor ?? Color.secondary.opacity(0.14)))
+                    }
+                } else {
+                    Capsule().fill((tintColor ?? Color.secondary.opacity(0.12)))
                 }
             }
             .overlay {
-                Capsule().strokeBorder(.white.opacity(0.28), lineWidth: 0.6)
+                Capsule().strokeBorder(.white.opacity(useMaterial ? 0.28 : 0.16), lineWidth: 0.6)
             }
     }
 }

@@ -2139,6 +2139,7 @@ private struct ReaderPreferencesSheet: View {
     @State private var colorsExpanded = false
     @State private var layoutExpanded = false
     @State private var feedbackExpanded = false
+    @State private var showCustomPalette = false
     @State private var activeColorTarget: ReaderColorTarget = .background
 
     private var hasCustomColors: Bool {
@@ -2277,19 +2278,47 @@ private struct ReaderPreferencesSheet: View {
                                         .font(.caption)
                                         .foregroundStyle(.secondary)
                                     Spacer()
-                                    ColorPicker(
-                                        "",
-                                        selection: Binding(
+                                    Button {
+                                        withAnimation(AppMotion.panelSpring) {
+                                            showCustomPalette.toggle()
+                                        }
+                                    } label: {
+                                        HStack(spacing: 6) {
+                                            Circle()
+                                                .fill(targetColor)
+                                                .frame(width: 18, height: 18)
+                                                .overlay {
+                                                    Circle().strokeBorder(
+                                                        AngularGradient(
+                                                            colors: [.red, .yellow, .green, .cyan, .blue, .purple, .red],
+                                                            center: .center
+                                                        ),
+                                                        lineWidth: 2
+                                                    )
+                                                }
+                                            Text(showCustomPalette ? "收起" : "调色")
+                                                .font(.caption.weight(.medium))
+                                                .foregroundStyle(.primary)
+                                        }
+                                        .padding(.horizontal, 10)
+                                        .padding(.vertical, 5)
+                                        .background(Color.secondary.opacity(0.10), in: Capsule())
+                                    }
+                                    .buttonStyle(.plain)
+                                }
+
+                                if showCustomPalette {
+                                    InlineCustomColorPalette(
+                                        color: Binding(
                                             get: { targetColor },
                                             set: { newColor in
                                                 activeColorTarget.update(newColor.toStoredHexInt64(), in: &store.settings)
                                             }
                                         ),
-                                        supportsOpacity: activeColorTarget == .focusUnit
+                                        supportsOpacity: activeColorTarget == .focusUnit,
+                                        targetKey: activeColorTarget.rawValue
                                     )
-                                    .labelsHidden()
-                                    .fixedSize()
-                                    .frame(width: 30, height: 30)
+                                    .transition(AppMotion.panelTransition)
                                 }
                             }
                             .padding(12)
@@ -2490,6 +2519,199 @@ private struct ReaderPreferencesSheet: View {
             Slider(value: value, in: range, step: step)
                 .tint(palette.accent)
         }
+    }
+}
+
+private struct InlineCustomColorPalette: View {
+    @Binding var color: Color
+    let supportsOpacity: Bool
+    let targetKey: String
+
+    @State private var hue: Double = 0.58
+    @State private var saturation: Double = 0.4
+    @State private var brightness: Double = 0.9
+    @State private var alpha: Double = 1.0
+
+    var body: some View {
+        let currentColor = Color(hue: hue, saturation: saturation, brightness: brightness, opacity: supportsOpacity ? alpha : 1.0)
+        VStack(alignment: .leading, spacing: 10) {
+            // 2D Saturation x Brightness Spectrum Pad
+            GeometryReader { geo in
+                let w = max(1, geo.size.width)
+                let h = max(1, geo.size.height)
+                ZStack {
+                    RoundedRectangle(cornerRadius: 12, style: .continuous)
+                        .fill(Color(hue: hue, saturation: 1, brightness: 1))
+                    RoundedRectangle(cornerRadius: 12, style: .continuous)
+                        .fill(
+                            LinearGradient(
+                                colors: [.white, .clear],
+                                startPoint: .leading,
+                                endPoint: .trailing
+                            )
+                        )
+                    RoundedRectangle(cornerRadius: 12, style: .continuous)
+                        .fill(
+                            LinearGradient(
+                                colors: [.clear, .black],
+                                startPoint: .top,
+                                endPoint: .bottom
+                            )
+                        )
+                    RoundedRectangle(cornerRadius: 12, style: .continuous)
+                        .strokeBorder(Color.secondary.opacity(0.28), lineWidth: 0.7)
+
+                    Circle()
+                        .fill(Color(hue: hue, saturation: saturation, brightness: brightness))
+                        .frame(width: 18, height: 18)
+                        .overlay(Circle().strokeBorder(.white, lineWidth: 2))
+                        .overlay(Circle().strokeBorder(.black.opacity(0.28), lineWidth: 0.6))
+                        .position(
+                            x: min(max(9, saturation * w), w - 9),
+                            y: min(max(9, (1 - brightness) * h), h - 9)
+                        )
+                }
+                .contentShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                .highPriorityGesture(
+                    DragGesture(minimumDistance: 0)
+                        .onChanged { value in
+                            saturation = min(1, max(0, value.location.x / w))
+                            brightness = min(1, max(0, 1 - value.location.y / h))
+                            pushColor()
+                        }
+                )
+            }
+            .frame(height: 132)
+
+            // Hue Bar
+            GeometryReader { geo in
+                let w = max(1, geo.size.width)
+                let h = geo.size.height
+                ZStack {
+                    Capsule()
+                        .fill(
+                            LinearGradient(
+                                colors: [
+                                    Color(hue: 0.0, saturation: 1, brightness: 1),
+                                    Color(hue: 1.0 / 6.0, saturation: 1, brightness: 1),
+                                    Color(hue: 2.0 / 6.0, saturation: 1, brightness: 1),
+                                    Color(hue: 3.0 / 6.0, saturation: 1, brightness: 1),
+                                    Color(hue: 4.0 / 6.0, saturation: 1, brightness: 1),
+                                    Color(hue: 5.0 / 6.0, saturation: 1, brightness: 1),
+                                    Color(hue: 1.0, saturation: 1, brightness: 1)
+                                ],
+                                startPoint: .leading,
+                                endPoint: .trailing
+                            )
+                        )
+                        .frame(height: 12)
+                        .overlay(Capsule().strokeBorder(Color.secondary.opacity(0.24), lineWidth: 0.6))
+
+                    Circle()
+                        .fill(Color(hue: hue, saturation: 1, brightness: 1))
+                        .frame(width: 18, height: 18)
+                        .overlay(Circle().strokeBorder(.white, lineWidth: 2))
+                        .overlay(Circle().strokeBorder(.black.opacity(0.28), lineWidth: 0.6))
+                        .position(x: min(max(9, hue * w), w - 9), y: h * 0.5)
+                }
+                .contentShape(Rectangle())
+                .highPriorityGesture(
+                    DragGesture(minimumDistance: 0)
+                        .onChanged { value in
+                            hue = min(1, max(0, value.location.x / w))
+                            pushColor()
+                        }
+                )
+            }
+            .frame(height: 22)
+
+            // Opacity Bar (only for focusUnit)
+            if supportsOpacity {
+                GeometryReader { geo in
+                    let w = max(1, geo.size.width)
+                    let h = geo.size.height
+                    let pure = Color(hue: hue, saturation: saturation, brightness: brightness)
+                    ZStack {
+                        Capsule()
+                            .fill(Color.secondary.opacity(0.18))
+                            .frame(height: 12)
+                        Capsule()
+                            .fill(
+                                LinearGradient(
+                                    colors: [pure.opacity(0.05), pure],
+                                    startPoint: .leading,
+                                    endPoint: .trailing
+                                )
+                            )
+                            .frame(height: 12)
+                            .overlay(Capsule().strokeBorder(Color.secondary.opacity(0.24), lineWidth: 0.6))
+
+                        Circle()
+                            .fill(currentColor)
+                            .frame(width: 18, height: 18)
+                            .overlay(Circle().strokeBorder(.white, lineWidth: 2))
+                            .overlay(Circle().strokeBorder(.black.opacity(0.28), lineWidth: 0.6))
+                            .position(x: min(max(9, ((alpha - 0.05) / 0.95) * w), w - 9), y: h * 0.5)
+                    }
+                    .contentShape(Rectangle())
+                    .highPriorityGesture(
+                        DragGesture(minimumDistance: 0)
+                            .onChanged { value in
+                                let t = min(1, max(0, value.location.x / w))
+                                alpha = 0.05 + t * 0.95
+                                pushColor()
+                            }
+                    )
+                }
+                .frame(height: 22)
+            }
+
+            HStack(spacing: 8) {
+                Circle()
+                    .fill(currentColor)
+                    .frame(width: 16, height: 16)
+                    .overlay(Circle().strokeBorder(.secondary.opacity(0.4), lineWidth: 0.6))
+                Text(currentColor.hexString)
+                    .font(.caption2.monospaced())
+                    .foregroundStyle(.secondary)
+                if supportsOpacity {
+                    Text("· \(Int((alpha * 100).rounded()))%")
+                        .font(.caption2.monospacedDigit())
+                        .foregroundStyle(.secondary)
+                }
+                Spacer()
+            }
+        }
+        .padding(.top, 4)
+        .onAppear {
+            syncFromExternalColor()
+        }
+        .onChange(of: targetKey) { _, _ in
+            syncFromExternalColor()
+        }
+        .onChange(of: color.toStoredHexInt64()) { _, newHex in
+            let currentHex = Color(hue: hue, saturation: saturation, brightness: brightness, opacity: supportsOpacity ? alpha : 1.0).toStoredHexInt64()
+            if newHex != currentHex {
+                syncFromExternalColor()
+            }
+        }
+    }
+
+    private func syncFromExternalColor() {
+        let comps = color.hsbComponents()
+        hue = comps.hue
+        saturation = comps.saturation
+        brightness = comps.brightness
+        alpha = supportsOpacity ? max(0.05, comps.alpha) : 1.0
+    }
+
+    private func pushColor() {
+        color = Color(
+            hue: hue,
+            saturation: saturation,
+            brightness: brightness,
+            opacity: supportsOpacity ? alpha : 1.0
+        )
     }
 }
 
