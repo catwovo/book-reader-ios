@@ -746,37 +746,27 @@ struct LibraryView: View {
 
     private func importPickedFiles(_ urls: [URL], targetFolderId: Int64?) {
         guard !urls.isEmpty else { return }
+        let scopedUrls = urls.map { (url: $0, accessed: $0.startAccessingSecurityScopedResource()) }
         Task.detached(priority: .userInitiated) {
-            let docsDir = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first!
-            let booksDir = docsDir.appendingPathComponent("Books", isDirectory: true)
-            try? FileManager.default.createDirectory(at: booksDir, withIntermediateDirectories: true)
-
             var prepared: [(title: String, bookmarkData: Data?, filePathHint: String, format: String, folderId: Int64?)] = []
-            prepared.reserveCapacity(urls.count)
+            prepared.reserveCapacity(scopedUrls.count)
 
-            for url in urls {
-                let accessed = url.startAccessingSecurityScopedResource()
-                defer { if accessed { url.stopAccessingSecurityScopedResource() } }
-
-                let rawExt = url.pathExtension.uppercased()
-                let fmt = rawExt.isEmpty ? "TXT" : rawExt
-                let rawTitle = url.deletingPathExtension().lastPathComponent
-                let title = rawTitle.isEmpty ? "未命名图书" : rawTitle
-
-                let destName = "\(UUID().uuidString.prefix(8))_\(url.lastPathComponent)"
-                let destUrl = booksDir.appendingPathComponent(destName)
-                var filePathHint = url.absoluteString
-                var bookmark: Data? = nil
-
-                if (try? FileManager.default.copyItem(at: url, to: destUrl)) != nil {
-                    filePathHint = destUrl.absoluteString
-                } else {
-                    bookmark = try? url.bookmarkData(options: [], includingResourceValuesForKeys: nil, relativeTo: nil)
+            for item in scopedUrls {
+                if let imported = BookParser.importLocalFileToManagedBooks(
+                    item.url,
+                    alreadyAccessingSecurityScope: item.accessed
+                ) {
+                    prepared.append((
+                        title: imported.title,
+                        bookmarkData: imported.bookmarkData,
+                        filePathHint: imported.filePathHint,
+                        format: imported.format,
+                        folderId: targetFolderId
+                    ))
                 }
-
-                prepared.append((title: title, bookmarkData: bookmark, filePathHint: filePathHint, format: fmt, folderId: targetFolderId))
             }
 
+            guard !prepared.isEmpty else { return }
             await MainActor.run {
                 db.addBooksBatch(prepared)
             }
@@ -1677,7 +1667,11 @@ struct OpdsOnlineLibraryPane: View {
     private func findLocalBook(for entry: OpdsEntry) -> BookItem? {
         for acq in entry.acquisitions {
             let localHint = NetworkBookService.localUriForOpdsBook(acquisitionUrl: acq.url, format: acq.format)
-            if let hit = db.books.first(where: { $0.filePathHint == localHint }) {
+            let localName = URL(string: localHint)?.lastPathComponent ?? ""
+            if let hit = db.books.first(where: {
+                $0.filePathHint == localHint
+                    || (!localName.isEmpty && (URL(string: $0.filePathHint)?.lastPathComponent == localName))
+            }) {
                 return hit
             }
         }

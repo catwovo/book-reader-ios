@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 import ImageIO
 import PDFKit
@@ -143,19 +144,253 @@ enum BookParser {
     ]
 
     // MARK: - File Loading & Format Detection
+    private static var managedBooksDirectory: URL {
+        let docsDir = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first!
+        let dir = docsDir.appendingPathComponent("Books", isDirectory: true)
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        return dir
+    }
+
+    static func strippedBookFileName(_ rawName: String) -> String {
+        var name = rawName
+        if name.hasPrefix("b"), let underscoreIdx = name.firstIndex(of: "_") {
+            let digits = name[name.index(after: name.startIndex)..<underscoreIdx]
+            if !digits.isEmpty && digits.allSatisfy(\.isNumber) {
+                let rest = String(name[name.index(after: underscoreIdx)...])
+                if !rest.isEmpty { name = rest }
+            }
+        }
+        if let underscoreIdx = name.firstIndex(of: "_"),
+           name.distance(from: name.startIndex, to: underscoreIdx) == 8 {
+            let prefix = name[..<underscoreIdx]
+            let isHex = prefix.allSatisfy {
+                ("0"..."9").contains($0) || ("a"..."f").contains($0) || ("A"..."F").contains($0)
+            }
+            if isHex {
+                let rest = String(name[name.index(after: underscoreIdx)...])
+                if !rest.isEmpty { name = rest }
+            }
+        }
+        return name
+    }
+
+    private static func sha256Digest(of url: URL) -> SHA256Digest? {
+        guard let data = try? Data(contentsOf: url, options: .mappedIfSafe), !data.isEmpty else {
+            return nil
+        }
+        return SHA256.hash(data: data)
+    }
+
+    private static func findMatchingManagedFile(
+        for readUrl: URL,
+        cleanName: String,
+        in booksDir: URL
+    ) -> URL? {
+        let fm = FileManager.default
+        guard let existingFiles = try? fm.contentsOfDirectory(
+            at: booksDir,
+            includingPropertiesForKeys: [.fileSizeKey],
+            options: [.skipsHiddenFiles]
+        ) else {
+            return nil
+        }
+        let candidates = existingFiles.filter {
+            strippedBookFileName($0.lastPathComponent).caseInsensitiveCompare(cleanName) == .orderedSame
+        }
+        guard !candidates.isEmpty else { return nil }
+
+        let srcSize = (try? readUrl.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
+        var srcDigest: SHA256Digest? = nil
+
+        for candidate in candidates {
+            let dstSize = (try? candidate.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
+            guard dstSize > 0 else { continue }
+            if srcSize > 0 && srcSize != dstSize { continue }
+
+            if srcDigest == nil {
+                srcDigest = sha256Digest(of: readUrl)
+            }
+            guard let expectedDigest = srcDigest,
+                  let candidateDigest = sha256Digest(of: candidate) else {
+                continue
+            }
+            if expectedDigest == candidateDigest {
+                return candidate
+            }
+        }
+        return nil
+    }
+
+    static func importLocalFileToManagedBooks(
+        _ url: URL,
+        alreadyAccessingSecurityScope: Bool = false
+    ) -> (title: String, bookmarkData: Data?, filePathHint: String, format: String)? {
+        let accessed = alreadyAccessingSecurityScope || url.startAccessingSecurityScopedResource()
+        defer {
+            if accessed {
+                url.stopAccessingSecurityScopedResource()
+            }
+        }
+
+        let rawExt = url.pathExtension.uppercased()
+        let fmt = rawExt.isEmpty ? "TXT" : rawExt
+        let rawTitle = url.deletingPathExtension().lastPathComponent
+        let title = rawTitle.isEmpty ? "未命名图书" : rawTitle
+        let rawLast = url.lastPathComponent
+        let safeName = rawLast.isEmpty ? "\(title).\(fmt.lowercased())" : rawLast
+        let cleanName = strippedBookFileName(safeName)
+
+        let fm = FileManager.default
+        let booksDir = managedBooksDirectory
+
+        // 0. If user picked a file already inside Documents/Books/, reuse it without copying
+        if url.standardizedFileURL.deletingLastPathComponent().path == booksDir.standardizedFileURL.path,
+           fm.fileExists(atPath: url.path) {
+            return (title: title, bookmarkData: nil, filePathHint: url.absoluteString, format: fmt)
+        }
+
+        try? fm.startDownloadingUbiquitousItem(at: url)
+
+        let cleanDest = booksDir.appendingPathComponent(cleanName)
+        let preferredDest: () -> URL = {
+            if !fm.fileExists(atPath: cleanDest.path) {
+                return cleanDest
+            }
+            return booksDir.appendingPathComponent("\(UUID().uuidString.prefix(8))_\(cleanName)")
+        }
+
+        var resultUrl: URL? = nil
+        var coordError: NSError?
+        let coordinator = NSFileCoordinator(filePresenter: nil)
+        coordinator.coordinate(readingItemAt: url, options: [], error: &coordError) { readUrl in
+            if let existing = findMatchingManagedFile(for: readUrl, cleanName: cleanName, in: booksDir) {
+                resultUrl = existing
+                return
+            }
+            let destUrl = preferredDest()
+            if (try? fm.copyItem(at: readUrl, to: destUrl)) != nil {
+                let sz = (try? destUrl.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
+                if sz > 0 {
+                    resultUrl = destUrl
+                    return
+                }
+                try? fm.removeItem(at: destUrl)
+            }
+            if let data = try? Data(contentsOf: readUrl), !data.isEmpty {
+                if (try? data.write(to: destUrl, options: .atomic)) != nil {
+                    resultUrl = destUrl
+                }
+            }
+        }
+
+        if resultUrl == nil {
+            if let existing = findMatchingManagedFile(for: url, cleanName: cleanName, in: booksDir) {
+                resultUrl = existing
+            } else {
+                let destUrl = preferredDest()
+                if (try? fm.copyItem(at: url, to: destUrl)) != nil {
+                    let sz = (try? destUrl.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
+                    if sz > 0 {
+                        resultUrl = destUrl
+                    } else {
+                        try? fm.removeItem(at: destUrl)
+                    }
+                } else if let data = try? Data(contentsOf: url), !data.isEmpty {
+                    if (try? data.write(to: destUrl, options: .atomic)) != nil {
+                        resultUrl = destUrl
+                    }
+                }
+            }
+        }
+
+        if let finalUrl = resultUrl {
+            return (title: title, bookmarkData: nil, filePathHint: finalUrl.absoluteString, format: fmt)
+        }
+
+        let bookmark = (try? url.bookmarkData(options: [], includingResourceValuesForKeys: nil, relativeTo: nil))
+            ?? (try? url.bookmarkData(options: .minimalBookmark, includingResourceValuesForKeys: nil, relativeTo: nil))
+        if let bookmark {
+            return (title: title, bookmarkData: bookmark, filePathHint: url.absoluteString, format: fmt)
+        }
+        return nil
+    }
+
     static func resolveReadableUrl(for book: BookItem) -> (url: URL, stopSecurityScope: Bool)? {
+        let fm = FileManager.default
+        let hint = book.filePathHint
+        if hint.isEmpty || hint.hasPrefix("sample://") { return nil }
+
+        let parsedUrl = URL(string: hint)
+        let candidatePath: String = {
+            if let u = parsedUrl, u.isFileURL {
+                return u.path
+            }
+            if hint.hasPrefix("file://") {
+                let stripped = String(hint.dropFirst("file://".count))
+                return stripped.removingPercentEncoding ?? stripped
+            }
+            return hint
+        }()
+
+        // 1. Direct path check
+        if !candidatePath.isEmpty, fm.fileExists(atPath: candidatePath) {
+            return (URL(fileURLWithPath: candidatePath), false)
+        }
+
+        // 2. Relocate sandbox path if iOS container UUID changed after app update / reinstall / restore
+        let docsDir = fm.urls(for: .documentDirectory, in: .userDomainMask).first!
+        if let docsRange = candidatePath.range(of: "/Documents/", options: .backwards) {
+            let relPath = String(candidatePath[docsRange.upperBound...])
+            if !relPath.isEmpty {
+                let relocated = docsDir.appendingPathComponent(relPath)
+                if fm.fileExists(atPath: relocated.path) {
+                    return (relocated, false)
+                }
+            }
+        }
+        let fileName = (candidatePath as NSString).lastPathComponent
+        if !fileName.isEmpty && fileName != "/" {
+            let booksDir = docsDir.appendingPathComponent("Books", isDirectory: true)
+            let inBooks = booksDir.appendingPathComponent(fileName)
+            if fm.fileExists(atPath: inBooks.path) {
+                return (inBooks, false)
+            }
+            let cleanName = strippedBookFileName(fileName)
+            if cleanName != fileName {
+                let cleanInBooks = booksDir.appendingPathComponent(cleanName)
+                if fm.fileExists(atPath: cleanInBooks.path) {
+                    return (cleanInBooks, false)
+                }
+            }
+            if let dirFiles = try? fm.contentsOfDirectory(at: booksDir, includingPropertiesForKeys: nil, options: [.skipsHiddenFiles]),
+               let matched = dirFiles.first(where: {
+                   strippedBookFileName($0.lastPathComponent).caseInsensitiveCompare(cleanName) == .orderedSame
+               }) {
+                return (matched, false)
+            }
+            let inLegacy = docsDir.appendingPathComponent("DownloadedBooks", isDirectory: true).appendingPathComponent(fileName)
+            if fm.fileExists(atPath: inLegacy.path) {
+                return (inLegacy, false)
+            }
+        }
+
+        // 3. Security-scoped bookmark fallback for external / iCloud books
         if let bookmark = book.bookmarkData {
             var isStale = false
             if let url = try? URL(resolvingBookmarkData: bookmark, options: [], relativeTo: nil, bookmarkDataIsStale: &isStale) {
                 let accessed = url.startAccessingSecurityScopedResource()
-                return (url, accessed)
+                if fm.fileExists(atPath: url.path) {
+                    return (url, accessed)
+                }
+                let isUbiquitous = (try? url.resourceValues(forKeys: [.isUbiquitousItemKey]).isUbiquitousItem) ?? false
+                let isInDeadSandbox = url.path.contains("/Containers/Data/Application/")
+                if isUbiquitous || !isInDeadSandbox {
+                    return (url, accessed)
+                }
+                if accessed {
+                    url.stopAccessingSecurityScopedResource()
+                }
             }
-        }
-        if let url = URL(string: book.filePathHint), url.isFileURL, FileManager.default.fileExists(atPath: url.path) {
-            return (url, false)
-        }
-        if FileManager.default.fileExists(atPath: book.filePathHint) {
-            return (URL(fileURLWithPath: book.filePathHint), false)
         }
         return nil
     }
@@ -169,7 +404,50 @@ enum BookParser {
                 resolved.url.stopAccessingSecurityScopedResource()
             }
         }
-        return try Data(contentsOf: resolved.url)
+
+        let fm = FileManager.default
+        if resolved.stopSecurityScope || !fm.fileExists(atPath: resolved.url.path) {
+            try? fm.startDownloadingUbiquitousItem(at: resolved.url)
+            var coordError: NSError?
+            var readResult: Result<Data, Error>?
+            let coordinator = NSFileCoordinator(filePresenter: nil)
+            coordinator.coordinate(readingItemAt: resolved.url, options: [], error: &coordError) { readUrl in
+                do {
+                    readResult = .success(try Data(contentsOf: readUrl))
+                } catch {
+                    readResult = .failure(error)
+                }
+            }
+            if let readResult {
+                switch readResult {
+                case .success(let data):
+                    return data
+                case .failure(let err):
+                    let nsErr = err as NSError
+                    if nsErr.domain == NSCocoaErrorDomain && (nsErr.code == NSFileNoSuchFileError || nsErr.code == NSFileReadNoSuchFileError) {
+                        throw NSError(domain: "BookParser", code: 404, userInfo: [NSLocalizedDescriptionKey: "找不到原图书文件，请重新导入"])
+                    }
+                    throw err
+                }
+            }
+            if let coordError {
+                let nsErr = coordError as NSError
+                if nsErr.domain == NSCocoaErrorDomain && (nsErr.code == NSFileNoSuchFileError || nsErr.code == NSFileReadNoSuchFileError) {
+                    throw NSError(domain: "BookParser", code: 404, userInfo: [NSLocalizedDescriptionKey: "找不到原图书文件，请重新导入"])
+                }
+                throw coordError
+            }
+        }
+
+        do {
+            return try Data(contentsOf: resolved.url)
+        } catch {
+            let nsErr = error as NSError
+            if nsErr.domain == NSCocoaErrorDomain && (nsErr.code == NSFileNoSuchFileError || nsErr.code == NSFileReadNoSuchFileError) {
+                throw NSError(domain: "BookParser", code: 404, userInfo: [NSLocalizedDescriptionKey: "找不到原图书文件，请重新导入"])
+            }
+            throw error
+        }
     }
 
     static func detectActualFormat(data: Data, declaredFormat: String) -> String {

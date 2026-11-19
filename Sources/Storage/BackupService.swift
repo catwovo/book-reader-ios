@@ -12,11 +12,14 @@ final class BackupService {
         let exportedAtMs: Int64
         let manifestPath: String
         let booksDirPath: String
+        let backupBooksCount: Int
+        let backupBooksBytes: Int64
     }
 
     private let bookmarkKey = "external_backup_folder_bookmark_v1"
     private let folderNameKey = "external_backup_folder_name_v1"
     private let autoBackupKey = "external_auto_backup_enabled_v1"
+    private let recordsOnlyKey = "external_backup_records_only_v1"
     private let lastBackupKey = "external_last_backup_ms_v1"
 
     var isAuthorized: Bool = false
@@ -25,6 +28,11 @@ final class BackupService {
     var autoBackupEnabled: Bool = true {
         didSet {
             UserDefaults.standard.set(autoBackupEnabled, forKey: autoBackupKey)
+        }
+    }
+    var recordsOnlyBackupEnabled: Bool = true {
+        didSet {
+            UserDefaults.standard.set(recordsOnlyBackupEnabled, forKey: recordsOnlyKey)
         }
     }
     var isBackingUp: Bool = false
@@ -40,6 +48,9 @@ final class BackupService {
         let ud = UserDefaults.standard
         if ud.object(forKey: autoBackupKey) != nil {
             self.autoBackupEnabled = ud.bool(forKey: autoBackupKey)
+        }
+        if ud.object(forKey: recordsOnlyKey) != nil {
+            self.recordsOnlyBackupEnabled = ud.bool(forKey: recordsOnlyKey)
         }
         self.lastBackupAtMs = Int64(ud.double(forKey: lastBackupKey))
         self.authorizedFolderName = ud.string(forKey: folderNameKey) ?? ""
@@ -138,10 +149,13 @@ final class BackupService {
             return
         }
 
+        let recordsOnly = recordsOnlyBackupEnabled
         isBackingUp = true
         if !silent {
             statusIsError = false
-            statusMessage = "正在增量同步藏书与阅读数据..."
+            statusMessage = recordsOnly
+                ? "正在同步阅读进度、笔记与设置（不复制原书）..."
+                : "正在增量同步藏书与阅读数据..."
         }
 
         let snapshot = db.exportBackupSnapshot()
@@ -164,7 +178,10 @@ final class BackupService {
                     let fm = FileManager.default
                     let backupRoot = rootUrl.appendingPathComponent("MiaoyueBackup", isDirectory: true)
                     let booksDir = backupRoot.appendingPathComponent("Books", isDirectory: true)
-                    try fm.createDirectory(at: booksDir, withIntermediateDirectories: true)
+                    try fm.createDirectory(at: backupRoot, withIntermediateDirectories: true)
+                    if !recordsOnly {
+                        try fm.createDirectory(at: booksDir, withIntermediateDirectories: true)
+                    }
 
                     var usedNames = Set<String>()
                     var backupBooks: [BackupBookRecord] = []
@@ -173,30 +190,40 @@ final class BackupService {
 
                     for book in snapshot.books {
                         var storedFileName = ""
-                        if !book.filePathHint.hasPrefix("sample://"),
-                           let resolved = BookParser.resolveReadableUrl(for: book) {
-                            defer {
-                                if resolved.stopSecurityScope {
-                                    resolved.url.stopAccessingSecurityScopedResource()
+                        if !book.filePathHint.hasPrefix("sample://") {
+                            if recordsOnly {
+                                let rawName: String = {
+                                    if let parsed = URL(string: book.filePathHint), parsed.isFileURL {
+                                        return parsed.lastPathComponent
+                                    }
+                                    return (book.filePathHint as NSString).lastPathComponent
+                                }()
+                                let cleanName = BookParser.strippedBookFileName(rawName)
+                                storedFileName = cleanName.isEmpty ? "\(book.title).\(book.format.lowercased())" : cleanName
+                            } else if let resolved = BookParser.resolveReadableUrl(for: book) {
+                                defer {
+                                    if resolved.stopSecurityScope {
+                                        resolved.url.stopAccessingSecurityScopedResource()
+                                    }
                                 }
-                            }
-                            let rawName = resolved.url.lastPathComponent
-                            var candidate = rawName.isEmpty ? "book_\(book.id).\(book.format.lowercased())" : rawName
-                            if usedNames.contains(candidate) {
-                                candidate = "b\(book.id)_\(candidate)"
-                            }
-                            usedNames.insert(candidate)
-                            storedFileName = candidate
+                                let cleanName = BookParser.strippedBookFileName(resolved.url.lastPathComponent)
+                                var candidate = cleanName.isEmpty ? "book_\(book.id).\(book.format.lowercased())" : cleanName
+                                if usedNames.contains(candidate.lowercased()) {
+                                    candidate = "b\(book.id)_\(candidate)"
+                                }
+                                usedNames.insert(candidate.lowercased())
+                                storedFileName = candidate
 
-                            let destUrl = booksDir.appendingPathComponent(candidate)
-                            let srcSize = (try? resolved.url.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? -1
-                            let dstSize = (try? destUrl.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? -2
-                            if !fm.fileExists(atPath: destUrl.path) || srcSize != dstSize || srcSize <= 0 {
-                                if fm.fileExists(atPath: destUrl.path) {
-                                    try? fm.removeItem(at: destUrl)
+                                let destUrl = booksDir.appendingPathComponent(candidate)
+                                let srcSize = (try? resolved.url.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? -1
+                                let dstSize = (try? destUrl.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? -2
+                                if !fm.fileExists(atPath: destUrl.path) || srcSize != dstSize || srcSize <= 0 {
+                                    if fm.fileExists(atPath: destUrl.path) {
+                                        try? fm.removeItem(at: destUrl)
+                                    }
+                                    try fm.copyItem(at: resolved.url, to: destUrl)
+                                    copiedCount += 1
                                 }
-                                try fm.copyItem(at: resolved.url, to: destUrl)
-                                copiedCount += 1
                             }
                         }
 
@@ -294,6 +321,7 @@ final class BackupService {
                     let data = try encoder.encode(manifest)
                     try data.write(to: manifestUrl, options: .atomic)
 
+                    let booksStats = Self.dirStats(at: booksDir)
                     let preview = BackupPreview(
                         bookCount: manifest.books.count,
                         folderCount: manifest.folders.count,
@@ -301,7 +329,9 @@ final class BackupService {
                         vocabCount: manifest.vocabList.count,
                         exportedAtMs: nowMs,
                         manifestPath: manifestUrl.path,
-                        booksDirPath: booksDir.path
+                        booksDirPath: booksDir.path,
+                        backupBooksCount: booksStats.count,
+                        backupBooksBytes: booksStats.bytes
                     )
                     cont.resume(returning: .success((copiedCount, manifest.books.count, nowMs, preview)))
                 } catch {
@@ -318,7 +348,9 @@ final class BackupService {
             detectedBackupPreview = info.preview
             if !silent {
                 statusIsError = false
-                if info.copiedBooks > 0 {
+                if recordsOnly {
+                    statusMessage = "同步完成：已备份 \(info.totalBooks) 本图书的阅读进度、笔记、生词与设置（仅阅读记录，未拷贝原书）"
+                } else if info.copiedBooks > 0 {
                     statusMessage = "同步完成：共 \(info.totalBooks) 本图书（本次增量拷贝 \(info.copiedBooks) 本）及全部笔记/生词/设置"
                 } else {
                     statusMessage = "同步完成：\(info.totalBooks) 本图书均已是最新，已更新阅读进度与笔记设置"
@@ -332,6 +364,55 @@ final class BackupService {
         }
     }
 
+    func clearBackupBookCopies() async {
+        guard !isBackingUp, !isRestoring else { return }
+        guard let bookmark = UserDefaults.standard.data(forKey: bookmarkKey) else { return }
+
+        isBackingUp = true
+        statusIsError = false
+        statusMessage = "正在清理备份目录中的原书副本..."
+
+        let result: Result<(removedCount: Int, preview: BackupPreview?), Error> = await withCheckedContinuation { cont in
+            backupQueue.async {
+                var isStale = false
+                guard let rootUrl = try? URL(resolvingBookmarkData: bookmark, options: [], relativeTo: nil, bookmarkDataIsStale: &isStale) else {
+                    cont.resume(returning: .failure(NSError(domain: "BackupService", code: 3, userInfo: [NSLocalizedDescriptionKey: "目录权限已失效，请重新授权目录"])))
+                    return
+                }
+                let accessed = rootUrl.startAccessingSecurityScopedResource()
+                defer { if accessed { rootUrl.stopAccessingSecurityScopedResource() } }
+
+                let fm = FileManager.default
+                let booksDirs = [
+                    rootUrl.appendingPathComponent("MiaoyueBackup/Books", isDirectory: true),
+                    rootUrl.appendingPathComponent("Books", isDirectory: true)
+                ]
+                var removed = 0
+                for dir in booksDirs where fm.fileExists(atPath: dir.path) {
+                    if let items = try? fm.contentsOfDirectory(at: dir, includingPropertiesForKeys: nil) {
+                        removed += items.count
+                    }
+                    try? fm.removeItem(at: dir)
+                }
+                let preview = Self.probeManifestSync(in: rootUrl)
+                cont.resume(returning: .success((removed, preview)))
+            }
+        }
+
+        isBackingUp = false
+        switch result {
+        case .success(let info):
+            detectedBackupPreview = info.preview
+            statusIsError = false
+            statusMessage = info.removedCount > 0
+                ? "已清理备份目录中的 \(info.removedCount) 个原书副本（阅读记录、笔记与生词已保留）"
+                : "备份目录中已无原书副本"
+        case .failure(let err):
+            statusIsError = true
+            statusMessage = "清理失败：\(err.localizedDescription)"
+        }
+    }
+
     func restoreFromAuthorizedFolder(db: DatabaseManager, settingsStore: SettingsStore) async {
         guard !isBackingUp, !isRestoring else { return }
         guard let bookmark = UserDefaults.standard.data(forKey: bookmarkKey) else {
@@ -342,7 +423,7 @@ final class BackupService {
 
         isRestoring = true
         statusIsError = false
-        statusMessage = "正在从外部目录恢复图书、进度与笔记..."
+        statusMessage = "正在从外部目录恢复阅读记录与图书..."
 
         let loadResult: Result<(manifest: AppBackupManifest, resolvedHints: [Int64: String], copiedFiles: Int), Error> = await withCheckedContinuation { cont in
             backupQueue.async {
@@ -368,23 +449,42 @@ final class BackupService {
                         .appendingPathComponent("Books", isDirectory: true)
                     try fm.createDirectory(at: sandboxBooksDir, withIntermediateDirectories: true)
 
+                    let existingSandboxFiles = (try? fm.contentsOfDirectory(at: sandboxBooksDir, includingPropertiesForKeys: [.fileSizeKey], options: [.skipsHiddenFiles])) ?? []
+
                     var resolvedHints: [Int64: String] = [:]
                     var copiedFiles = 0
 
                     for book in manifest.books {
                         guard !book.fileName.isEmpty else { continue }
+                        let cleanName = BookParser.strippedBookFileName(book.fileName)
                         let backupFileUrl = located.booksDirUrl.appendingPathComponent(book.fileName)
-                        guard fm.fileExists(atPath: backupFileUrl.path) else { continue }
+                        let backupCleanUrl = located.booksDirUrl.appendingPathComponent(cleanName)
+                        let sourceUrl: URL? = fm.fileExists(atPath: backupFileUrl.path)
+                            ? backupFileUrl
+                            : (fm.fileExists(atPath: backupCleanUrl.path) ? backupCleanUrl : nil)
 
-                        let destUrl = sandboxBooksDir.appendingPathComponent(book.fileName)
-                        let srcSize = (try? backupFileUrl.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? -1
-                        let dstSize = (try? destUrl.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? -2
+                        if let src = sourceUrl {
+                            let srcSize = (try? src.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? -1
+                            if let existingLocal = existingSandboxFiles.first(where: {
+                                BookParser.strippedBookFileName($0.lastPathComponent).caseInsensitiveCompare(cleanName) == .orderedSame
+                                    && (((try? $0.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? -2) == srcSize)
+                            }) {
+                                resolvedHints[book.oldId] = existingLocal.absoluteString
+                                continue
+                            }
 
-                        if !fm.fileExists(atPath: destUrl.path) || (srcSize > 0 && srcSize != dstSize) {
-                            try Self.coordinatedCopyItem(from: backupFileUrl, to: destUrl)
-                            copiedFiles += 1
+                            let destUrl = sandboxBooksDir.appendingPathComponent(cleanName)
+                            let dstSize = (try? destUrl.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? -2
+                            if !fm.fileExists(atPath: destUrl.path) || (srcSize > 0 && srcSize != dstSize) {
+                                try Self.coordinatedCopyItem(from: src, to: destUrl)
+                                copiedFiles += 1
+                            }
+                            resolvedHints[book.oldId] = destUrl.absoluteString
+                        } else if let existingLocal = existingSandboxFiles.first(where: {
+                            BookParser.strippedBookFileName($0.lastPathComponent).caseInsensitiveCompare(cleanName) == .orderedSame
+                        }) {
+                            resolvedHints[book.oldId] = existingLocal.absoluteString
                         }
-                        resolvedHints[book.oldId] = destUrl.absoluteString
                     }
 
                     cont.resume(returning: .success((manifest, resolvedHints, copiedFiles)))
@@ -407,7 +507,11 @@ final class BackupService {
             )
             isRestoring = false
             statusIsError = false
-            statusMessage = "恢复成功：导入 \(stats.restoredBooks) 本图书（拷贝 \(payload.copiedFiles) 个文件）、\(stats.restoredFolders) 个文件夹、\(stats.restoredNotes) 条笔记、\(stats.restoredVocab) 个生词"
+            if payload.copiedFiles > 0 {
+                statusMessage = "恢复成功：还原 \(stats.restoredBooks) 本图书（同步 \(payload.copiedFiles) 个文件）、\(stats.restoredFolders) 个文件夹、\(stats.restoredNotes) 条笔记、\(stats.restoredVocab) 个生词"
+            } else {
+                statusMessage = "恢复成功：还原 \(stats.restoredBooks) 本图书阅读记录、\(stats.restoredFolders) 个文件夹、\(stats.restoredNotes) 条笔记、\(stats.restoredVocab) 个生词（重导同名原书可自动接续进度）"
+            }
         case .failure(let err):
             isRestoring = false
             statusIsError = true
@@ -416,6 +520,18 @@ final class BackupService {
     }
 
     // MARK: - Nonisolated File Helpers
+
+    nonisolated private static func dirStats(at dir: URL) -> (count: Int, bytes: Int64) {
+        let fm = FileManager.default
+        guard fm.fileExists(atPath: dir.path),
+              let files = try? fm.contentsOfDirectory(at: dir, includingPropertiesForKeys: [.fileSizeKey], options: [.skipsHiddenFiles]) else {
+            return (0, 0)
+        }
+        let totalBytes = files.reduce(Int64(0)) { sum, url in
+            sum + Int64((try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0)
+        }
+        return (files.count, totalBytes)
+    }
 
     nonisolated private static func locateManifestUrls(in rootUrl: URL) -> (manifestUrl: URL, booksDirUrl: URL)? {
         let fm = FileManager.default
@@ -437,6 +553,7 @@ final class BackupService {
               let manifest = try? JSONDecoder().decode(AppBackupManifest.self, from: data) else {
             return nil
         }
+        let booksStats = dirStats(at: located.booksDirUrl)
         return BackupPreview(
             bookCount: manifest.books.count,
             folderCount: manifest.folders.count,
@@ -444,7 +561,9 @@ final class BackupService {
             vocabCount: manifest.vocabList.count,
             exportedAtMs: manifest.exportedAtMs,
             manifestPath: located.manifestUrl.path,
-            booksDirPath: located.booksDirUrl.path
+            booksDirPath: located.booksDirUrl.path,
+            backupBooksCount: booksStats.count,
+            backupBooksBytes: booksStats.bytes
         )
     }
 

@@ -435,6 +435,50 @@ final class DatabaseManager: @unchecked Sendable {
         books.first(where: { $0.filePathHint == filePathHint })
     }
 
+    private static func cleanFileName(from hint: String) -> String {
+        let path: String
+        if let u = URL(string: hint), u.isFileURL {
+            path = u.path
+        } else {
+            path = hint
+        }
+        let last = (path as NSString).lastPathComponent
+        return BookParser.strippedBookFileName(last)
+    }
+
+    private func findMissingFileCandidate(
+        cleanName: String,
+        title: String,
+        format: String,
+        in currentBooks: [BookItem],
+        excludingIds: Set<Int64> = []
+    ) -> BookItem? {
+        let normalizedFmt = format.uppercased()
+        let candidates = currentBooks.filter { book in
+            guard !excludingIds.contains(book.id),
+                  !book.filePathHint.hasPrefix("sample://") else {
+                return false
+            }
+            let sameClean = !cleanName.isEmpty
+                && Self.cleanFileName(from: book.filePathHint).caseInsensitiveCompare(cleanName) == .orderedSame
+                && book.format.uppercased() == normalizedFmt
+            let sameTitle = !title.isEmpty
+                && book.title.caseInsensitiveCompare(title) == .orderedSame
+                && book.format.uppercased() == normalizedFmt
+            return sameClean || sameTitle
+        }
+        for candidate in candidates {
+            if let resolved = BookParser.resolveReadableUrl(for: candidate) {
+                if resolved.stopSecurityScope {
+                    resolved.url.stopAccessingSecurityScopedResource()
+                }
+                continue
+            }
+            return candidate
+        }
+        return nil
+    }
+
     @discardableResult
     func addBook(
         title: String,
@@ -444,6 +488,41 @@ final class DatabaseManager: @unchecked Sendable {
         folderId: Int64? = nil,
         lastReadAt: Int64? = nil
     ) -> BookItem? {
+        let existingBooks = fetchBooks()
+        if let exact = existingBooks.first(where: { $0.filePathHint == filePathHint }) {
+            books = existingBooks
+            return exact
+        }
+
+        let cleanName = Self.cleanFileName(from: filePathHint)
+        if let relinkTarget = findMissingFileCandidate(
+            cleanName: cleanName,
+            title: title,
+            format: format,
+            in: existingBooks
+        ) {
+            dbLock.lock()
+            var uStmt: OpaquePointer?
+            let uSql = "UPDATE books SET filePathHint = ?1, bookmarkData = ?2, folderId = COALESCE(folderId, ?3) WHERE id = ?4"
+            if sqlite3_prepare_v2(db, uSql, -1, &uStmt, nil) == SQLITE_OK {
+                sqlite3_bind_text(uStmt, 1, filePathHint, -1, SQLITE_TRANSIENT)
+                if let data = bookmarkData {
+                    _ = data.withUnsafeBytes { ptr in
+                        sqlite3_bind_blob(uStmt, 2, ptr.baseAddress, Int32(data.count), SQLITE_TRANSIENT)
+                    }
+                } else {
+                    sqlite3_bind_null(uStmt, 2)
+                }
+                if let fid = folderId { sqlite3_bind_int64(uStmt, 3, fid) } else { sqlite3_bind_null(uStmt, 3) }
+                sqlite3_bind_int64(uStmt, 4, relinkTarget.id)
+                sqlite3_step(uStmt)
+            }
+            sqlite3_finalize(uStmt)
+            dbLock.unlock()
+            books = fetchBooks()
+            return books.first(where: { $0.id == relinkTarget.id })
+        }
+
         let ts = lastReadAt ?? nowMs()
         dbLock.lock()
         var stmt: OpaquePointer?
@@ -472,35 +551,88 @@ final class DatabaseManager: @unchecked Sendable {
     @discardableResult
     func addBooksBatch(_ items: [(title: String, bookmarkData: Data?, filePathHint: String, format: String, folderId: Int64?)]) -> [BookItem] {
         guard !items.isEmpty else { return [] }
+        let existingBooks = fetchBooks()
+        let existingHints = Set(existingBooks.map(\.filePathHint))
+        var claimedRelinkIds = Set<Int64>()
+
+        var relinks: [(id: Int64, filePathHint: String, bookmarkData: Data?, folderId: Int64?)] = []
+        var inserts: [(title: String, bookmarkData: Data?, filePathHint: String, format: String, folderId: Int64?)] = []
+
+        for item in items {
+            if existingHints.contains(item.filePathHint) {
+                continue
+            }
+            let cleanName = Self.cleanFileName(from: item.filePathHint)
+            if let relinkTarget = findMissingFileCandidate(
+                cleanName: cleanName,
+                title: item.title,
+                format: item.format,
+                in: existingBooks,
+                excludingIds: claimedRelinkIds
+            ) {
+                claimedRelinkIds.insert(relinkTarget.id)
+                relinks.append((relinkTarget.id, item.filePathHint, item.bookmarkData, item.folderId))
+            } else {
+                inserts.append(item)
+            }
+        }
+
         let ts = nowMs()
         dbLock.lock()
         sqlite3_exec(db, "BEGIN TRANSACTION", nil, nil, nil)
-        var stmt: OpaquePointer?
-        let sql = "INSERT OR IGNORE INTO books (title, bookmarkData, filePathHint, format, overallProgress, lastReadAt, folderId) VALUES (?1, ?2, ?3, ?4, -1.0, ?5, ?6)"
-        if sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK {
-            for (idx, item) in items.enumerated() {
-                sqlite3_reset(stmt)
-                sqlite3_clear_bindings(stmt)
-                sqlite3_bind_text(stmt, 1, item.title, -1, SQLITE_TRANSIENT)
-                if let data = item.bookmarkData {
-                    _ = data.withUnsafeBytes { ptr in
-                        sqlite3_bind_blob(stmt, 2, ptr.baseAddress, Int32(data.count), SQLITE_TRANSIENT)
+
+        if !relinks.isEmpty {
+            var uStmt: OpaquePointer?
+            let uSql = "UPDATE books SET filePathHint = ?1, bookmarkData = ?2, folderId = COALESCE(folderId, ?3) WHERE id = ?4"
+            if sqlite3_prepare_v2(db, uSql, -1, &uStmt, nil) == SQLITE_OK {
+                for r in relinks {
+                    sqlite3_reset(uStmt)
+                    sqlite3_clear_bindings(uStmt)
+                    sqlite3_bind_text(uStmt, 1, r.filePathHint, -1, SQLITE_TRANSIENT)
+                    if let data = r.bookmarkData {
+                        _ = data.withUnsafeBytes { ptr in
+                            sqlite3_bind_blob(uStmt, 2, ptr.baseAddress, Int32(data.count), SQLITE_TRANSIENT)
+                        }
+                    } else {
+                        sqlite3_bind_null(uStmt, 2)
                     }
-                } else {
-                    sqlite3_bind_null(stmt, 2)
+                    if let fid = r.folderId { sqlite3_bind_int64(uStmt, 3, fid) } else { sqlite3_bind_null(uStmt, 3) }
+                    sqlite3_bind_int64(uStmt, 4, r.id)
+                    sqlite3_step(uStmt)
                 }
-                sqlite3_bind_text(stmt, 3, item.filePathHint, -1, SQLITE_TRANSIENT)
-                sqlite3_bind_text(stmt, 4, item.format.uppercased(), -1, SQLITE_TRANSIENT)
-                sqlite3_bind_int64(stmt, 5, ts + Int64(items.count - idx))
-                if let fid = item.folderId {
-                    sqlite3_bind_int64(stmt, 6, fid)
-                } else {
-                    sqlite3_bind_null(stmt, 6)
-                }
-                sqlite3_step(stmt)
             }
+            sqlite3_finalize(uStmt)
         }
-        sqlite3_finalize(stmt)
+
+        if !inserts.isEmpty {
+            var stmt: OpaquePointer?
+            let sql = "INSERT OR IGNORE INTO books (title, bookmarkData, filePathHint, format, overallProgress, lastReadAt, folderId) VALUES (?1, ?2, ?3, ?4, -1.0, ?5, ?6)"
+            if sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK {
+                for (idx, item) in inserts.enumerated() {
+                    sqlite3_reset(stmt)
+                    sqlite3_clear_bindings(stmt)
+                    sqlite3_bind_text(stmt, 1, item.title, -1, SQLITE_TRANSIENT)
+                    if let data = item.bookmarkData {
+                        _ = data.withUnsafeBytes { ptr in
+                            sqlite3_bind_blob(stmt, 2, ptr.baseAddress, Int32(data.count), SQLITE_TRANSIENT)
+                        }
+                    } else {
+                        sqlite3_bind_null(stmt, 2)
+                    }
+                    sqlite3_bind_text(stmt, 3, item.filePathHint, -1, SQLITE_TRANSIENT)
+                    sqlite3_bind_text(stmt, 4, item.format.uppercased(), -1, SQLITE_TRANSIENT)
+                    sqlite3_bind_int64(stmt, 5, ts + Int64(inserts.count - idx))
+                    if let fid = item.folderId {
+                        sqlite3_bind_int64(stmt, 6, fid)
+                    } else {
+                        sqlite3_bind_null(stmt, 6)
+                    }
+                    sqlite3_step(stmt)
+                }
+            }
+            sqlite3_finalize(stmt)
+        }
+
         sqlite3_exec(db, "COMMIT", nil, nil, nil)
         dbLock.unlock()
 
@@ -1479,14 +1611,31 @@ final class DatabaseManager: @unchecked Sendable {
             currentBooks.map { ($0.filePathHint, $0) },
             uniquingKeysWith: { first, _ in first }
         )
+        let existingByCleanNameFormat: [String: BookItem] = Dictionary(
+            currentBooks.map {
+                ("\(Self.cleanFileName(from: $0.filePathHint).lowercased())|\($0.format.uppercased())", $0)
+            },
+            uniquingKeysWith: { first, _ in first }
+        )
+        let existingByTitleFormat: [String: BookItem] = Dictionary(
+            currentBooks.map {
+                ("\($0.title.lowercased())|\($0.format.uppercased())", $0)
+            },
+            uniquingKeysWith: { first, _ in first }
+        )
         var bookIdMap: [Int64: Int64] = [:]
         var restoredBooks = 0
 
         for b in manifest.books {
             let targetHint = resolvedFileHintByOldBookId[b.oldId] ?? b.filePathHint
             let targetFolderId: Int64? = b.oldFolderId.flatMap { folderIdMap[$0] }
+            let cleanKey = "\(BookParser.strippedBookFileName(b.fileName.isEmpty ? Self.cleanFileName(from: targetHint) : b.fileName).lowercased())|\(b.format.uppercased())"
+            let titleKey = "\(b.title.lowercased())|\(b.format.uppercased())"
+            let matchedExisting = existingByHint[targetHint]
+                ?? existingByCleanNameFormat[cleanKey]
+                ?? existingByTitleFormat[titleKey]
 
-            if let existing = existingByHint[targetHint] {
+            if let existing = matchedExisting {
                 bookIdMap[b.oldId] = existing.id
                 let shouldUpdateProgress = b.readingSeconds > existing.readingSeconds
                     || b.lastReadAt > existing.lastReadAt

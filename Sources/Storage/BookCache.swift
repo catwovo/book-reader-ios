@@ -317,13 +317,28 @@ final class BookCache: @unchecked Sendable {
 
     static func deleteLocalBookFileIfManaged(_ book: BookItem) {
         invalidate(for: book)
-        guard let url = URL(string: book.filePathHint), url.isFileURL else { return }
         let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first!
         let managedBooksDir = docs.appendingPathComponent("Books", isDirectory: true).standardizedFileURL.path
         let legacyBooksDir = docs.appendingPathComponent("DownloadedBooks", isDirectory: true).standardizedFileURL.path
-        let parent = url.deletingLastPathComponent().standardizedFileURL.path
-        if parent == managedBooksDir || parent == legacyBooksDir {
-            try? FileManager.default.removeItem(at: url)
+
+        if let resolved = BookParser.resolveReadableUrl(for: book) {
+            defer {
+                if resolved.stopSecurityScope {
+                    resolved.url.stopAccessingSecurityScopedResource()
+                }
+            }
+            let parent = resolved.url.deletingLastPathComponent().standardizedFileURL.path
+            if parent == managedBooksDir || parent == legacyBooksDir {
+                try? FileManager.default.removeItem(at: resolved.url)
+                return
+            }
+        }
+
+        if let url = URL(string: book.filePathHint), url.isFileURL {
+            let parent = url.deletingLastPathComponent().standardizedFileURL.path
+            if parent == managedBooksDir || parent == legacyBooksDir {
+                try? FileManager.default.removeItem(at: url)
+            }
         }
     }
 
@@ -340,6 +355,71 @@ final class BookCache: @unchecked Sendable {
             coverCacheBytes: dirSize(coverDirectory),
             tempBytes: dirSize(tmpDir)
         )
+    }
+
+    private static func managedBookFilesAndReferenced(activeBooks: [BookItem]) -> (allFiles: [(url: URL, size: Int64)], orphans: [(url: URL, size: Int64)]) {
+        let fm = FileManager.default
+        let docs = fm.urls(for: .documentDirectory, in: .userDomainMask).first!
+        let dirs = [
+            docs.appendingPathComponent("Books", isDirectory: true),
+            docs.appendingPathComponent("DownloadedBooks", isDirectory: true)
+        ]
+
+        var referenced = Set<String>()
+        for book in activeBooks where !book.filePathHint.hasPrefix("sample://") {
+            if let resolved = BookParser.resolveReadableUrl(for: book) {
+                referenced.insert(resolved.url.standardizedFileURL.path)
+                if resolved.stopSecurityScope {
+                    resolved.url.stopAccessingSecurityScopedResource()
+                }
+            }
+            if let url = URL(string: book.filePathHint), url.isFileURL {
+                referenced.insert(url.standardizedFileURL.path)
+            }
+        }
+
+        var allFiles: [(url: URL, size: Int64)] = []
+        var orphans: [(url: URL, size: Int64)] = []
+        for dir in dirs where fm.fileExists(atPath: dir.path) {
+            guard let items = try? fm.contentsOfDirectory(
+                at: dir,
+                includingPropertiesForKeys: [.fileSizeKey, .isRegularFileKey],
+                options: [.skipsHiddenFiles]
+            ) else { continue }
+            for url in items {
+                let vals = try? url.resourceValues(forKeys: [.fileSizeKey, .isRegularFileKey])
+                guard vals?.isRegularFile != false else { continue }
+                let size = Int64(vals?.fileSize ?? 0)
+                allFiles.append((url, size))
+                if !referenced.contains(url.standardizedFileURL.path) {
+                    orphans.append((url, size))
+                }
+            }
+        }
+        return (allFiles, orphans)
+    }
+
+    static func inspectManagedBooks(activeBooks: [BookItem]) -> ManagedBooksCleanupReport {
+        let scan = managedBookFilesAndReferenced(activeBooks: activeBooks)
+        return ManagedBooksCleanupReport(
+            totalFiles: scan.allFiles.count,
+            totalBytes: scan.allFiles.reduce(0) { $0 + $1.size },
+            orphanFiles: scan.orphans.count,
+            orphanBytes: scan.orphans.reduce(0) { $0 + $1.size }
+        )
+    }
+
+    static func cleanOrphanedManagedBooks(activeBooks: [BookItem]) -> (removedFiles: Int, freedBytes: Int64) {
+        let scan = managedBookFilesAndReferenced(activeBooks: activeBooks)
+        var removed = 0
+        var freed: Int64 = 0
+        for item in scan.orphans {
+            if (try? FileManager.default.removeItem(at: item.url)) != nil {
+                removed += 1
+                freed += item.size
+            }
+        }
+        return (removed, freed)
     }
 
     static func clearAll() {

@@ -113,6 +113,7 @@ struct SettingsView: View {
 
     // Cache
     @State private var cacheStats = CacheStats()
+    @State private var managedBooksReport = ManagedBooksCleanupReport()
     @State private var translationCacheCount = 0
     @State private var isClearingCache = false
     @State private var cacheFeedbackMsg: String?
@@ -844,7 +845,7 @@ struct SettingsView: View {
                                 systemImage: "folder.badge.person.crop",
                                 expanded: $backupSectionExpanded
                             ) {
-                                Text("iOS 卸载应用时会清空本地沙盒。通过「文件」App 授权一个外部持久目录（强烈建议选择「iCloud 云盘」中的目录），应用会将图书文件、文件夹分类、阅读进度、笔记、生词本与阅读设置增量同步至该目录的 MiaoyueBackup 文件夹。")
+                                Text("iOS 卸载应用时会清空本地沙盒。通过「文件」App 授权一个外部持久目录（强烈建议选择「iCloud 云盘」中的目录），默认仅同步阅读进度、阅读时长、笔记、生词本、分类与设置到 MiaoyueBackup/backup_manifest.json，不重复拷贝大体积电子书原文件。")
                                     .font(.caption)
                                     .foregroundStyle(.secondary)
 
@@ -882,18 +883,43 @@ struct SettingsView: View {
                                         Text("已检测到可恢复备份")
                                             .font(.caption.weight(.semibold))
                                             .foregroundStyle(palette.accent)
-                                        Text("\(preview.bookCount) 本图书 · \(preview.folderCount) 个文件夹 · \(preview.noteCount) 条笔记 · \(preview.vocabCount) 个生词")
+                                        Text("\(preview.bookCount) 本图书记录 · \(preview.folderCount) 个文件夹 · \(preview.noteCount) 条笔记 · \(preview.vocabCount) 个生词")
                                             .font(.caption2)
                                             .foregroundStyle(.secondary)
+                                        Text(
+                                            preview.backupBooksCount > 0
+                                                ? "原书副本：\(preview.backupBooksCount) 个（\(formatSettingsCacheSize(preview.backupBooksBytes))）"
+                                                : "模式：仅阅读记录备份（未拷贝原书文件）"
+                                        )
+                                        .font(.caption2)
+                                        .foregroundStyle(.secondary)
                                         Text("备份时间：\(formatSettingsBackupTime(preview.exportedAtMs))")
                                             .font(.caption2)
                                             .foregroundStyle(.secondary)
+
+                                        if preview.backupBooksCount > 0 {
+                                            Button(role: .destructive) {
+                                                Task {
+                                                    await backupService.clearBackupBookCopies()
+                                                }
+                                            } label: {
+                                                Text("清理备份中的原书副本（保留阅读记录）")
+                                                    .font(.caption)
+                                                    .frame(maxWidth: .infinity)
+                                            }
+                                            .buttonStyle(.bordered)
+                                            .padding(.top, 4)
+                                            .disabled(backupService.isBackingUp || backupService.isRestoring)
+                                        }
                                     }
                                     .frame(maxWidth: .infinity, alignment: .leading)
                                     .padding(10)
                                     .background(palette.accent.opacity(0.08))
                                     .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
                                 }
+
+                                Toggle("仅同步阅读记录与设置（不复制原书）", isOn: $backup.recordsOnlyBackupEnabled)
+                                    .font(.subheadline)
 
                                 if backupService.isAuthorized {
                                     Toggle("退至后台自动增量同步", isOn: $backup.autoBackupEnabled)
@@ -966,11 +992,11 @@ struct SettingsView: View {
                         GlassGroupedCard(index: 6, count: 7, outerRadius: 22, innerRadius: 6) {
                             settingsGroupSection(
                                 title: "缓存与存储管理",
-                                subtitle: "占用 \(formatSettingsCacheSize(cacheStats.totalBytes)) · 翻译缓存 \(translationCacheCount) 条",
+                                subtitle: "缓存 \(formatSettingsCacheSize(cacheStats.totalBytes)) · 原书 \(managedBooksReport.totalFiles) 个",
                                 systemImage: "internaldrive",
                                 expanded: $cacheSectionExpanded
                             ) {
-                                Text("仅清理预解析缓存、封面缩略图、翻译记录与临时文件，不会删除您的书架图书、阅读进度、笔记和生词本。")
+                                Text("清理缓存仅释放预解析数据、封面缩略图、翻译记录与未关联书架的冗余原书副本，不会删除书架图书和任何阅读记录。")
                                     .font(.caption)
                                     .foregroundStyle(.secondary)
 
@@ -979,6 +1005,10 @@ struct SettingsView: View {
                                     cacheStatRow("封面缩略图缓存", formatSettingsCacheSize(cacheStats.coverCacheBytes))
                                     cacheStatRow("临时缓存文件", formatSettingsCacheSize(cacheStats.tempBytes))
                                     cacheStatRow("已缓存整句翻译", "\(translationCacheCount) 条")
+                                    cacheStatRow("沙盒原书目录 (Books)", "\(managedBooksReport.totalFiles) 个 · \(formatSettingsCacheSize(managedBooksReport.totalBytes))")
+                                    if managedBooksReport.orphanFiles > 0 {
+                                        cacheStatRow("未关联的重复/冗余副本", "\(managedBooksReport.orphanFiles) 个 · \(formatSettingsCacheSize(managedBooksReport.orphanBytes))")
+                                    }
                                 }
                                 .padding(12)
                                 .background(palette.nestedTint.opacity(0.55))
@@ -988,6 +1018,17 @@ struct SettingsView: View {
                                     Text(cacheFeedbackMsg)
                                         .font(.caption)
                                         .foregroundStyle(palette.accent)
+                                }
+
+                                if managedBooksReport.orphanFiles > 0 {
+                                    Button {
+                                        cleanOrphanManagedBooks()
+                                    } label: {
+                                        Text("清理冗余原书副本（\(managedBooksReport.orphanFiles) 个 · \(formatSettingsCacheSize(managedBooksReport.orphanBytes))）")
+                                            .frame(maxWidth: .infinity)
+                                    }
+                                    .buttonStyle(.bordered)
+                                    .disabled(isClearingCache)
                                 }
 
                                 HStack(spacing: 8) {
@@ -1033,6 +1074,9 @@ struct SettingsView: View {
             }
             .onChange(of: cacheSectionExpanded) { _, expanded in
                 if expanded { refreshCacheStats() }
+            }
+            .onChange(of: db.books.count) { _, _ in
+                if cacheSectionExpanded { refreshCacheStats() }
             }
             .onChange(of: dictSectionExpanded) { _, expanded in
                 if expanded {
@@ -1241,34 +1285,24 @@ struct SettingsView: View {
         guard !urls.isEmpty else { return }
         importFeedbackIsError = false
         importFeedbackMsg = "正在导入 \(urls.count) 本图书..."
+        let scopedUrls = urls.map { (url: $0, accessed: $0.startAccessingSecurityScopedResource()) }
         Task.detached(priority: .userInitiated) {
-            let docsDir = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first!
-            let booksDir = docsDir.appendingPathComponent("Books", isDirectory: true)
-            try? FileManager.default.createDirectory(at: booksDir, withIntermediateDirectories: true)
-
             var prepared: [(title: String, bookmarkData: Data?, filePathHint: String, format: String, folderId: Int64?)] = []
-            prepared.reserveCapacity(urls.count)
+            prepared.reserveCapacity(scopedUrls.count)
 
-            for url in urls {
-                let accessed = url.startAccessingSecurityScopedResource()
-                defer { if accessed { url.stopAccessingSecurityScopedResource() } }
-
-                let rawExt = url.pathExtension.uppercased()
-                let fmt = rawExt.isEmpty ? "TXT" : rawExt
-                let rawTitle = url.deletingPathExtension().lastPathComponent
-                let title = rawTitle.isEmpty ? "未命名图书" : rawTitle
-                let destName = "\(UUID().uuidString.prefix(8))_\(url.lastPathComponent)"
-                let destUrl = booksDir.appendingPathComponent(destName)
-                var filePathHint = url.absoluteString
-                var bookmark: Data? = nil
-
-                if (try? FileManager.default.copyItem(at: url, to: destUrl)) != nil {
-                    filePathHint = destUrl.absoluteString
-                } else {
-                    bookmark = try? url.bookmarkData(options: [], includingResourceValuesForKeys: nil, relativeTo: nil)
+            for item in scopedUrls {
+                if let imported = BookParser.importLocalFileToManagedBooks(
+                    item.url,
+                    alreadyAccessingSecurityScope: item.accessed
+                ) {
+                    prepared.append((
+                        title: imported.title,
+                        bookmarkData: imported.bookmarkData,
+                        filePathHint: imported.filePathHint,
+                        format: imported.format,
+                        folderId: nil
+                    ))
                 }
-
-                prepared.append((title: title, bookmarkData: bookmark, filePathHint: filePathHint, format: fmt, folderId: nil))
             }
 
             let addedCount = await MainActor.run {
@@ -1366,8 +1400,34 @@ struct SettingsView: View {
     }
 
     private func refreshCacheStats() {
-        cacheStats = BookCache.getCacheStats()
+        let activeBooks = db.books
         translationCacheCount = db.translationCacheCount()
+        Task.detached(priority: .utility) {
+            let stats = BookCache.getCacheStats()
+            let report = BookCache.inspectManagedBooks(activeBooks: activeBooks)
+            await MainActor.run {
+                cacheStats = stats
+                managedBooksReport = report
+            }
+        }
+    }
+
+    private func cleanOrphanManagedBooks() {
+        isClearingCache = true
+        cacheFeedbackMsg = nil
+        let activeBooks = db.books
+        Task.detached(priority: .userInitiated) {
+            let result = BookCache.cleanOrphanedManagedBooks(activeBooks: activeBooks)
+            await MainActor.run {
+                refreshCacheStats()
+                if result.removedFiles > 0 {
+                    cacheFeedbackMsg = "已清理 \(result.removedFiles) 个冗余原书副本，释放 \(formatSettingsCacheSize(result.freedBytes))"
+                } else {
+                    cacheFeedbackMsg = "未发现未关联书架的冗余原书副本"
+                }
+                isClearingCache = false
+            }
+        }
     }
 
     private func clearBookCachesOnly() {
@@ -1446,7 +1506,15 @@ private struct WebDavBrowserSheet: View {
     }
 
     private var bookByUri: [String: BookItem] {
-        Dictionary(uniqueKeysWithValues: db.books.map { ($0.filePathHint, $0) })
+        var map: [String: BookItem] = [:]
+        for book in db.books {
+            map[book.filePathHint] = book
+            if let fileName = URL(string: book.filePathHint)?.lastPathComponent,
+               fileName.hasPrefix("webdav_") {
+                map[fileName] = book
+            }
+        }
+        return map
     }
 
     var body: some View {
@@ -1601,7 +1669,9 @@ private struct WebDavBrowserSheet: View {
                                     } else {
                                         let fmt = entry.format
                                         let localUri = fmt.map { NetworkBookService.localUriForWebDavUrl(entry.url, format: $0) }
+                                        let localName = localUri.flatMap { URL(string: $0)?.lastPathComponent }
                                         let existingBook = localUri.flatMap { bookByUri[$0] }
+                                            ?? localName.flatMap { bookByUri[$0] }
                                         let isThisDownloading = downloadingUrl == entry.url
 
                                         GlassCard(cornerRadius: 14) {

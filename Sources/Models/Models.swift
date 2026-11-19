@@ -110,6 +110,13 @@ struct CacheStats: Hashable, Sendable {
     }
 }
 
+struct ManagedBooksCleanupReport: Hashable, Sendable {
+    var totalFiles: Int = 0
+    var totalBytes: Int64 = 0
+    var orphanFiles: Int = 0
+    var orphanBytes: Int64 = 0
+}
+
 enum StepMode: String, Codable, CaseIterable, Sendable {
     case sentence
     case line
