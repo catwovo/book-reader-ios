@@ -1977,9 +1977,84 @@ struct ReaderView: View {
             unitsDelta: uDelta
         )
     }
-}
+private struct TocHierarchyInfo {
+    let minLevel: Int
+    let parentIndex: [Int?]
+    let hasChildren: [Bool]
+    let descendantCount: [Int]
+    let hasHierarchy: Bool
 
-// MARK: - TOC & Book Notes Sheet
+    static func build(for entries: [TocEntry]) -> TocHierarchyInfo {
+        let count = entries.count
+        guard count > 0 else {
+            return TocHierarchyInfo(minLevel: 0, parentIndex: [], hasChildren: [], descendantCount: [], hasHierarchy: false)
+        }
+        let minLevel = entries.map(\.level).min() ?? 0
+        var parentIndex = [Int?](repeating: nil, count: count)
+        var hasChildren = [Bool](repeating: false, count: count)
+        var descendantCount = [Int](repeating: 0, count: count)
+        var stack: [(idx: Int, level: Int)] = []
+
+        for i in 0..<count {
+            let lvl = entries[i].level
+            while let last = stack.last, last.level >= lvl {
+                stack.removeLast()
+            }
+            if let parent = stack.last {
+                parentIndex[i] = parent.idx
+                hasChildren[parent.idx] = true
+            }
+            stack.append((idx: i, level: lvl))
+        }
+
+        for i in (0..<count).reversed() {
+            if let p = parentIndex[i] {
+                descendantCount[p] += 1 + descendantCount[i]
+            }
+        }
+
+        let hasHierarchy = hasChildren.contains(true)
+        return TocHierarchyInfo(
+            minLevel: minLevel,
+            parentIndex: parentIndex,
+            hasChildren: hasChildren,
+            descendantCount: descendantCount,
+            hasHierarchy: hasHierarchy
+        )
+    }
+
+    func ancestorChain(of index: Int) -> Set<Int> {
+        var result: Set<Int> = []
+        var cur = index >= 0 && index < parentIndex.count ? parentIndex[index] : nil
+        while let p = cur {
+            result.insert(p)
+            cur = parentIndex[p]
+        }
+        return result
+    }
+
+    func visibleIndices(in entries: [TocEntry], collapsedParents: Set<Int>) -> [Int] {
+        var result: [Int] = []
+        result.reserveCapacity(entries.count)
+        var hiddenAboveLevel: Int? = nil
+
+        for i in 0..<entries.count {
+            let lvl = entries[i].level
+            if let threshold = hiddenAboveLevel {
+                if lvl > threshold {
+                    continue
+                } else {
+                    hiddenAboveLevel = nil
+                }
+            }
+            result.append(i)
+            if hasChildren[i] && collapsedParents.contains(i) {
+                hiddenAboveLevel = lvl
+            }
+        }
+        return result
+    }
+}
 
 private struct ReaderTocAndNotesSheet: View {
     @Environment(\.dismiss) private var dismiss
@@ -1995,6 +2070,9 @@ private struct ReaderTocAndNotesSheet: View {
     var onSelectNote: (SentenceNote) -> Void
 
     @State private var tab = 0
+    @State private var collapsedTocParents: Set<Int> = []
+    @State private var expandedFlatGroups: Set<Int> = []
+    @State private var didInitFoldState = false
 
     private var displayToc: [TocEntry] {
         if !parsedBook.tocEntries.isEmpty {
@@ -2024,107 +2102,428 @@ private struct ReaderTocAndNotesSheet: View {
         return best >= 0 ? best : (displayToc.firstIndex(where: { $0.chapterIndex == chapterIndex }) ?? 0)
     }
 
-    var body: some View {
-        NavigationStack {
-            ZStack(alignment: .bottom) {
-                VStack(spacing: 10) {
-                    GlassSegmentedControl(
-                        titles: ["目录 (\(displayToc.count))", "本书笔记 (\(bookNotes.count))"],
-                        selection: $tab,
-                        compact: true
-                    )
-                    .padding(.horizontal, 16)
-                    .padding(.top, 8)
+    private var flatGroupSize: Int {
+        displayToc.count >= 120 ? 50 : 20
+    }
 
-                    if tab == 0 {
-                        ScrollViewReader { proxy in
+    private func flatGroupCount(totalCount: Int, groupSize: Int) -> Int {
+        guard totalCount > 0 else { return 0 }
+        return (totalCount + groupSize - 1) / groupSize
+    }
+
+    private func initializeFoldStateIfNeeded(tree: TocHierarchyInfo) {
+        guard !didInitFoldState else { return }
+        didInitFoldState = true
+        if tree.hasHierarchy {
+            if displayToc.count > 80 {
+                let activeAncestors = tree.ancestorChain(of: activeTocIdx)
+                let allParents = Set((0..<displayToc.count).filter { tree.hasChildren[$0] })
+                collapsedTocParents = allParents.subtracting(activeAncestors)
+            } else {
+                collapsedTocParents = []
+            }
+        } else if displayToc.count >= 16 {
+            let activeGroup = Swift.max(0, activeTocIdx) / flatGroupSize
+            expandedFlatGroups = [activeGroup]
+        }
+    }
+
+    private func allCollapsed(tree: TocHierarchyInfo, usesFlatGroups: Bool, groupCount: Int) -> Bool {
+        if tree.hasHierarchy {
+            let allParents = (0..<displayToc.count).filter { tree.hasChildren[$0] }
+            return !allParents.isEmpty && allParents.allSatisfy { collapsedTocParents.contains($0) }
+        } else if usesFlatGroups {
+            return expandedFlatGroups.isEmpty && groupCount > 0
+        }
+        return false
+    }
+
+    private func toggleFoldAll(tree: TocHierarchyInfo, usesFlatGroups: Bool, groupCount: Int) {
+        withAnimation(AppMotion.panelSpring) {
+            if tree.hasHierarchy {
+                if allCollapsed(tree: tree, usesFlatGroups: false, groupCount: 0) {
+                    collapsedTocParents.removeAll()
+                } else {
+                    collapsedTocParents = Set((0..<displayToc.count).filter { tree.hasChildren[$0] })
+                }
+            } else if usesFlatGroups {
+                if expandedFlatGroups.isEmpty {
+                    expandedFlatGroups = Set(0..<groupCount)
+                } else {
+                    expandedFlatGroups.removeAll()
+                }
+            }
+        }
+    }
+
+    var body: some View {
+        let tree = TocHierarchyInfo.build(for: displayToc)
+        let usesFlatGroups = !tree.hasHierarchy && displayToc.count >= 16
+        let groupSize = flatGroupSize
+        let groupCount = flatGroupCount(totalCount: displayToc.count, groupSize: groupSize)
+        let isFoldable = tree.hasHierarchy || usesFlatGroups
+
+        NavigationStack {
+            VStack(spacing: 10) {
+                GlassSegmentedControl(
+                    titles: ["目录 (\(displayToc.count))", "本书笔记 (\(bookNotes.count))"],
+                    selection: $tab,
+                    compact: true
+                )
+                .padding(.horizontal, 16)
+                .padding(.top, 8)
+
+                if tab == 0 {
+                    ScrollViewReader { proxy in
+                        VStack(spacing: 6) {
+                            if isFoldable {
+                                tocFoldActionBar(
+                                    tree: tree,
+                                    usesFlatGroups: usesFlatGroups,
+                                    groupCount: groupCount,
+                                    groupSize: groupSize,
+                                    proxy: proxy
+                                )
+                            }
+
                             List {
-                                ForEach(Array(displayToc.enumerated()), id: \.offset) { idx, entry in
-                                    let isActive = idx == activeTocIdx
-                                    let indent = CGFloat(Swift.min(4, Swift.max(0, entry.level)) * 16)
-                                    Button {
-                                        onSelectToc(entry)
-                                    } label: {
-                                        HStack {
-                                            Text(entry.title)
-                                                .font(entry.level > 0 ? .subheadline : .body)
-                                                .fontWeight(isActive ? .bold : (entry.level == 0 ? .medium : .regular))
-                                                .foregroundStyle(isActive ? palette.accent : (entry.level > 0 ? .secondary : .primary))
-                                                .lineLimit(2)
-                                            Spacer()
-                                            if isActive {
-                                                Image(systemName: "checkmark")
-                                                    .font(.caption.bold())
-                                                    .foregroundStyle(palette.accent)
+                                if tree.hasHierarchy {
+                                    let visibleIndices = tree.visibleIndices(in: displayToc, collapsedParents: collapsedTocParents)
+                                    let activeAncestors = tree.ancestorChain(of: activeTocIdx)
+                                    ForEach(visibleIndices, id: \.self) { idx in
+                                        hierarchicalTocRow(
+                                            idx: idx,
+                                            entry: displayToc[idx],
+                                            tree: tree,
+                                            activeAncestors: activeAncestors
+                                        )
+                                        .id(idx)
+                                    }
+                                } else if usesFlatGroups {
+                                    ForEach(0..<groupCount, id: \.self) { gIdx in
+                                        let start = gIdx * groupSize
+                                        let end = Swift.min((gIdx + 1) * groupSize, displayToc.count)
+                                        let isExpanded = expandedFlatGroups.contains(gIdx)
+                                        let containsActive = activeTocIdx >= start && activeTocIdx < end
+
+                                        flatGroupHeaderRow(
+                                            groupIndex: gIdx,
+                                            start: start,
+                                            end: end,
+                                            isExpanded: isExpanded,
+                                            containsActive: containsActive
+                                        )
+                                        .id("toc_group_\(gIdx)")
+
+                                        if isExpanded {
+                                            ForEach(start..<end, id: \.self) { idx in
+                                                flatTocRow(idx: idx, entry: displayToc[idx], indented: true)
+                                                    .id(idx)
                                             }
                                         }
-                                        .padding(.leading, indent)
                                     }
-                                    .id(idx)
+                                } else {
+                                    ForEach(Array(displayToc.enumerated()), id: \.offset) { idx, entry in
+                                        flatTocRow(idx: idx, entry: entry, indented: false)
+                                            .id(idx)
+                                    }
                                 }
                             }
                             .listStyle(.plain)
-                            .contentMargins(.bottom, 76, for: .scrollContent)
+                            .contentMargins(.bottom, 12, for: .scrollContent)
                             .onAppear {
-                                let target = Swift.max(0, activeTocIdx - 2)
-                                proxy.scrollTo(target, anchor: .top)
-                            }
-                        }
-                    } else {
-                        if bookNotes.isEmpty {
-                            Spacer()
-                            Text("本书还没有收藏句子或笔记\n在阅读下方句卡点击星标或编辑按钮即可记录")
-                                .font(.subheadline)
-                                .foregroundStyle(.secondary)
-                                .multilineTextAlignment(.center)
-                                .padding(24)
-                            Spacer()
-                        } else {
-                            List(bookNotes) { note in
-                                Button {
-                                    onSelectNote(note)
-                                } label: {
-                                    VStack(alignment: .leading, spacing: 4) {
-                                        Text(note.chapterTitle.isEmpty ? "第 \(note.chapterIndex + 1) 章" : note.chapterTitle)
-                                            .font(.caption2)
-                                            .foregroundStyle(.secondary)
-                                        Text(note.sentenceText)
-                                            .font(.subheadline)
-                                            .foregroundStyle(.primary)
-                                            .lineLimit(2)
-                                        if !note.noteText.isEmpty {
-                                            Text("笔记：\(note.noteText)")
-                                                .font(.caption)
-                                                .foregroundStyle(palette.accent)
-                                                .lineLimit(2)
-                                        }
-                                    }
-                                    .padding(.vertical, 4)
+                                initializeFoldStateIfNeeded(tree: tree)
+                                DispatchQueue.main.async {
+                                    let target = Swift.max(0, activeTocIdx - 2)
+                                    proxy.scrollTo(target, anchor: .top)
                                 }
                             }
-                            .listStyle(.plain)
-                            .contentMargins(.bottom, 76, for: .scrollContent)
                         }
                     }
+                } else {
+                    if bookNotes.isEmpty {
+                        Spacer()
+                        Text("本书还没有收藏句子或笔记\n在阅读下方句卡点击星标或编辑按钮即可记录")
+                            .font(.subheadline)
+                            .foregroundStyle(.secondary)
+                            .multilineTextAlignment(.center)
+                            .padding(24)
+                        Spacer()
+                    } else {
+                        List(bookNotes) { note in
+                            Button {
+                                onSelectNote(note)
+                            } label: {
+                                VStack(alignment: .leading, spacing: 4) {
+                                    Text(note.chapterTitle.isEmpty ? "第 \(note.chapterIndex + 1) 章" : note.chapterTitle)
+                                        .font(.caption2)
+                                        .foregroundStyle(.secondary)
+                                    Text(note.sentenceText)
+                                        .font(.subheadline)
+                                        .foregroundStyle(.primary)
+                                        .lineLimit(2)
+                                    if !note.noteText.isEmpty {
+                                        Text("笔记：\(note.noteText)")
+                                            .font(.caption)
+                                            .foregroundStyle(palette.accent)
+                                            .lineLimit(2)
+                                    }
+                                }
+                                .padding(.vertical, 4)
+                            }
+                        }
+                        .listStyle(.plain)
+                        .contentMargins(.bottom, 12, for: .scrollContent)
+                    }
                 }
-
-                Button {
-                    dismiss()
-                } label: {
-                    Text("完成")
-                        .font(.subheadline.weight(.semibold))
-                        .foregroundStyle(.primary)
-                        .padding(.horizontal, 34)
-                        .padding(.vertical, 11)
-                        .appleLiquidGlassCapsule(tint: palette.accent.opacity(0.14), interactive: true)
-                        .shadow(color: .black.opacity(palette.isLight ? 0.10 : 0.28), radius: 12, x: 0, y: 4)
+            }
+            .safeAreaInset(edge: .bottom, spacing: 0) {
+                HStack {
+                    Spacer()
+                    Button {
+                        dismiss()
+                    } label: {
+                        Text("完成")
+                            .font(.subheadline.weight(.semibold))
+                            .foregroundStyle(.primary)
+                            .frame(minWidth: 164, minHeight: 46)
+                            .contentShape(Capsule())
+                            .background(Color.black.opacity(0.001), in: Capsule())
+                            .appleLiquidGlassCapsule(tint: palette.accent.opacity(0.14), interactive: true)
+                            .contentShape(Capsule())
+                            .shadow(color: .black.opacity(palette.isLight ? 0.10 : 0.28), radius: 12, x: 0, y: 4)
+                    }
+                    .buttonStyle(GlassPressButtonStyle())
+                    .contentShape(Capsule())
+                    Spacer()
                 }
-                .buttonStyle(GlassPressButtonStyle())
-                .padding(.bottom, 14)
+                .padding(.top, 8)
+                .padding(.bottom, 12)
             }
             .navigationTitle("目录与笔记")
             .navigationBarTitleDisplayMode(.inline)
         }
+    }
+
+    @ViewBuilder
+    private func tocFoldActionBar(
+        tree: TocHierarchyInfo,
+        usesFlatGroups: Bool,
+        groupCount: Int,
+        groupSize: Int,
+        proxy: ScrollViewProxy
+    ) -> some View {
+        let isAllCollapsed = allCollapsed(tree: tree, usesFlatGroups: usesFlatGroups, groupCount: groupCount)
+        HStack(spacing: 8) {
+            Button {
+                withAnimation(AppMotion.panelSpring) {
+                    if tree.hasHierarchy {
+                        let ancestors = tree.ancestorChain(of: activeTocIdx)
+                        collapsedTocParents.subtract(ancestors)
+                    } else if usesFlatGroups {
+                        let activeGroup = Swift.max(0, activeTocIdx) / groupSize
+                        expandedFlatGroups.insert(activeGroup)
+                    }
+                }
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.06) {
+                    withAnimation(AppMotion.panelSpring) {
+                        proxy.scrollTo(activeTocIdx, anchor: .center)
+                    }
+                }
+            } label: {
+                HStack(spacing: 4) {
+                    Image(systemName: "location.fill")
+                        .font(.caption2)
+                    Text("定位当前")
+                        .font(.caption.weight(.medium))
+                }
+                .foregroundStyle(palette.accent)
+                .padding(.horizontal, 10)
+                .padding(.vertical, 5)
+                .background(palette.accent.opacity(0.10), in: Capsule())
+            }
+            .buttonStyle(.plain)
+
+            Spacer()
+
+            Button {
+                toggleFoldAll(tree: tree, usesFlatGroups: usesFlatGroups, groupCount: groupCount)
+            } label: {
+                HStack(spacing: 4) {
+                    Image(systemName: isAllCollapsed ? "chevron.down.circle" : "chevron.up.circle")
+                        .font(.caption2)
+                    Text(isAllCollapsed ? "全部展开" : "全部折叠")
+                        .font(.caption.weight(.medium))
+                }
+                .foregroundStyle(.secondary)
+                .padding(.horizontal, 10)
+                .padding(.vertical, 5)
+                .background(Color.secondary.opacity(0.10), in: Capsule())
+            }
+            .buttonStyle(.plain)
+        }
+        .padding(.horizontal, 16)
+    }
+
+    @ViewBuilder
+    private func hierarchicalTocRow(
+        idx: Int,
+        entry: TocEntry,
+        tree: TocHierarchyInfo,
+        activeAncestors: Set<Int>
+    ) -> some View {
+        let isActive = idx == activeTocIdx
+        let hasKids = tree.hasChildren[idx]
+        let isCollapsed = hasKids && collapsedTocParents.contains(idx)
+        let containsActive = isCollapsed && activeAncestors.contains(idx)
+        let relativeLevel = Swift.max(0, entry.level - tree.minLevel)
+        let indent = CGFloat(Swift.min(4, relativeLevel) * 16)
+
+        HStack(spacing: 8) {
+            Button {
+                onSelectToc(entry)
+            } label: {
+                HStack(spacing: 8) {
+                    Text(entry.title)
+                        .font(relativeLevel > 0 ? .subheadline : .body)
+                        .fontWeight(isActive || containsActive ? .bold : (relativeLevel == 0 ? .medium : .regular))
+                        .foregroundStyle((isActive || containsActive) ? palette.accent : (relativeLevel > 0 ? .secondary : .primary))
+                        .lineLimit(2)
+                        .multilineTextAlignment(.leading)
+
+                    Spacer(minLength: 4)
+
+                    if isActive {
+                        Image(systemName: "checkmark")
+                            .font(.caption.bold())
+                            .foregroundStyle(palette.accent)
+                    } else if containsActive {
+                        Text("当前")
+                            .font(.caption2.weight(.semibold))
+                            .foregroundStyle(palette.accent)
+                            .padding(.horizontal, 6)
+                            .padding(.vertical, 2)
+                            .background(palette.accent.opacity(0.12), in: Capsule())
+                    }
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+
+            if hasKids {
+                Button {
+                    withAnimation(AppMotion.panelSpring) {
+                        if collapsedTocParents.contains(idx) {
+                            collapsedTocParents.remove(idx)
+                        } else {
+                            collapsedTocParents.insert(idx)
+                        }
+                    }
+                } label: {
+                    HStack(spacing: 4) {
+                        Text("\(tree.descendantCount[idx])")
+                            .font(.caption2.monospacedDigit())
+                            .foregroundStyle(.secondary)
+                        Image(systemName: "chevron.down")
+                            .font(.caption.bold())
+                            .foregroundStyle(.secondary)
+                            .rotationEffect(.degrees(isCollapsed ? -90 : 0))
+                    }
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 6)
+                    .background(Color.secondary.opacity(0.08), in: Capsule())
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+            }
+        }
+        .padding(.leading, indent)
+    }
+
+    @ViewBuilder
+    private func flatGroupHeaderRow(
+        groupIndex: Int,
+        start: Int,
+        end: Int,
+        isExpanded: Bool,
+        containsActive: Bool
+    ) -> some View {
+        Button {
+            withAnimation(AppMotion.panelSpring) {
+                if expandedFlatGroups.contains(groupIndex) {
+                    expandedFlatGroups.remove(groupIndex)
+                } else {
+                    expandedFlatGroups.insert(groupIndex)
+                }
+            }
+        } label: {
+            HStack(spacing: 10) {
+                VStack(alignment: .leading, spacing: 2) {
+                    HStack(spacing: 6) {
+                        Text("第 \(start + 1) – \(end) 节")
+                            .font(.subheadline.weight(.semibold))
+                            .foregroundStyle(containsActive ? palette.accent : .primary)
+                        if containsActive {
+                            Text("当前")
+                                .font(.caption2.weight(.semibold))
+                                .foregroundStyle(palette.accent)
+                                .padding(.horizontal, 6)
+                                .padding(.vertical, 1.5)
+                                .background(palette.accent.opacity(0.12), in: Capsule())
+                        }
+                    }
+                    if start < displayToc.count, end - 1 < displayToc.count {
+                        Text("\(displayToc[start].title) … \(displayToc[end - 1].title)")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                    }
+                }
+
+                Spacer()
+
+                HStack(spacing: 4) {
+                    Text("\(end - start)")
+                        .font(.caption2.monospacedDigit())
+                        .foregroundStyle(.secondary)
+                    Image(systemName: "chevron.down")
+                        .font(.caption.bold())
+                        .foregroundStyle(.secondary)
+                        .rotationEffect(.degrees(isExpanded ? 0 : -90))
+                }
+                .padding(.horizontal, 8)
+                .padding(.vertical, 5)
+                .background(Color.secondary.opacity(0.08), in: Capsule())
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+    }
+
+    @ViewBuilder
+    private func flatTocRow(idx: Int, entry: TocEntry, indented: Bool) -> some View {
+        let isActive = idx == activeTocIdx
+        Button {
+            onSelectToc(entry)
+        } label: {
+            HStack {
+                Text(entry.title)
+                    .font(indented ? .subheadline : .body)
+                    .fontWeight(isActive ? .bold : (indented ? .regular : .medium))
+                    .foregroundStyle(isActive ? palette.accent : .primary)
+                    .lineLimit(2)
+                Spacer()
+                if isActive {
+                    Image(systemName: "checkmark")
+                        .font(.caption.bold())
+                        .foregroundStyle(palette.accent)
+                }
+            }
+            .padding(.leading, indented ? 14 : 0)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
     }
 }
 
