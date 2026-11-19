@@ -1977,6 +1977,10 @@ struct ReaderView: View {
             unitsDelta: uDelta
         )
     }
+}
+
+// MARK: - TOC & Book Notes Sheet
+
 private struct TocHierarchyInfo {
     let minLevel: Int
     let parentIndex: [Int?]
